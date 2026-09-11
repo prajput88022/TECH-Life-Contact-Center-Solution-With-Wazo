@@ -1,0 +1,64 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>DID Numbers</h1>
+<form method="post" action="/admin/dids/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>DID Number</label><input name="did_number" required></div>
+        <div><label>Description</label><input name="description"></div>
+        <div><label>Default Queue</label>
+            <select name="default_queue_id"><option value="">—</option>
+                <% queues.forEach(q => { %><option value="<%= q.id %>"><%= q.name %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Campaign</label>
+            <select name="campaign_id"><option value="">—</option>
+                <% campaigns.forEach(c => { %><option value="<%= c.id %>"><%= c.name %></option><% }) %>
+            </select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Add DID</button>
+</form>
+<h2>All DIDs</h2>
+<table>
+<tr><th>DID</th><th>Description</th><th>Default Queue</th><th>Campaign</th><th>Status</th><th></th></tr>
+<% dids.forEach(d => { %>
+<tr>
+    <td><%= d.did_number %></td><td><%= d.description || '' %></td>
+    <td><%= d.queue_name || '—' %></td><td><%= d.campaign_name || '—' %></td>
+    <td><%= d.is_active ? 'Active' : 'Disabled' %></td>
+    <td><a href="?edit=<%= d.id %>">Edit</a> &middot;
+        <form method="post" action="/admin/dids/<%= d.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this DID?');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (dids.length === 0) { %><tr><td colspan="6">No DIDs yet.</td></tr><% } %>
+</table>
+
+<% if (editId) {
+    const d = dids.find(x => x.id === editId);
+    if (d) { %>
+<h2>Edit DID — <%= d.did_number %></h2>
+<form method="post" action="/admin/dids/<%= d.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Description</label><input name="description" value="<%= d.description || '' %>"></div>
+        <div><label>Default Queue</label>
+            <select name="default_queue_id"><option value="">—</option>
+                <% queues.forEach(q => { %><option value="<%= q.id %>" <%= d.default_queue_id === q.id ? 'selected' : '' %>><%= q.name %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Campaign</label>
+            <select name="campaign_id"><option value="">—</option>
+                <% campaigns.forEach(c => { %><option value="<%= c.id %>" <%= d.campaign_id === c.id ? 'selected' : '' %>><%= c.name %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= d.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !d.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+    <a class="tl-btn secondary" href="/admin/dids">Cancel</a>
+</form>
+<% } } %>
+<%- include('../partials/foot') %>

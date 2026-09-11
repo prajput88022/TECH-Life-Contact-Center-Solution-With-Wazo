@@ -1,0 +1,34 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Privacy &amp; Number Masking</h1>
+<p class="tl-subtitle">
+    When enabled, customer phone numbers are masked (e.g. <code>98******45</code>) on the
+    corresponding screens — and stripped server-side, so the raw number is never sent to that
+    browser at all. Every call still keeps its own unique ID visible everywhere, so agents and
+    supervisors can always match a masked call to its recording and other records.
+</p>
+<div class="tl-grid">
+    <div class="tl-card">
+        <div class="tl-kpi-label">Mask customer numbers for Agents</div>
+        <p class="tl-subtitle">Applies to the Agent Workspace and "My Calls".</p>
+        <form method="post" action="/admin/privacy-settings/toggle">
+            <input type="hidden" name="field" value="agents">
+            <input type="hidden" name="enabled" value="<%= settings.mask_number_for_agents ? '0' : '1' %>">
+            <button class="tl-btn <%= settings.mask_number_for_agents ? '' : 'secondary' %>" type="submit">
+                <%= settings.mask_number_for_agents ? 'Masking ON — click to disable' : 'Masking OFF — click to enable' %>
+            </button>
+        </form>
+    </div>
+    <div class="tl-card">
+        <div class="tl-kpi-label">Mask customer numbers for Supervisors</div>
+        <p class="tl-subtitle">Applies to Call Records and CDR export/download.</p>
+        <form method="post" action="/admin/privacy-settings/toggle">
+            <input type="hidden" name="field" value="supervisors">
+            <input type="hidden" name="enabled" value="<%= settings.mask_number_for_supervisors ? '0' : '1' %>">
+            <button class="tl-btn <%= settings.mask_number_for_supervisors ? '' : 'secondary' %>" type="submit">
+                <%= settings.mask_number_for_supervisors ? 'Masking ON — click to disable' : 'Masking OFF — click to enable' %>
+            </button>
+        </form>
+    </div>
+</div>
+<%- include('../partials/foot') %>

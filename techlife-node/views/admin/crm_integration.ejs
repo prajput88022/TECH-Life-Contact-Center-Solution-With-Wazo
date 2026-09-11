@@ -1,0 +1,75 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>CRM Integration (Screen-Pop / CTI)</h1>
+<p class="tl-subtitle">
+    Two independent styles: <strong>screen-pop</strong> opens/embeds a URL in the agent's browser
+    when a call rings or is answered (works with any CRM that has a phone-lookup URL — Zoho,
+    HubSpot, Freshdesk, a custom internal CRM). <strong>Webhook push</strong> POSTs a signed JSON
+    payload to your CRM's own CTI adapter endpoint on call events (for toolkits like Salesforce
+    OpenCTI that expect to be notified). A tenant can use either, both, or neither.
+</p>
+
+<form method="post" action="/admin/crm-integration/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Integration Name</label><input name="name" required placeholder="e.g. Zoho CRM"></div>
+    </div>
+
+    <p><strong>Screen-Pop (client-side)</strong></p>
+    <div class="tl-filters">
+        <div><label><input type="checkbox" name="popup_enabled"> Enable screen-pop</label></div>
+        <div><label>Trigger</label>
+            <select name="trigger_event">
+                <option value="ringing">On ringing (incoming call)</option>
+                <option value="answered">On answered</option>
+            </select>
+        </div>
+        <div><label>Open Mode</label>
+            <select name="popup_mode">
+                <option value="new_tab">New browser tab</option>
+                <option value="popup_window">Popup window</option>
+                <option value="iframe_panel">Embedded panel in Agent Workspace</option>
+                <option value="postmessage">postMessage to parent frame (TECH-Life embedded inside CRM)</option>
+            </select>
+        </div>
+    </div>
+    <div class="tl-filters">
+        <div style="flex:2"><label>URL Template</label>
+            <input name="url_template" style="width:100%" placeholder="https://crm.example.com/lookup?phone={customer_number}&callid={call_id}">
+        </div>
+    </div>
+    <p class="tl-subtitle">Placeholders: <code>{customer_number}</code> <code>{call_id}</code> <code>{agent_extension}</code> <code>{direction}</code> <code>{queue_name}</code> <code>{campaign_name}</code> <code>{disposition_code}</code></p>
+
+    <p><strong>Webhook Push (server-side)</strong></p>
+    <div class="tl-filters">
+        <div><label><input type="checkbox" name="webhook_enabled"> Enable webhook push</label></div>
+        <div style="flex:2"><label>Webhook URL</label><input name="webhook_url" style="width:100%" placeholder="https://your-crm.example.com/api/cti/webhook"></div>
+    </div>
+    <div class="tl-filters">
+        <div><label>Signing Secret</label><input name="webhook_secret" placeholder="used to HMAC-sign X-TechLife-Signature"></div>
+        <div style="flex:2"><label>Events to Push</label><input name="webhook_events" value="CALL_STARTED,CALL_ANSWERED,CALL_HANGUP" style="width:100%"></div>
+    </div>
+
+    <button class="tl-btn" type="submit" style="margin-top:10px">Create Integration</button>
+</form>
+
+<h2>Configured Integrations</h2>
+<table>
+<tr><th>Name</th><th>Screen-Pop</th><th>Webhook</th><th>Status</th><th></th></tr>
+<% integrations.forEach(i => { %>
+<tr>
+    <td><%= i.name %></td>
+    <td><%= i.popup_enabled ? (i.popup_mode + ' on ' + i.trigger_event) : '—' %></td>
+    <td><%= i.webhook_enabled ? 'enabled' : '—' %></td>
+    <td><span class="tl-status-pill <%= i.is_active ? 'status-available' : 'status-offline' %>"><%= i.is_active ? 'Active' : 'Disabled' %></span></td>
+    <td>
+        <form method="post" action="/admin/crm-integration/toggle" style="display:inline">
+            <input type="hidden" name="id" value="<%= i.id %>">
+            <input type="hidden" name="enabled" value="<%= i.is_active ? '0' : '1' %>">
+            <button class="tl-btn secondary" type="submit"><%= i.is_active ? 'Disable' : 'Enable' %></button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (integrations.length === 0) { %><tr><td colspan="5">No CRM integrations configured yet.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

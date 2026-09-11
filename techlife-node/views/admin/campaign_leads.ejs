@@ -1,0 +1,35 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Leads — <%= campaign.name %></h1>
+<p class="tl-subtitle">Upload a CSV to auto-dial. Any column named phone/phone_number/mobile/number/contact_number is recognized; everything else is kept as custom fields.</p>
+
+<% if (importResult) { %>
+<div class="tl-card" style="border-left:4px solid var(--tl-good)">
+    <strong>Import complete:</strong> <%= importResult.imported %> imported,
+    <%= importResult.duplicates %> duplicates skipped, <%= importResult.invalid %> invalid numbers skipped.
+</div>
+<% } %>
+
+<form method="post" action="/admin/campaigns/<%= campaign.id %>/leads/upload" enctype="multipart/form-data" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Leads CSV</label><input type="file" name="leads_csv" accept=".csv" required></div>
+        <div><button class="tl-btn" type="submit">Upload &amp; Import</button></div>
+    </div>
+</form>
+
+<div class="tl-grid">
+<% counts.forEach(c => { %>
+    <div class="tl-card"><div class="tl-kpi-value"><%= c.n %></div><div class="tl-kpi-label"><%= c.status %></div></div>
+<% }) %>
+<% if (counts.length === 0) { %><div class="tl-card"><div class="tl-kpi-value">0</div><div class="tl-kpi-label">Leads</div></div><% } %>
+</div>
+
+<h2>Recent Leads</h2>
+<table>
+<tr><th>Phone</th><th>Status</th><th>Priority</th><th>Added</th></tr>
+<% leads.forEach(l => { %>
+<tr><td><%= l.phone_number %></td><td><%= l.status %></td><td><%= l.priority %></td><td><%= l.created_at %></td></tr>
+<% }) %>
+<% if (leads.length === 0) { %><tr><td colspan="4">No leads uploaded yet.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

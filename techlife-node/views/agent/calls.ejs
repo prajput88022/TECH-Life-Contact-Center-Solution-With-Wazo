@@ -1,0 +1,29 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>My Calls</h1>
+<p class="tl-subtitle">
+    Each call keeps its own unique ID so you can always reference a specific call, even when the customer number is masked.
+    <% if (isMasked) { %><span class="tl-status-pill status-break">Number masking is ON for your screen</span><% } %>
+</p>
+<form method="get" class="tl-filters">
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run</button></div>
+    <div><a class="tl-btn secondary" href="/export/calls?format=csv&context=agent&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
+</form>
+<table>
+<tr><th>Call ID</th><th>Time</th><th>Customer Number</th><th>Direction</th><th>Status</th><th>Talk</th><th>Disposition</th></tr>
+<% rows.forEach(r => { %>
+<tr>
+    <td><code><%= r.short_id %></code></td>
+    <td><%= r.start_time %></td>
+    <td><%= (r.direction === 'inbound' ? r.from_number : r.to_number) || '—' %></td>
+    <td><%= r.direction %></td>
+    <td><%= r.status %></td>
+    <td><%= r.talk_seconds != null ? new Date(r.talk_seconds*1000).toISOString().substr(11,8) : '—' %></td>
+    <td><%= r.disposition_label || '—' %></td>
+</tr>
+<% }) %>
+<% if (rows.length === 0) { %><tr><td colspan="7">No calls in this range.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

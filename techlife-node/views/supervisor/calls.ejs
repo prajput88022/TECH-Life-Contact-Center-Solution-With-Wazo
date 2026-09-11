@@ -1,0 +1,38 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Call Records (CDR)</h1>
+<p class="tl-subtitle">
+    Every call has a unique ID so records stay identifiable across recordings and every other report.
+    <% if (isMasked) { %><span class="tl-status-pill status-break">Number masking is ON for this screen</span>
+    <% } else { %><span class="tl-status-pill status-available">Number masking is OFF for this screen</span><% } %>
+    Change this in <a href="/admin/privacy-settings">Admin → Privacy &amp; Number Masking</a>.
+</p>
+
+<form method="get" class="tl-filters">
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run</button></div>
+    <div><a class="tl-btn secondary" href="/export/calls?format=csv&context=supervisor&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Download CDR (CSV)</a></div>
+    <div><a class="tl-btn secondary" href="/export/calls?format=xlsx&context=supervisor&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Download CDR (Excel)</a></div>
+</form>
+
+<table>
+<tr><th>Call ID</th><th>Time</th><th>Agent</th><th>Queue</th><th>From</th><th>To</th><th>Direction</th><th>Status</th><th>Talk</th><th>Disposition</th><th>Recording</th></tr>
+<% rows.forEach(r => { %>
+<tr>
+    <td><code><%= r.short_id %></code></td>
+    <td><%= r.start_time %></td>
+    <td><%= r.agent_name || '—' %></td>
+    <td><%= r.queue_name || '—' %></td>
+    <td><%= r.from_number || '—' %></td>
+    <td><%= r.to_number || '—' %></td>
+    <td><%= r.direction %></td>
+    <td><%= r.status %></td>
+    <td><%= r.talk_seconds != null ? new Date(r.talk_seconds*1000).toISOString().substr(11,8) : '—' %></td>
+    <td><%= r.disposition_label || '—' %></td>
+    <td><%= r.recording_id ? 'Available' : '—' %></td>
+</tr>
+<% }) %>
+<% if (rows.length === 0) { %><tr><td colspan="11">No calls in this range.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

@@ -1,0 +1,20 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Chat Monitor</h1>
+<p class="tl-subtitle">All chat conversations — open first. Wait time is time-to-first-agent-response (or time-open-so-far if still unanswered).</p>
+<table>
+<tr><th>Contact</th><th>Queue</th><th>Agent</th><th>Status</th><th>Messages</th><th>Wait / Response Time</th><th>Started</th></tr>
+<% conversations.forEach(c => { %>
+<tr>
+    <td><%= c.contact_name || 'Website visitor' %></td>
+    <td><%= c.queue_name || '—' %></td>
+    <td><%= c.agent_name || '—' %></td>
+    <td><span class="tl-status-pill <%= c.status === 'open' ? 'status-available' : 'status-offline' %>"><%= c.status %></span></td>
+    <td><%= c.message_count %></td>
+    <td><%= new Date(c.wait_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(c.started_at).toLocaleString() %></td>
+</tr>
+<% }) %>
+<% if (conversations.length === 0) { %><tr><td colspan="7">No chat conversations yet.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

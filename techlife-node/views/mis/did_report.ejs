@@ -1,0 +1,22 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>DID Performance Report</h1>
+<form method="get" class="tl-filters">
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run Report</button></div>
+    <div><a class="tl-btn secondary" href="/export/did?format=csv&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
+    <div><a class="tl-btn secondary" href="/export/did?format=xlsx&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export Excel</a></div>
+</form>
+<table>
+<tr><th>DID</th><th>Description</th><th>Campaign</th><th>Received</th><th>Answered</th><th>Abandoned</th><th>Missed</th><th>Avg Wait</th><th>Total Talk</th></tr>
+<% rows.forEach(r => { %>
+<tr>
+    <td><%= r.did_number %></td><td><%= r.description || '' %></td><td><%= r.campaign_name || '—' %></td>
+    <td><%= r.calls_received %></td><td><%= r.calls_answered %></td><td><%= r.calls_abandoned %></td><td><%= r.calls_missed %></td>
+    <td><%= r.avg_wait_seconds != null ? Math.round(r.avg_wait_seconds)+'s' : '—' %></td>
+    <td><%= r.total_talk_seconds != null ? new Date(r.total_talk_seconds*1000).toISOString().substr(11,8) : '—' %></td>
+</tr>
+<% }) %>
+</table>
+<%- include('../partials/foot') %>

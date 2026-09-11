@@ -1,0 +1,130 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>IVR Menus</h1>
+<p class="tl-subtitle">
+    ⚠️ Building a menu here defines its configuration (greeting, options, routing) — actually
+    routing live calls through it requires your Wazo dialplan to read this config via a small AGI
+    script, the same pattern used for robo campaigns. See INSTALL.md §17.
+</p>
+
+<form method="post" action="/admin/ivr/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Menu Name</label><input name="name" required placeholder="Main Menu"></div>
+        <div><label>Greeting Type</label>
+            <select name="greeting_type"><option value="tts">Text-to-Speech</option><option value="audio_file">Audio File</option></select>
+        </div>
+        <div><label>Timeout (s)</label><input type="number" name="timeout_seconds" value="5"></div>
+        <div><label>Invalid Retry Limit</label><input type="number" name="invalid_retry_limit" value="3"></div>
+    </div>
+    <div class="tl-filters">
+        <div style="flex:2"><label>Greeting Text (if TTS)</label><input name="greeting_text" style="width:100%" placeholder="Thank you for calling. Press 1 for Sales, 2 for Support."></div>
+    </div>
+    <button class="tl-btn" type="submit">Create Menu</button>
+</form>
+
+<h2>All IVR Menus</h2>
+<table>
+<tr><th>Name</th><th>Greeting</th><th>Timeout</th><th>Status</th><th></th></tr>
+<% menus.forEach(m => { %>
+<tr>
+    <td><%= m.name %></td>
+    <td><%= m.greeting_type === 'tts' ? (m.greeting_text || '').slice(0,50) : 'Audio file' %></td>
+    <td><%= m.timeout_seconds %>s</td>
+    <td><%= m.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <a href="?edit=<%= m.id %>">Edit / Options</a> &middot;
+        <form method="post" action="/admin/ivr/<%= m.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this IVR menu? This cannot be undone.');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (menus.length === 0) { %><tr><td colspan="5">No IVR menus yet.</td></tr><% } %>
+</table>
+
+<% if (editId) {
+    const m = menus.find(x => x.id === editId);
+    if (m) { %>
+<h2>Edit Menu — <%= m.name %></h2>
+<form method="post" action="/admin/ivr/<%= m.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Menu Name</label><input name="name" value="<%= m.name %>" required></div>
+        <div><label>Greeting Type</label>
+            <select name="greeting_type">
+                <option value="tts" <%= m.greeting_type === 'tts' ? 'selected' : '' %>>Text-to-Speech</option>
+                <option value="audio_file" <%= m.greeting_type === 'audio_file' ? 'selected' : '' %>>Audio File</option>
+            </select>
+        </div>
+        <div><label>Timeout (s)</label><input type="number" name="timeout_seconds" value="<%= m.timeout_seconds %>"></div>
+        <div><label>Invalid Retry Limit</label><input type="number" name="invalid_retry_limit" value="<%= m.invalid_retry_limit %>"></div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= m.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !m.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <div class="tl-filters">
+        <div style="flex:2"><label>Greeting Text (if TTS)</label><input name="greeting_text" value="<%= m.greeting_text || '' %>" style="width:100%"></div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+</form>
+
+<h2>Menu Options (what each key press does)</h2>
+<form method="post" action="/admin/ivr/<%= m.id %>/options/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Key</label>
+            <select name="dtmf_digit">
+                <% ['1','2','3','4','5','6','7','8','9','0','*','#'].forEach(d => { %><option value="<%= d %>"><%= d %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Label</label><input name="label" placeholder="Sales" required></div>
+        <div><label>Action</label>
+            <select name="action_type" onchange="
+                document.getElementById('optQueueRow').style.display = this.value === 'queue' ? 'flex' : 'none';
+                document.getElementById('optExtRow').style.display = this.value === 'extension' ? 'flex' : 'none';
+                document.getElementById('optSubmenuRow').style.display = this.value === 'submenu' ? 'flex' : 'none';">
+                <option value="queue">Send to Queue</option>
+                <option value="extension">Send to Extension/DID</option>
+                <option value="submenu">Go to Submenu</option>
+                <option value="voicemail">Voicemail</option>
+                <option value="hangup">Hang Up</option>
+            </select>
+        </div>
+    </div>
+    <div class="tl-filters" id="optQueueRow">
+        <div><label>Queue</label>
+            <select name="target_queue_id"><option value="">—</option>
+                <% queues.forEach(q => { %><option value="<%= q.id %>"><%= q.name %></option><% }) %>
+            </select>
+        </div>
+    </div>
+    <div class="tl-filters" id="optExtRow" style="display:none">
+        <div><label>Extension/DID</label><input name="target_extension" placeholder="1001"></div>
+    </div>
+    <div class="tl-filters" id="optSubmenuRow" style="display:none">
+        <div><label>Submenu</label>
+            <select name="target_submenu_id"><option value="">—</option>
+                <% menus.filter(x => x.id !== m.id).forEach(x => { %><option value="<%= x.id %>"><%= x.name %></option><% }) %>
+            </select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Add Option</button>
+</form>
+
+<table>
+<tr><th>Key</th><th>Label</th><th>Action</th><th>Target</th><th></th></tr>
+<% options.forEach(o => { %>
+<tr>
+    <td><strong><%= o.dtmf_digit %></strong></td>
+    <td><%= o.label %></td>
+    <td><%= o.action_type %></td>
+    <td><%= o.queue_name || o.target_extension || o.submenu_name || '—' %></td>
+    <td>
+        <form method="post" action="/admin/ivr/<%= m.id %>/options/<%= o.id %>/delete" style="display:inline">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Remove</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (options.length === 0) { %><tr><td colspan="5">No options configured — all callers will hit the timeout/invalid handling.</td></tr><% } %>
+</table>
+<% } } %>
+<%- include('../partials/foot') %>

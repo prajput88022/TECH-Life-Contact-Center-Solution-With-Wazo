@@ -1,0 +1,33 @@
+{
+  "name": "techlife-node",
+  "version": "1.0.0",
+  "description": "TECH-Life Contact-Center Solution -- Node.js/Express edition",
+  "main": "index.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js",
+    "collector": "node collector/collector.js",
+    "robo-runtime": "node collector/robo_agent_runtime_cli.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "connect-pg-simple": "^10.0.0",
+    "csv-parse": "^7.0.2",
+    "csv-stringify": "^6.8.3",
+    "dotenv": "^17.4.2",
+    "ejs": "^6.0.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-ejs-layouts": "^2.5.1",
+    "express-session": "^1.19.0",
+    "multer": "^2.3.0",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.23.0",
+    "undici": "^7.29.0",
+    "uuid": "^14.0.2",
+    "ws": "^8.21.3"
+  }
+}

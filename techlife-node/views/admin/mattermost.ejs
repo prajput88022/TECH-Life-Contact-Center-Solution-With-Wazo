@@ -1,0 +1,33 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Mattermost Bridge</h1>
+<p class="tl-subtitle">
+    Pushes new customer chat messages into a Mattermost channel via Mattermost's own "Incoming
+    Webhook" integration. Replies come back via a Mattermost outgoing webhook or slash command
+    you configure on the Mattermost side to POST to this server's <code>/mattermost/reply</code>.
+</p>
+
+<% if (!integration) { %>
+<form method="post" action="/admin/mattermost/create" class="tl-card">
+    <div class="tl-filters">
+        <div style="flex:2"><label>Mattermost Incoming Webhook URL</label>
+            <input name="incoming_webhook_url" style="width:100%" placeholder="https://your-mattermost.example.com/hooks/xxxxxxxxxxxx" required>
+        </div>
+    </div>
+    <p class="tl-subtitle">Create this in Mattermost: System Console → Integrations → Incoming Webhooks → Add Incoming Webhook, pick a channel, copy the URL here.</p>
+    <button class="tl-btn" type="submit">Connect Mattermost</button>
+</form>
+<% } else { %>
+<div class="tl-card">
+    <p><strong>Status:</strong> <%= integration.is_active ? 'Connected' : 'Disabled' %></p>
+    <p><strong>Incoming Webhook:</strong> <code><%= integration.incoming_webhook_url %></code></p>
+    <p><strong>Reply shared secret</strong> (use as the <code>token</code> in your Mattermost outgoing webhook/slash command config):</p>
+    <code style="display:block;padding:10px;background:#f4f6fa;border-radius:6px"><%= integration.reply_shared_secret %></code>
+    <p class="tl-subtitle" style="margin-top:14px">
+        In Mattermost, add a Slash Command (or Outgoing Webhook) with request URL
+        <code>https://YOUR-TECHLIFE-HOST/mattermost/reply</code>, method POST, and the token above.
+        Agents reply with: <code>/techlife-reply CONV-A1B2C3 your message here</code>
+    </p>
+</div>
+<% } %>
+<%- include('../partials/foot') %>

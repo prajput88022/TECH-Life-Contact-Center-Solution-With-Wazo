@@ -1,0 +1,35 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Agent Login / Logout Report</h1>
+<p class="tl-subtitle">Each row is one login session — from the agent's login event to their matching logout event (or "still logged in" if none yet), with available and break time totaled within that span.</p>
+
+<form method="get" class="tl-filters">
+    <div><label>Agent</label>
+        <select name="agent_id"><option value="">All Agents</option>
+            <% agents.forEach(a => { %><option value="<%= a.id %>" <%= a.id === agentId ? 'selected' : '' %>><%= a.full_name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run Report</button></div>
+</form>
+
+<table>
+<tr><th>Agent</th><th>Login At</th><th>Logout At</th><th>Session Duration</th><th>Available</th><th>Break</th></tr>
+<% rows.forEach(r => {
+    const loginAt = new Date(r.login_at);
+    const logoutAt = r.logout_at ? new Date(r.logout_at) : null;
+    const durationSec = logoutAt ? Math.round((logoutAt - loginAt) / 1000) : null;
+%>
+<tr>
+    <td><%= r.full_name %></td>
+    <td><%= loginAt.toLocaleString() %></td>
+    <td><%= logoutAt ? logoutAt.toLocaleString() : '' %><% if (!logoutAt) { %><span class="tl-status-pill status-available">Still logged in</span><% } %></td>
+    <td><%= durationSec !== null ? new Date(durationSec*1000).toISOString().substr(11,8) : '—' %></td>
+    <td><%= new Date(r.available_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(r.break_seconds*1000).toISOString().substr(11,8) %></td>
+</tr>
+<% }) %>
+<% if (rows.length === 0) { %><tr><td colspan="6">No login sessions in this range.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

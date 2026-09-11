@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Sign in — TECH-Life Contact-Center Solution</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="/assets/style.css"></head>
+<body class="tl-login-page">
+<div class="tl-login-box">
+    <div class="tl-brand-mark">TL</div>
+    <h1>TECH-Life</h1>
+    <p class="tl-subtitle">Contact-Center Solution</p>
+    <% if (typeof error !== 'undefined' && error) { %><div class="tl-error"><%= error %></div><% } %>
+    <form method="post" action="/login">
+        <label>Tenant slug</label>
+        <input type="text" name="tenant_slug" placeholder="e.g. acme" required value="<%= typeof form !== 'undefined' ? form.tenant_slug || '' : '' %>">
+        <label>Username</label>
+        <input type="text" name="username" required value="<%= typeof form !== 'undefined' ? form.username || '' : '' %>">
+        <label>Password</label>
+        <input type="password" name="password" required>
+        <button class="tl-btn" type="submit">Sign in</button>
+    </form>
+    <div class="tl-role-hint">
+        One login for every role. Enter your <strong>tenant slug</strong> (given by your
+        administrator) plus your own username and password &mdash; Superadmin, Admin, Supervisor,
+        Agent, and MIS Agent are all recognized automatically and taken to their own dashboard.
+    </div>
+</div>
+</body></html>

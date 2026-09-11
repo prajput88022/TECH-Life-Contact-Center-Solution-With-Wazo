@@ -1,0 +1,96 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Tenants &amp; Feature Management</h1>
+<p class="tl-subtitle">
+    Create tenants and control which platform features are enabled per tenant.
+    <strong>Reseller</strong> tenants can create and manage their own sub-tenants; only you
+    (Superadmin) can see or edit a sub-tenant that isn't your own — resellers never see each
+    other's sub-tenants, and a normal tenant can't see any tenant but itself.
+</p>
+
+<h2>Create Tenant</h2>
+<form method="post" action="/superadmin/tenants/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input type="text" name="name" required></div>
+        <div><label>Slug</label><input type="text" name="slug" required placeholder="acme"></div>
+        <div><label>Type</label>
+            <select name="tenant_type">
+                <option value="normal">Normal</option>
+                <option value="reseller">Reseller (can create sub-tenants)</option>
+            </select>
+        </div>
+    </div>
+    <p><strong>Initial admin login (optional, but needed for anyone to actually sign in to this tenant):</strong></p>
+    <div class="tl-filters">
+        <div><label>Admin Full Name</label><input name="admin_full_name" placeholder="Tenant Admin"></div>
+        <div><label>Admin Username</label><input name="admin_username" placeholder="admin"></div>
+        <div><label>Admin Email</label><input type="email" name="admin_email"></div>
+        <div><label>Admin Password</label><input type="password" name="admin_password"></div>
+    </div>
+    <p><strong>Features enabled at creation:</strong></p>
+    <div class="tl-grid">
+    <% featureKeys.forEach(fk => { %>
+        <label><input type="checkbox" name="feature[<%= fk %>]"> <%= fk.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) %></label>
+    <% }) %>
+    </div>
+    <button class="tl-btn" type="submit">Create Tenant</button>
+</form>
+
+<h2>Existing Tenants</h2>
+<table>
+<tr><th>Name</th><th>Slug</th><th>Type</th><th>Parent (Reseller)</th><th>Status</th><th></th></tr>
+<% tenants.forEach(t => { %>
+<tr>
+    <td><%= t.parent_tenant_id ? '↳ ' : '' %><%= t.name %></td>
+    <td><%= t.slug %></td>
+    <td>
+        <% if (t.tenant_type === 'reseller') { %><span class="tl-status-pill status-available">Reseller</span>
+        <% } else { %><span class="tl-status-pill status-offline">Normal</span><% } %>
+    </td>
+    <td><%= t.parent_name || '—' %></td>
+    <td><%= t.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <a href="?edit=<%= t.id %>">Manage features</a>
+        <% if (!t.parent_tenant_id) { %>
+        &middot;
+        <form method="post" action="/superadmin/tenants/<%= t.id %>/set-type" style="display:inline">
+            <input type="hidden" name="tenant_type" value="<%= t.tenant_type === 'reseller' ? 'normal' : 'reseller' %>">
+            <button type="submit" style="background:none;border:none;color:var(--tl-blue);cursor:pointer;padding:0;font-size:13px;text-decoration:underline">
+                <%= t.tenant_type === 'reseller' ? 'Demote to Normal' : 'Promote to Reseller' %>
+            </button>
+        </form>
+        <% } %>
+        &middot;
+        <form method="post" action="/superadmin/tenants/<%= t.id %>/toggle-active" style="display:inline">
+            <button type="submit" style="background:none;border:none;color:var(--tl-blue);cursor:pointer;padding:0;font-size:13px;text-decoration:underline">
+                <%= t.is_active ? 'Disable' : 'Enable' %>
+            </button>
+        </form>
+        &middot;
+        <form method="post" action="/superadmin/tenants/<%= t.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this tenant and everything in it? This cannot be undone.');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;padding:0;font-size:13px;text-decoration:underline">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+</table>
+
+<% if (editId) {
+    const editTenant = tenants.find(t => t.id === editId);
+%>
+<h2>Feature Flags — <%= editTenant ? editTenant.name : '' %></h2>
+<div class="tl-grid">
+<% featureKeys.forEach(fk => {
+    const enabled = editFeatures[fk] || false;
+%>
+    <form method="post" action="/superadmin/tenants/toggle-feature" class="tl-card">
+        <input type="hidden" name="tenant_id" value="<%= editId %>">
+        <input type="hidden" name="feature_key" value="<%= fk %>">
+        <input type="hidden" name="enabled" value="<%= enabled ? '0' : '1' %>">
+        <div class="tl-kpi-label"><%= fk.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) %></div>
+        <button class="tl-btn <%= enabled ? '' : 'secondary' %>" type="submit"><%= enabled ? 'Enabled — click to disable' : 'Disabled — click to enable' %></button>
+    </form>
+<% }) %>
+</div>
+<% } %>
+<%- include('../partials/foot') %>

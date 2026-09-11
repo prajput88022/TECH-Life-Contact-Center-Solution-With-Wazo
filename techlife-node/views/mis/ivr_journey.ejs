@@ -1,0 +1,37 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>IVR Journey Viewer</h1>
+<p class="tl-subtitle">Select a recent call to see its complete IVR path.</p>
+<table>
+<tr><th>Call</th><th>Time</th><th>From</th><th>To</th><th></th></tr>
+<% recent.forEach(c => { %>
+<tr>
+    <td><%= c.id.slice(0,8) %>…</td><td><%= c.start_time %></td><td><%= c.from_number || '' %></td><td><%= c.to_number || '' %></td>
+    <td><a href="?call_id=<%= c.id %>">View journey</a></td>
+</tr>
+<% }) %>
+</table>
+
+<% if (journey && journey.session) { %>
+<h2>CALL <%= callId.slice(0,8) %>…</h2>
+<ul class="tl-journey">
+    <li><span class="t"><%= new Date(journey.session.entry_time).toLocaleTimeString() %></span> DID <%= journey.session.did_number %></li>
+    <li><span class="t"><%= new Date(journey.session.entry_time).toLocaleTimeString() %></span> Entered IVR: <%= journey.session.ivr_name || 'IVR' %></li>
+    <% journey.steps.forEach(step => { %>
+    <li>
+        <span class="t"><%= new Date(step.event_time).toLocaleTimeString() %></span>
+        <%= step.node_name %>
+        <% if (step.event_type === 'OPTION_SELECTED' && step.dtmf_input) { %> — Pressed <%= step.dtmf_input %>
+        <% } else if (step.event_type === 'INVALID') { %> — Invalid input
+        <% } else if (step.event_type === 'TIMEOUT') { %> — Timed out
+        <% } %>
+    </li>
+    <% }) %>
+    <% if (journey.session.exit_time) { %>
+    <li><span class="t"><%= new Date(journey.session.exit_time).toLocaleTimeString() %></span> Exited IVR — <%= journey.session.exit_reason || '' %></li>
+    <% } %>
+</ul>
+<% } else if (callId) { %>
+<p>No IVR session found for this call.</p>
+<% } %>
+<%- include('../partials/foot') %>
