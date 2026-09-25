@@ -1,34 +1,18 @@
 /* =====================================================================
    TECH-Life Contact-Center Solution -- design system
-   Studied directly from the four Kazoo reference dashboards (admin,
-   agent, supervisor, callcenter) provided during development: shared
-   near-black multi-layer palette, JetBrains Mono for numeric/stat
-   values, pill badges, stat cards, collapsible sidebar with an account
-   badge, filter bars, live-pulse indicators. The four references use
-   slightly different accent colors/fonts per role; this build uses ONE
-   consistent identity (the admin/callcenter blue) applied uniformly
-   across every role via these shared partials, per your request.
    ===================================================================== */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-    /* Multi-layer near-black background, darkest to lightest */
     --c0: #050810; --c1: #090d1a; --c2: #0d1225; --c3: #121830; --c4: #1a2340;
-    /* Borders */
     --bd: #1e2d4a; --bdl: #2a3f6a;
-    /* Text tiers: primary / secondary / tertiary(labels) */
     --t0: #f0f4ff; --t1: #8899bb; --t2: #3a4f7a;
-    /* Accent (blue) */
     --acc: #3b82f6; --acc2: #60a5fa; --acc3: #1d4ed8;
-    /* Status/semantic colors */
     --grn: #10b981; --red: #ef4444; --amb: #f59e0b; --pur: #8b5cf6; --cyn: #06b6d4; --pnk: #ec4899; --org: #f97316;
-    /* Radii */
     --r6: 6px; --r8: 8px; --r12: 12px; --r16: 16px;
-    /* Fonts */
     --fu: 'Plus Jakarta Sans', -apple-system, sans-serif;
     --fm: 'JetBrains Mono', monospace;
-    /* Legacy aliases kept so older component classes elsewhere still resolve */
     --tl-navy: var(--c0); --tl-navy-2: var(--c1); --tl-blue: var(--acc); --tl-blue-dark: var(--acc3);
     --tl-teal: var(--cyn); --tl-bg: var(--c0); --tl-card: var(--c2); --tl-border: var(--bd);
     --tl-text: var(--t0); --tl-muted: var(--t1);
@@ -37,6 +21,22 @@
     --tl-bad: var(--red); --tl-bad-bg: rgba(239,68,68,.15);
     --shadow-sm: 0 1px 2px rgba(0,0,0,.3); --shadow-md: 0 10px 30px rgba(0,0,0,.5);
     --radius: var(--r12);
+}
+
+body[data-theme="blue"] {
+    --acc: #3b82f6; --acc2: #60a5fa; --acc3: #1d4ed8;
+}
+body[data-theme="violet"] {
+    --acc: #8b5cf6; --acc2: #a78bfa; --acc3: #6d28d9;
+}
+body[data-theme="green"] {
+    --acc: #10b981; --acc2: #34d399; --acc3: #047857;
+}
+body[data-theme="orange"] {
+    --acc: #f59e0b; --acc2: #fbbf24; --acc3: #b45309;
+}
+body[data-theme="midnight"] {
+    --acc: #8b5cf6; --acc2: #c084fc; --acc3: #312e81;
 }
 
 html, body { height: 100%; }
@@ -53,7 +53,6 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--bd); border-radius: 2px; }
 input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-sizing: border-box; }
 
-/* ---------- Shell layout ---------- */
 .tl-shell { display: flex; min-height: 100vh; }
 
 .tl-sidebar {
@@ -75,7 +74,6 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
 .tl-brand-text { font-weight: 800; font-size: 13px; color: var(--t0); line-height: 1.2; }
 .tl-brand-text span { display: block; font-weight: 400; font-size: 9px; color: var(--t2); margin-top: 2px; font-family: var(--fm); letter-spacing: .05em; text-transform: uppercase; }
 
-/* Account/tenant badge -- matches the reference's .sbac pattern */
 .tl-tenant-switcher {
     margin: 8px 10px; padding: 8px 10px; border-radius: var(--r8);
     background: rgba(59,130,246,.07); border: 1px solid var(--bd);
@@ -86,6 +84,32 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
     color: var(--t0); padding: 5px 6px; border-radius: var(--r6); font-size: 11.5px;
 }
 .tl-tenant-switcher-static .tl-tenant-switcher-name { color: var(--acc2); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tl-theme-box {
+    margin: 4px 10px 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--bd);
+    border-radius: var(--r8);
+    background: rgba(255,255,255,.02);
+}
+.tl-theme-title {
+    font-size: 9px; font-weight: 700; color: var(--t2); text-transform: uppercase; letter-spacing: .08em;
+    margin-bottom: 6px;
+}
+.tl-theme-picker {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.tl-theme-swatch {
+    width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,.15);
+    cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+    opacity: .7; transition: transform .12s ease, opacity .12s ease, border-color .12s ease;
+}
+.tl-theme-swatch.active { border-color: var(--t0); opacity: 1; transform: scale(1.08); }
+.tl-theme-swatch[data-theme-value="blue"] { background: #3b82f6; }
+.tl-theme-swatch[data-theme-value="violet"] { background: #8b5cf6; }
+.tl-theme-swatch[data-theme-value="green"] { background: #10b981; }
+.tl-theme-swatch[data-theme-value="orange"] { background: #f59e0b; }
+.tl-theme-swatch[data-theme-value="midnight"] { background: #6d28d9; }
 
 .tl-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; overflow-y: auto; padding: 6px 6px; }
 .ngl {
@@ -99,195 +123,40 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
     color: var(--t1); text-decoration: none; font-size: 12.5px; font-weight: 500;
     transition: background .12s ease, color .12s ease;
 }
-.tl-nav-link:hover { background: rgba(255,255,255,.05); color: var(--t0); }
-.tl-nav-link.active { background: rgba(59,130,246,.15); color: var(--acc2); font-weight: 600; }
-.tl-nav-link.active .tl-nav-icon { color: var(--acc2); opacity: 1; }
-.tl-nav-icon { font-size: 17px !important; width: 17px; flex-shrink: 0; opacity: .8; }
+.tl-nav-link:hover { background: rgba(255,255,255,.03); color: var(--t0); }
+.tl-nav-link.active {
+    background: linear-gradient(90deg, rgba(59,130,246,.16), rgba(59,130,246,.06));
+    border: 1px solid rgba(96,165,250,.25);
+    color: var(--t0);
+}
+.tl-nav-icon { font-size: 18px; color: inherit; }
 
 .tl-sidebar-user {
-    display: flex; align-items: center; gap: 9px;
-    padding: 10px; margin: 6px; border-top: 1px solid var(--bd); padding-top: 12px;
+    display: flex; align-items: center; gap: 10px; padding: 12px 10px 14px; border-top: 1px solid var(--bd);
 }
 .tl-avatar {
-    width: 28px; height: 28px; border-radius: 50%;
-    background: rgba(255,255,255,.08); color: var(--t0);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 700; flex-shrink: 0; font-family: var(--fm);
+    width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--acc), var(--acc3));
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px;
 }
 .tl-sidebar-user-info { flex: 1; min-width: 0; }
-.tl-sidebar-user-name { font-size: 12px; font-weight: 600; color: var(--t0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tl-sidebar-user-role { font-size: 10px; color: var(--t2); text-transform: uppercase; letter-spacing: .04em; font-family: var(--fm); }
-.tl-logout-btn { color: var(--t2); display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: var(--r6); flex-shrink: 0; }
-.tl-logout-btn:hover { background: rgba(255,255,255,.06); color: var(--t0); }
-
-.tl-content-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--c0); }
-.tl-main { padding: 1.5rem 2.2rem; max-width: 1360px; width: 100%; margin: 0 auto; flex: 1; }
-.tl-footer { text-align: center; padding: 16px; color: var(--t2); font-size: 11px; border-top: 1px solid var(--bd); font-family: var(--fm); }
-
-/* ---------- Typography ---------- */
-h1 { font-size: 22px; font-weight: 800; margin: 0 0 4px; letter-spacing: -.02em; color: var(--t0); }
-h2 { font-size: 13px; font-weight: 700; margin: 28px 0 10px; color: var(--t0); text-transform: uppercase; letter-spacing: .04em; }
-.tl-subtitle { color: var(--t2); margin: 0 0 20px; font-size: 12.5px; max-width: 820px; }
-code { background: rgba(255,255,255,.06); color: var(--acc2); padding: 2px 6px; border-radius: var(--r6); font-size: 11.5px; font-family: var(--fm); }
-
-/* Live pulse indicator, for real-time dashboards */
-.tl-live { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--grn); text-transform: uppercase; letter-spacing: .05em; }
-.tl-live::before { content: ''; width: 6px; height: 6px; background: var(--grn); border-radius: 50%; animation: tl-pulse 2s infinite; }
-@keyframes tl-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(1.3); } }
-
-/* ---------- KPI grid / stat cards ---------- */
-.tl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 16px 0; }
-.tl-card {
-    background: var(--c2); border: 1px solid var(--bd); border-radius: var(--r12);
-    padding: 16px; box-shadow: var(--shadow-sm);
-}
-.tl-kpi-value { font-size: 26px; font-weight: 800; color: var(--acc2); font-family: var(--fm); font-variant-numeric: tabular-nums; line-height: 1; }
-.tl-kpi-label { font-size: 9px; color: var(--t2); text-transform: uppercase; letter-spacing: .08em; font-weight: 700; margin-top: 5px; }
-
-/* ---------- Tables ---------- */
-table {
-    width: 100%; border-collapse: collapse; font-size: 12px;
-    background: var(--c2); border: 1px solid var(--bd); border-radius: var(--r12); overflow: hidden;
-}
-th, td { padding: 10px 14px; text-align: left; }
-th {
-    color: var(--t2); font-weight: 700; border-bottom: 1px solid var(--bd);
-    font-size: 9px; text-transform: uppercase; letter-spacing: .07em; white-space: nowrap;
-    background: rgba(255,255,255,.02);
-}
-tbody tr { border-bottom: 1px solid rgba(30,45,74,.4); transition: background .1s; }
-tbody tr:last-child { border-bottom: none; }
-tbody tr:hover { background: rgba(255,255,255,.02); }
-tbody td { color: var(--t1); }
-td code, .tl-mono { font-family: var(--fm); color: var(--t0); }
-
-/* ---------- Status pills ---------- */
-.tl-status-pill {
-    display: inline-flex; align-items: center; border-radius: 99px; padding: 2px 9px;
-    font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
-}
-.status-available { background: rgba(16,185,129,.15); color: #34d399; border: 1px solid rgba(16,185,129,.25); }
-.status-break, .status-lunch, .status-tea, .status-training, .status-meeting, .status-personal_break { background: rgba(245,158,11,.15); color: #fbbf24; border: 1px solid rgba(245,158,11,.25); }
-.status-offline, .status-logout { background: rgba(148,163,184,.1); color: var(--t1); border: 1px solid rgba(148,163,184,.15); }
-.status-after_call_work { background: rgba(59,130,246,.15); color: #60a5fa; border: 1px solid rgba(59,130,246,.25); }
-.status-on_call { background: rgba(6,182,212,.15); color: #22d3ee; border: 1px solid rgba(6,182,212,.25); }
-
-/* ---------- Forms ---------- */
-.tl-filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: end; }
-.tl-filters label, label { font-size: 10px; color: var(--t1); display: block; margin-bottom: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-.tl-filters input, .tl-filters select,
-input[type=text], input[type=email], input[type=password], input[type=number],
-input[type=date], input[type=datetime-local], input[type=file], select, textarea {
-    padding: 8px 10px; border: 1px solid var(--bdl); border-radius: var(--r8); font-size: 12.5px;
-    font-family: var(--fu); background: rgba(255,255,255,.04); color: var(--t0);
-    transition: border-color .15s ease;
-}
-.tl-filters input:focus, input:focus, select:focus, textarea:focus {
-    outline: none; border-color: var(--acc);
-}
-select option { background: var(--c2); color: var(--t0); }
-::placeholder { color: var(--t2); }
-
-/* ---------- Buttons ---------- */
-.tl-btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    background: var(--acc); border: 1px solid var(--acc); color: #fff;
-    padding: 9px 16px; border-radius: var(--r8); cursor: pointer; font-size: 12.5px; font-weight: 700;
-    font-family: var(--fu); transition: background .12s ease;
-}
-.tl-btn:hover { background: var(--acc2); border-color: var(--acc2); }
-.tl-btn:active { transform: translateY(1px); }
-.tl-btn.secondary { background: transparent; color: var(--t1); border: 1px solid var(--bd); }
-.tl-btn.secondary:hover { background: var(--c3); color: var(--t0); border-color: var(--bdl); }
-.tl-btn.warn { background: var(--amb); border-color: var(--amb); color: #1a1200; }
-.tl-btn.bad { background: var(--red); border-color: var(--red); }
-.tl-btn.active { box-shadow: inset 0 0 0 2px rgba(255,255,255,.25); }
-.tl-btn:disabled { opacity: .4; cursor: not-allowed; }
-
-/* ---------- Cards (section containers, forms) ---------- */
-.tl-card { }
-form.tl-card { display: block; }
-
-/* ---------- IVR journey timeline ---------- */
-.tl-journey { list-style: none; padding: 0; margin: 18px 0; border-left: 2px solid var(--acc); }
-.tl-journey li { position: relative; padding: 9px 0 9px 20px; font-size: 12.5px; color: var(--t1); }
-.tl-journey li::before { content: ''; position: absolute; left: -6px; top: 15px; width: 9px; height: 9px; border-radius: 50%; background: var(--acc); border: 2px solid var(--c0); }
-.tl-journey .t { color: var(--t2); font-size: 11px; margin-right: 10px; font-family: var(--fm); }
-
-/* ---------- Login ---------- */
-.tl-login-page {
-    min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem;
-    background: radial-gradient(ellipse at 20% 30%, #0d1a3a, #050810 60%);
-}
-.tl-login-box {
-    width: 100%; max-width: 400px;
-    background: linear-gradient(135deg, rgba(13,18,37,.85), rgba(9,13,26,.92));
-    border: 1px solid var(--bd); border-radius: var(--r16);
-    padding: 2rem; box-shadow: 0 25px 50px rgba(0,0,0,.5);
-}
-.tl-login-box .tl-brand-mark { width: 44px; height: 44px; border-radius: var(--r12); margin: 0 auto 16px; font-size: 15px; box-shadow: 0 0 30px rgba(59,130,246,.4); }
-.tl-login-box h1 { text-align: center; font-size: 19px; margin-bottom: 2px; }
-.tl-login-box .tl-subtitle { text-align: center; margin-bottom: 26px; }
-.tl-login-box label { margin-top: 14px; }
-.tl-login-box input { width: 100%; padding: 11px 13px; margin: 5px 0 4px; height: 40px; }
-.tl-login-box .tl-btn { width: 100%; padding: 11px; margin-top: 20px; font-size: 13.5px; height: 42px; box-shadow: 0 4px 15px rgba(59,130,246,.35); }
-.tl-role-hint {
-    margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--bd);
-    font-size: 11px; color: var(--t2); text-align: center; line-height: 1.6;
-}
-.tl-error {
-    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); color: #f87171;
-    font-size: 12px; padding: 9px 12px; border-radius: var(--r8); margin-bottom: 14px;
+.tl-sidebar-user-name { font-weight: 700; color: var(--t0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-sidebar-user-role { font-size: 10px; color: var(--t1); text-transform: uppercase; letter-spacing: .08em; }
+.tl-logout-btn {
+    width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--r8); color: var(--t1); text-decoration: none; background: rgba(255,255,255,.02);
+    border: 1px solid var(--bd);
 }
 
-/* ---------- Agent status buttons ---------- */
-.tl-agent-status-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0; }
-.tl-agent-status-buttons button {
-    padding: 7px 13px; border-radius: var(--r8); border: 1px solid var(--bd);
-    background: var(--c2); cursor: pointer; font-size: 12px; font-weight: 500; color: var(--t1);
-    transition: all .12s ease; font-family: var(--fu);
-}
-.tl-agent-status-buttons button:hover { background: var(--c3); color: var(--t0); border-color: var(--bdl); }
-.tl-agent-status-buttons button.active { background: rgba(59,130,246,.15); color: var(--acc2); border-color: var(--acc); font-weight: 700; }
+.tl-content-wrap { flex: 1; min-width: 0; }
+.tl-main { padding: 22px; }
 
-/* =====================================================================
-   SOFTPHONE PANEL -- studied from the Kazoo agent reference's call
-   widget: green-tinted active-call state, dialpad, call controls grid.
-   ===================================================================== */
-.tl-call-status {
-    background: rgba(16,185,129,.06); border: 1px solid rgba(16,185,129,.35);
-    border-radius: var(--r12); padding: 14px; margin-bottom: 12px;
+/* Generic cards / forms / tables */
+.tl-card, .card, .panel {
+    background: rgba(13,18,37,.9); border: 1px solid var(--bd); border-radius: var(--r12);
+    box-shadow: var(--shadow-sm);
 }
-.tl-call-status-state { font-size: 10px; font-weight: 700; color: var(--grn); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
-.tl-call-status-who { font-size: 16px; font-weight: 700; color: var(--t0); }
-.tl-call-status-num { font-size: 12px; color: var(--grn); font-family: var(--fm); margin-top: 2px; }
 
-.tl-dialpad-display {
-    background: var(--c0); border: 1px solid var(--bd); border-radius: var(--r8);
-    padding: 10px 12px; margin-bottom: 10px; font-family: var(--fm); font-size: 18px;
-    color: var(--t0); text-align: center; min-height: 44px;
-}
-.tl-dialpad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.tl-dp-key {
-    height: 42px; background: var(--c3); border: 1px solid var(--bd); border-radius: var(--r8);
-    color: var(--t0); cursor: pointer; font-size: 16px; font-weight: 600; transition: background .1s;
-    font-family: var(--fu);
-}
-.tl-dp-key:hover { background: var(--c4); }
-
-.tl-call-controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
-.tl-cb {
-    height: 42px; border-radius: var(--r8); border: 1px solid var(--bd); background: var(--c3);
-    color: var(--t0); cursor: pointer; font-weight: 600; font-size: 12px; transition: all .15s;
-    font-family: var(--fu);
-}
-.tl-cb:hover { background: var(--c4); color: var(--acc2); }
-.tl-cb.active { background: rgba(59,130,246,.2); border-color: var(--acc); color: var(--acc2); }
-
-@media (max-width: 900px) {
-    .tl-sidebar { width: 64px; }
-    .tl-brand-text, .tl-nav-link span, .tl-sidebar-user-info, .tl-tenant-switcher { display: none; }
-    .tl-brand { justify-content: center; padding: 12px 6px; }
-    .tl-nav-link { justify-content: center; }
-    .tl-main { padding: 20px 16px; }
+button, .btn, input, select, textarea {
+    border-radius: var(--r8);
 }
