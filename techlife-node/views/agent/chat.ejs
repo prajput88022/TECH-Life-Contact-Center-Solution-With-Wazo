@@ -1,0 +1,19 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Chat Inbox</h1>
+<p class="tl-subtitle">Unassigned chats and your own open conversations. Claim one to start replying.</p>
+<table>
+<tr><th>Contact</th><th>Queue</th><th>Last Message</th><th>Messages</th><th>Started</th><th></th></tr>
+<% conversations.forEach(c => { %>
+<tr>
+    <td><%= c.contact_name || 'Website visitor' %></td>
+    <td><%= c.queue_name || '—' %></td>
+    <td><%= (c.last_message || '').slice(0, 60) %></td>
+    <td><%= c.message_count %></td>
+    <td><%= new Date(c.started_at).toLocaleString() %></td>
+    <td><a href="/agent/chat/<%= c.id %>">Open</a></td>
+</tr>
+<% }) %>
+<% if (conversations.length === 0) { %><tr><td colspan="6">No open chats right now.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

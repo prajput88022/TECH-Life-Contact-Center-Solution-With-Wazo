@@ -1,0 +1,128 @@
+<%
+const navGroups = {
+    superadmin: [
+        { label: 'Overview', items: [
+            { label: 'Dashboard', href: '/superadmin', icon: 'dashboard' },
+            { label: 'Tenants', href: '/superadmin/tenants', icon: 'corporate_fare' },
+        ]},
+    ],
+    admin: [
+        { label: 'Overview', items: [
+            { label: 'Dashboard', href: '/admin', icon: 'dashboard' },
+        ]},
+        { label: 'Tenant Management', items: (typeof isReseller !== 'undefined' && isReseller) ? [
+            { label: 'Sub-Tenants', href: '/admin/sub-tenants', icon: 'account_tree' },
+        ] : []},
+        { label: 'Users', items: [
+            { label: 'Users', href: '/admin/users', icon: 'group' },
+        ]},
+        { label: 'Call Center', items: [
+            { label: 'Queues', href: '/admin/queues', icon: 'queue' },
+            { label: 'Campaigns', href: '/admin/campaigns', icon: 'campaign' },
+            { label: 'IVR Menus', href: '/admin/ivr', icon: 'dialpad' },
+            { label: 'DIDs', href: '/admin/dids', icon: 'dialpad' },
+            { label: 'SIP Trunks', href: '/admin/trunks', icon: 'cable' },
+        ]},
+        { label: 'Compliance & Integrations', items: [
+            { label: 'Privacy & Masking', href: '/admin/privacy-settings', icon: 'shield' },
+            { label: 'CRM Integration', href: '/admin/crm-integration', icon: 'handshake' },
+            { label: 'Webchat & Chatbot', href: '/admin/chat-widget', icon: 'forum' },
+            { label: 'Mattermost Bridge', href: '/admin/mattermost', icon: 'chat' },
+        ]},
+    ],
+    supervisor: [
+        { label: 'Overview', items: [
+            { label: 'Live Dashboard', href: '/supervisor', icon: 'sensors' },
+        ]},
+        { label: 'Reports', items: [
+            { label: 'Call Records', href: '/supervisor/calls', icon: 'receipt_long' },
+            { label: 'Chat Monitor', href: '/supervisor/chat', icon: 'forum' },
+        ]},
+    ],
+    agent: [
+        { label: 'Workspace', items: [
+            { label: 'Phone', href: '/agent', icon: 'support_agent' },
+            { label: 'Chat Inbox', href: '/agent/chat', icon: 'forum' },
+            { label: 'My Calls', href: '/agent/calls', icon: 'receipt_long' },
+        ]},
+    ],
+    mis_agent: [
+        { label: 'Overview', items: [
+            { label: 'Reports', href: '/mis', icon: 'analytics' },
+        ]},
+        { label: 'Reports', items: [
+            { label: 'Agent Hourly', href: '/mis/agent-hourly', icon: 'schedule' },
+            { label: 'Agent Login/Logout', href: '/mis/login-activity', icon: 'login' },
+            { label: 'Queue Report', href: '/mis/queue-report', icon: 'queue' },
+            { label: 'Campaign Report', href: '/mis/campaign-report', icon: 'campaign' },
+            { label: 'DID Report', href: '/mis/did-report', icon: 'dialpad' },
+            { label: 'IVR Journey', href: '/mis/ivr-journey', icon: 'account_tree' },
+            { label: 'Recordings', href: '/mis/recordings', icon: 'graphic_eq' },
+        ]},
+    ],
+};
+const roleLabels = { superadmin: 'Superadmin', admin: 'Admin', supervisor: 'Supervisor', agent: 'Agent', mis_agent: 'MIS Agent' };
+const primaryRole = (currentUser && currentUser.roles && currentUser.roles[0]) || 'agent';
+const groups = navGroups[primaryRole] || [];
+const curPath = typeof currentPath !== 'undefined' ? currentPath : '';
+const initials = currentUser && (currentUser.fullName || currentUser.username)
+    ? (currentUser.fullName || currentUser.username).split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase()
+    : '?';
+const mTenants = typeof manageableTenants !== 'undefined' ? manageableTenants : [];
+const effTenant = typeof effectiveTenant !== 'undefined' ? effectiveTenant : null;
+%>
+<aside class="tl-sidebar">
+    <div class="tl-brand">
+        <div class="tl-brand-mark">TL</div>
+        <div class="tl-brand-text">TECH-Life<span>Contact-Center Solution</span></div>
+    </div>
+
+    <% if (effTenant && mTenants.length > 1) { %>
+    <div class="tl-tenant-switcher">
+        <div class="tl-tenant-switcher-label">Managing</div>
+        <form method="get" action="/admin/switch-tenant">
+            <select name="as_tenant" onchange="this.form.submit()">
+                <% mTenants.forEach(mt => { %>
+                    <option value="<%= mt.id %>" <%= mt.id === effTenant.id ? 'selected' : '' %>>
+                        <%= mt.name %><%= mt.parent_tenant_id ? '' : ' (own)' %>
+                    </option>
+                <% }) %>
+            </select>
+        </form>
+    </div>
+    <% } else if (effTenant) { %>
+    <div class="tl-tenant-switcher tl-tenant-switcher-static">
+        <div class="tl-tenant-switcher-label">Tenant</div>
+        <div class="tl-tenant-switcher-name"><%= effTenant.name %></div>
+    </div>
+    <% } %>
+
+    <nav class="tl-nav">
+        <% groups.forEach(group => { if (!group.items.length) return; %>
+            <span class="ngl"><%= group.label %></span>
+            <% group.items.forEach(item => {
+                const active = curPath === item.href || (item.href !== '/' && curPath.startsWith(item.href));
+            %>
+                <a href="<%= item.href %>" class="tl-nav-link<%= active ? ' active' : '' %>">
+                    <span class="material-icons-round tl-nav-icon"><%= item.icon %></span>
+                    <span><%= item.label %></span>
+                </a>
+            <% }) %>
+        <% }) %>
+    </nav>
+
+    <% if (currentUser) { %>
+    <div class="tl-sidebar-user">
+        <div class="tl-avatar"><%= initials %></div>
+        <div class="tl-sidebar-user-info">
+            <div class="tl-sidebar-user-name"><%= currentUser.fullName || currentUser.username %></div>
+            <div class="tl-sidebar-user-role"><%= roleLabels[primaryRole] || primaryRole %></div>
+        </div>
+        <a href="/logout" class="tl-logout-btn" title="Logout">
+            <span class="material-icons-round" style="font-size:18px">logout</span>
+        </a>
+    </div>
+    <% } %>
+</aside>
+<div class="tl-content-wrap">
+    <main class="tl-main">

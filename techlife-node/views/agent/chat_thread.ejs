@@ -1,0 +1,43 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Chat with <%= conversation.contact_name || 'Website visitor' %></h1>
+<p class="tl-subtitle"><a href="/agent/chat">← Back to Chat Inbox</a></p>
+
+<div class="tl-card" id="thread" style="max-width:600px;min-height:300px;display:flex;flex-direction:column;gap:8px"></div>
+
+<div style="max-width:600px;margin-top:10px">
+    <% if (!conversation.agent_id) { %>
+    <form method="post" action="/agent/chat/<%= conversation.id %>/claim">
+        <button class="tl-btn" type="submit">Claim This Chat</button>
+    </form>
+    <% } else { %>
+    <form method="post" action="/agent/chat/<%= conversation.id %>/reply" style="display:flex;gap:8px">
+        <input type="text" name="body" placeholder="Type a reply…" style="flex:1;padding:9px" required>
+        <button class="tl-btn" type="submit">Send</button>
+    </form>
+    <form method="post" action="/agent/chat/<%= conversation.id %>/close" style="margin-top:8px">
+        <button class="tl-btn secondary" type="submit">Close Conversation</button>
+    </form>
+    <% } %>
+</div>
+
+<script>
+const CONV_ID = <%- JSON.stringify(conversation.id) %>;
+function renderMessages(messages) {
+    document.getElementById('thread').innerHTML = messages.map(m => `
+        <div style="align-self:${m.sender_type === 'agent' ? 'flex-end' : 'flex-start'};max-width:75%;
+             background:${m.sender_type === 'customer' ? '#f0f2f7' : (m.sender_type === 'agent' ? '#2563eb' : '#fef3d6')};
+             color:${m.sender_type === 'agent' ? '#fff' : '#1a2233'};padding:8px 12px;border-radius:10px;font-size:13px">
+            <div>${m.body}</div>
+            <div style="font-size:10px;opacity:.7;margin-top:2px">${m.sender_type} · ${new Date(m.sent_at).toLocaleTimeString()}</div>
+        </div>`).join('');
+}
+async function poll() {
+    const res = await fetch(`/agent/chat/${CONV_ID}/messages.json`);
+    const data = await res.json();
+    if (data.messages) renderMessages(data.messages);
+}
+poll();
+setInterval(poll, 4000);
+</script>
+<%- include('../partials/foot') %>

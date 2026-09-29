@@ -1,0 +1,95 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Users</h1>
+<p class="tl-subtitle">Create agents, supervisors, and MIS users for your tenant. Agents automatically get a WebRTC-ready SIP line provisioned in Wazo.</p>
+
+<form method="post" action="/admin/users/create" class="tl-card" id="createUserForm">
+    <div class="tl-filters">
+        <div><label>Full name</label><input name="full_name" required></div>
+        <div><label>Username</label><input name="username" required></div>
+        <div><label>Email</label><input type="email" name="email"></div>
+        <div><label>Password</label><input type="password" name="password" required></div>
+        <div><label>Role</label>
+            <select name="role_type" id="roleSelect" onchange="document.getElementById('sipBlock').style.display = this.value === 'agent' ? 'block' : 'none'">
+                <option value="agent">Agent</option>
+                <option value="supervisor">Supervisor</option>
+                <option value="mis_agent">MIS Agent</option>
+                <option value="admin">Admin</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="sipBlock" class="tl-card" style="background:#f7f9fc">
+        <p><strong>SIP / WebRTC Line Provisioning</strong></p>
+        <div class="tl-filters">
+            <div>
+                <label>Provisioning Mode</label>
+                <select name="sip_provisioning_mode" onchange="
+                    document.getElementById('autoExtRow').style.display = this.value !== 'manual' ? 'flex' : 'none';
+                    document.getElementById('manualRow').style.display = this.value === 'manual' ? 'flex' : 'none';">
+                    <option value="auto">Auto-generate next free extension</option>
+                    <option value="auto_requested">Auto-provision a specific extension</option>
+                    <option value="manual">Attach an existing Wazo line manually</option>
+                </select>
+            </div>
+        </div>
+        <div class="tl-filters" id="autoExtRow">
+            <div><label>Requested Extension (optional)</label><input name="requested_extension" placeholder="leave blank to auto-generate"></div>
+        </div>
+        <div class="tl-filters" id="manualRow" style="display:none">
+            <div><label>Extension</label><input name="manual_extension" placeholder="1042"></div>
+            <div><label>SIP Username</label><input name="manual_sip_username" placeholder="agt1042"></div>
+            <div><label>SIP Password</label><input name="manual_sip_password" placeholder="leave blank to auto-generate"></div>
+        </div>
+    </div>
+
+    <button class="tl-btn" type="submit">Create User</button>
+</form>
+
+<h2>All Users</h2>
+<table>
+<tr><th>Name</th><th>Username</th><th>Email</th><th>Roles</th><th>Extension</th><th>SIP Status</th><th>Account</th><th></th></tr>
+<% users.forEach(row => { %>
+<tr>
+    <td><%= row.full_name %></td>
+    <td><%= row.username %></td>
+    <td><%= row.email || '' %></td>
+    <td><%= (Array.isArray(row.roles) ? row.roles : String(row.roles || '').replace(/[{}]/g,'').split(',')).filter(Boolean).join(', ') %></td>
+    <td><%= row.extension || '—' %></td>
+    <td>
+        <% if (row.provisioning_status) { %>
+            <span class="tl-status-pill <%= (row.provisioning_status === 'provisioned' || row.provisioning_status === 'manual') ? 'status-available' : (row.provisioning_status === 'failed' ? 'status-offline' : 'status-break') %>">
+                <%= row.provisioning_status %>
+            </span>
+        <% } else { %>—<% } %>
+    </td>
+    <td><%= row.is_active ? 'Active' : 'Disabled' %></td>
+    <td><a href="?edit=<%= row.id %>">Edit</a> &middot;
+        <form method="post" action="/admin/users/<%= row.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this user? This cannot be undone.');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+</table>
+
+<% if (editId) {
+    const u = users.find(x => x.id === editId);
+    if (u) { %>
+<h2>Edit User — <%= u.full_name %></h2>
+<form method="post" action="/admin/users/<%= u.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Full name</label><input name="full_name" value="<%= u.full_name %>" required></div>
+        <div><label>Email</label><input type="email" name="email" value="<%= u.email || '' %>"></div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= u.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !u.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+        <div><label>New Password (leave blank to keep current)</label><input type="password" name="new_password"></div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+    <a class="tl-btn secondary" href="/admin/users">Cancel</a>
+</form>
+<p class="tl-subtitle">Role and SIP provisioning can't be changed after creation in this build — deactivate this account and create a new one with the correct role if needed.</p>
+<% } } %>
+
+<%- include('../partials/foot') %>

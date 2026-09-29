@@ -1,0 +1,23 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Platform Dashboard</h1>
+<p class="tl-subtitle">Cross-tenant overview. Manage tenant feature flags from the Tenants page.</p>
+<div class="tl-grid">
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.active_tenants %></div><div class="tl-kpi-label">Active Tenants</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.total_users %></div><div class="tl-kpi-label">Platform Users</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.total_agents %></div><div class="tl-kpi-label">Active Agents</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.calls_24h %></div><div class="tl-kpi-label">Calls (24h)</div></div>
+</div>
+<h2>Tenants</h2>
+<table>
+<tr><th>Name</th><th>Slug</th><th>Status</th><th>Created</th></tr>
+<% tenants.forEach(t => { %>
+<tr>
+    <td><%= t.name %></td>
+    <td><%= t.slug %></td>
+    <td><span class="tl-status-pill <%= t.is_active ? 'status-available' : 'status-offline' %>"><%= t.is_active ? 'Active' : 'Disabled' %></span></td>
+    <td><%= t.created_at %></td>
+</tr>
+<% }) %>
+</table>
+<%- include('../partials/foot') %>

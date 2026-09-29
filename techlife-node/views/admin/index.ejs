@@ -1,0 +1,12 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Tenant Admin Dashboard</h1>
+<p class="tl-subtitle">Manage users, queues, campaigns, DIDs and configuration for your tenant.</p>
+<div class="tl-grid">
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.agents %></div><div class="tl-kpi-label">Agents</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.queues %></div><div class="tl-kpi-label">Queues</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.campaigns %></div><div class="tl-kpi-label">Active Campaigns</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.dids %></div><div class="tl-kpi-label">DIDs</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= totals.calls_24h %></div><div class="tl-kpi-label">Calls (24h)</div></div>
+</div>
+<%- include('../partials/foot') %>

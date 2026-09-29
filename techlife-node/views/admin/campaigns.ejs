@@ -1,0 +1,134 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Campaigns</h1>
+<p class="tl-subtitle">Live-agent campaigns use the standard dialer. Robo/Voice-Blast campaigns dial the same way but play audio or TTS instead of bridging to an agent.</p>
+
+<form method="post" action="/admin/campaigns/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" required></div>
+        <div><label>Type</label>
+            <select name="dialing_mode" id="dialing_mode" onchange="document.getElementById('robo_opts').style.display = ['robo_survey','voice_blast'].includes(this.value) ? 'flex' : 'none'">
+                <option value="preview">Live Agent — Preview</option>
+                <option value="progressive">Live Agent — Progressive</option>
+                <option value="predictive">Live Agent — Predictive</option>
+                <option value="power">Live Agent — Power</option>
+                <option value="voice_blast">Robo — Voice Blast (announcement only)</option>
+                <option value="robo_survey">Robo — IVR Survey (collects responses)</option>
+            </select>
+        </div>
+        <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="1.0"></div>
+        <div><label>Start Date</label><input type="date" name="start_date"></div>
+        <div><label>End Date</label><input type="date" name="end_date"></div>
+    </div>
+    <div class="tl-filters" id="robo_opts" style="display:none">
+        <div><label>Max Concurrent Robo Calls</label><input type="number" name="max_concurrent_robo_calls" placeholder="e.g. 10"></div>
+        <div><label><input type="checkbox" name="amd"> Answering-machine detection</label></div>
+    </div>
+    <button class="tl-btn" type="submit">Create Campaign</button>
+</form>
+
+<h2>All Campaigns</h2>
+<table>
+<tr><th>Name</th><th>Mode</th><th>Robo?</th><th>Dial Level</th><th>Status</th><th></th></tr>
+<% campaigns.forEach(c => { %>
+<tr>
+    <td><%= c.name %></td><td><%= c.dialing_mode %></td><td><%= c.is_robo_campaign ? 'Yes' : '—' %></td>
+    <td><%= c.dial_level %></td><td><%= c.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <% if (c.is_robo_campaign) { %><a href="?script=<%= c.id %>">Edit script</a> &middot;<% } %>
+        <a href="/admin/campaigns/<%= c.id %>/leads">Leads</a> &middot;
+        <a href="?edit=<%= c.id %>">Edit</a> &middot;
+        <form method="post" action="/admin/campaigns/<%= c.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this campaign?');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+</table>
+
+<% if (typeof editId !== 'undefined' && editId) {
+    const c = campaigns.find(x => x.id === editId);
+    if (c) { %>
+<h2>Edit Campaign — <%= c.name %></h2>
+<form method="post" action="/admin/campaigns/<%= c.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" value="<%= c.name %>" required></div>
+        <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="<%= c.dial_level %>"></div>
+        <div><label>Start Date</label><input type="date" name="start_date" value="<%= c.start_date ? new Date(c.start_date).toISOString().slice(0,10) : '' %>"></div>
+        <div><label>End Date</label><input type="date" name="end_date" value="<%= c.end_date ? new Date(c.end_date).toISOString().slice(0,10) : '' %>"></div>
+        <% if (c.is_robo_campaign) { %>
+        <div><label>Max Concurrent Robo Calls</label><input type="number" name="max_concurrent_robo_calls" value="<%= c.max_concurrent_robo_calls || '' %>"></div>
+        <div><label><input type="checkbox" name="amd" <%= c.answering_machine_detection ? 'checked' : '' %>> Answering-machine detection</label></div>
+        <% } %>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= c.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !c.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+    <a class="tl-btn secondary" href="/admin/campaigns">Cancel</a>
+</form>
+<% } } %>
+
+<% if (scriptCampaignId) {
+    const sc = campaigns.find(c => c.id === scriptCampaignId);
+%>
+<h2>Voice Script — <%= sc ? sc.name : '' %></h2>
+<p class="tl-subtitle">Steps play in order top-to-bottom.</p>
+
+<form method="post" action="/admin/campaigns/add-voice-node" enctype="multipart/form-data" class="tl-card">
+    <input type="hidden" name="campaign_id" value="<%= scriptCampaignId %>">
+    <div class="tl-filters">
+        <div><label>Node Name</label><input name="node_name" required placeholder="e.g. Intro, Q1_Satisfaction"></div>
+        <div><label>Content Type</label>
+            <select name="content_type" onchange="
+                document.getElementById('audio_row').style.display = this.value==='audio_file' ? 'flex' : 'none';
+                document.getElementById('tts_row').style.display = this.value==='tts' ? 'flex' : 'none';">
+                <option value="audio_file">Pre-recorded Audio File</option>
+                <option value="tts">Text-to-Speech (Natural Voice)</option>
+            </select>
+        </div>
+    </div>
+    <div class="tl-filters" id="audio_row">
+        <div><label>Upload Audio File</label><input type="file" name="audio_upload" accept=".wav,.mp3,.ogg,.gsm"></div>
+        <div><label>...or an existing path on disk</label><input name="audio_file_path" placeholder="/var/lib/techlife/audio/intro.wav"></div>
+    </div>
+    <div class="tl-filters" id="tts_row" style="display:none">
+        <div style="flex:2"><label>TTS Script Text</label><input name="tts_text" placeholder="Hello, this is a courtesy call from..."></div>
+        <div><label>Voice</label><input name="tts_voice" placeholder="en-US-Neural2-F"></div>
+        <div><label>Language</label><input name="tts_language" value="en-US"></div>
+        <div><label>Speed</label><input type="number" step="0.1" name="tts_speed" value="1.0"></div>
+    </div>
+    <div class="tl-filters">
+        <div><label><input type="checkbox" name="expects_response" onchange="document.getElementById('resp_row').style.display = this.checked ? 'flex':'none'"> Collect a response</label></div>
+    </div>
+    <div class="tl-filters" id="resp_row" style="display:none">
+        <div><label>Response Type</label>
+            <select name="response_type"><option value="dtmf">DTMF (key press)</option><option value="recorded_voice">Recorded Voice</option></select>
+        </div>
+        <div><label>Valid DTMF Options</label><input name="valid_dtmf_options" placeholder="1,2,3,4,5"></div>
+        <div><label>Max Response Time (s)</label><input type="number" name="max_response_seconds" value="5"></div>
+    </div>
+    <button class="tl-btn" type="submit">Add Step</button>
+</form>
+
+<table>
+<tr><th>#</th><th>Node</th><th>Type</th><th>Content</th><th>Collects Response?</th></tr>
+<% scriptNodes.forEach(n => { %>
+<tr>
+    <td><%= n.step_number %></td><td><%= n.node_name %></td>
+    <td><%= n.content_type === 'tts' ? 'TTS' : 'Audio File' %></td>
+    <td>
+        <% if (n.content_type === 'tts') { %>
+            <%= n.tts_voice %> — <%= (n.tts_text||'').slice(0,60) %>
+        <% } else if (n.audio_file_path && n.audio_file_path.startsWith('/uploads/')) { %>
+            <audio controls preload="none" style="height:28px;max-width:220px"><source src="<%= n.audio_file_path %>"></audio>
+        <% } else { %>
+            <%= n.audio_file_path %>
+        <% } %>
+    </td>
+    <td><%= n.expects_response ? (n.response_type + ' (' + (n.valid_dtmf_options||'') + ')') : '—' %></td>
+</tr>
+<% }) %>
+</table>
+<% } %>
+<%- include('../partials/foot') %>

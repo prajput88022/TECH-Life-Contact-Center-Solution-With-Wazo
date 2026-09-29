@@ -1,0 +1,23 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Queue Performance Report</h1>
+<form method="get" class="tl-filters">
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run Report</button></div>
+    <div><a class="tl-btn secondary" href="/export/queue?format=csv&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
+    <div><a class="tl-btn secondary" href="/export/queue?format=xlsx&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export Excel</a></div>
+</form>
+<table>
+<tr><th>Queue</th><th>Offered</th><th>Answered</th><th>Abandoned</th><th>Missed</th><th>Avg Wait</th><th>Max Wait</th><th>Service Level</th></tr>
+<% rows.forEach(r => { %>
+<tr>
+    <td><%= r.name %></td><td><%= r.calls_offered %></td><td><%= r.calls_answered %></td>
+    <td><%= r.calls_abandoned %></td><td><%= r.calls_missed %></td>
+    <td><%= r.avg_wait_seconds != null ? Math.round(r.avg_wait_seconds)+'s' : '—' %></td>
+    <td><%= r.max_wait_seconds != null ? r.max_wait_seconds+'s' : '—' %></td>
+    <td><%= r.service_level != null ? Math.round(r.service_level*100)+'%' : '—' %></td>
+</tr>
+<% }) %>
+</table>
+<%- include('../partials/foot') %>

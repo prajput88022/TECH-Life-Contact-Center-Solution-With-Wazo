@@ -1,0 +1,122 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Live Operations Dashboard</h1>
+<p class="tl-subtitle">Auto-refreshes every 10 seconds. Filter by queue, campaign, or skill to focus on a specific team.</p>
+
+<div class="tl-filters">
+    <div><label>Queue</label>
+        <select id="filterQueue">
+            <option value="">All Queues</option>
+            <% queues.forEach(q => { %><option value="<%= q.id %>"><%= q.name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>Campaign</label>
+        <select id="filterCampaign">
+            <option value="">All Campaigns</option>
+            <% campaigns.forEach(c => { %><option value="<%= c.id %>"><%= c.name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>Skill</label>
+        <select id="filterSkill"><option value="">All Skills</option></select>
+    </div>
+</div>
+
+<div class="tl-grid" id="tiles"></div>
+
+<h2>Active Calls</h2>
+<table id="callsTable"><tr><th>Call</th><th>Agent</th><th>Queue</th><th>Campaign</th><th>Direction</th><th>Status</th><th>Since</th><th>Monitor</th></tr></table>
+
+<h2>Agents</h2>
+<table id="agentTable"><tr><th>Agent</th><th>Status</th><th>Queue</th><th>Skills</th><th>Since</th></tr></table>
+
+<h2>Queues</h2>
+<table id="queueTable"><tr><th>Queue</th><th>Calls Waiting</th><th>Longest Wait</th></tr></table>
+
+<script>
+let allAgents = [];
+
+function fillSkillFilter() {
+    const skills = new Set();
+    allAgents.forEach(a => (a.skills_json || []).forEach(s => skills.add(s)));
+    const sel = document.getElementById('filterSkill');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">All Skills</option>' + [...skills].map(s => `<option value="${s}">${s}</option>`).join('');
+    sel.value = current;
+}
+
+async function monitorCall(callId, mode) {
+    const res = await fetch(`/api/v1/calls/${callId}/monitor`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+        alert('Could not start monitoring: ' + (data.error || 'unknown error') +
+            '\\n\\nThis requires your Wazo platform to have the supervisor-monitor dialplan context configured -- see INSTALL.md.');
+    } else {
+        alert(`${mode} started (session ${data.monitoringSessionId}). Your phone should be ringing now.`);
+    }
+}
+
+async function refresh() {
+    const queueId = document.getElementById('filterQueue').value;
+    const campaignId = document.getElementById('filterCampaign').value;
+    const skill = document.getElementById('filterSkill').value;
+
+    const callsQs = new URLSearchParams();
+    if (queueId) callsQs.set('queue_id', queueId);
+    if (campaignId) callsQs.set('campaign_id', campaignId);
+
+    const [agents, queuesLive, callsLive] = await Promise.all([
+        fetch('/api/v1/reports/agents/live').then(r => r.json()),
+        fetch('/api/v1/reports/queues/live').then(r => r.json()),
+        fetch('/api/v1/reports/calls/live?' + callsQs.toString()).then(r => r.json()),
+    ]);
+    allAgents = agents;
+    fillSkillFilter();
+
+    const filteredAgents = skill ? agents.filter(a => (a.skills_json || []).includes(skill)) : agents;
+
+    const counts = { available: 0, on_call: 0, break: 0, offline: 0 };
+    filteredAgents.forEach(a => {
+        const s = a.status || 'offline';
+        if (s === 'available') counts.available++;
+        else if (['break','lunch','tea','training','meeting','personal_break'].includes(s)) counts.break++;
+        else if (s === 'offline' || s === 'logout') counts.offline++;
+        else counts.on_call++;
+    });
+
+    document.getElementById('tiles').innerHTML = `
+        <div class="tl-card"><div class="tl-kpi-value">${filteredAgents.length}</div><div class="tl-kpi-label">Logged-in Agents</div></div>
+        <div class="tl-card"><div class="tl-kpi-value">${counts.available}</div><div class="tl-kpi-label">Available</div></div>
+        <div class="tl-card"><div class="tl-kpi-value">${counts.on_call}</div><div class="tl-kpi-label">On Call / Chat</div></div>
+        <div class="tl-card"><div class="tl-kpi-value">${counts.break}</div><div class="tl-kpi-label">On Break</div></div>
+        <div class="tl-card"><div class="tl-kpi-value">${callsLive.length}</div><div class="tl-kpi-label">Active Calls</div></div>
+    `;
+
+    document.getElementById('callsTable').innerHTML = '<tr><th>Call</th><th>Agent</th><th>Queue</th><th>Campaign</th><th>Direction</th><th>Status</th><th>Since</th><th>Monitor</th></tr>' +
+        callsLive.map(c => `<tr>
+            <td><code>${c.id.slice(0,8)}</code></td>
+            <td>${c.agent_name || '—'}</td><td>${c.queue_name || '—'}</td><td>${c.campaign_name || '—'}</td>
+            <td>${c.direction}</td><td><span class="tl-status-pill status-on_call">${c.status}</span></td>
+            <td>${new Date(c.start_time).toLocaleTimeString()}</td>
+            <td>
+                <button class="tl-btn secondary" style="padding:4px 8px;font-size:11px" onclick="monitorCall('${c.id}','listen')">Listen</button>
+                <button class="tl-btn secondary" style="padding:4px 8px;font-size:11px" onclick="monitorCall('${c.id}','whisper')">Whisper</button>
+                <button class="tl-btn warn" style="padding:4px 8px;font-size:11px" onclick="monitorCall('${c.id}','barge')">Barge</button>
+            </td>
+        </tr>`).join('') || '<tr><td colspan="8">No active calls right now.</td></tr>';
+
+    document.getElementById('agentTable').innerHTML = '<tr><th>Agent</th><th>Status</th><th>Queue</th><th>Skills</th><th>Since</th></tr>' +
+        filteredAgents.map(a => `<tr><td>${a.full_name}</td><td><span class="tl-status-pill status-${a.status || 'offline'}">${a.status || 'offline'}</span></td><td>${a.queue_name || '—'}</td><td>${(a.skills_json||[]).join(', ') || '—'}</td><td>${a.started_at ? new Date(a.started_at).toLocaleTimeString() : '—'}</td></tr>`).join('');
+
+    document.getElementById('queueTable').innerHTML = '<tr><th>Queue</th><th>Calls Waiting</th><th>Longest Wait</th></tr>' +
+        queuesLive.map(q => `<tr><td>${q.name}</td><td>${q.calls_waiting}</td><td>${q.longest_wait_seconds ? q.longest_wait_seconds + 's' : '—'}</td></tr>`).join('');
+}
+
+document.getElementById('filterQueue').addEventListener('change', refresh);
+document.getElementById('filterCampaign').addEventListener('change', refresh);
+document.getElementById('filterSkill').addEventListener('change', refresh);
+refresh();
+setInterval(refresh, 10000);
+</script>
+<%- include('../partials/foot') %>

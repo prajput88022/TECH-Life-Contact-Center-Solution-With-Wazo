@@ -1,0 +1,33 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Agent Hourly Report</h1>
+<form method="get" class="tl-filters">
+    <div><label>Agent</label>
+        <select name="agent_id">
+        <% agents.forEach(a => { %><option value="<%= a.id %>" <%= a.id === agentId ? 'selected' : '' %>><%= a.full_name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><button class="tl-btn" type="submit">Run Report</button></div>
+    <div><a class="tl-btn secondary" href="/export/agent-hourly?format=csv&agent_id=<%= encodeURIComponent(agentId||'') %>&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
+    <div><a class="tl-btn secondary" href="/export/agent-hourly?format=xlsx&agent_id=<%= encodeURIComponent(agentId||'') %>&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export Excel</a></div>
+</form>
+<table>
+<tr><th>Hour</th><th>Login</th><th>Available</th><th>Break</th><th>ACW</th><th>Offered</th><th>Answered</th><th>Outbound</th><th>Talk</th><th>Hold</th><th>Occupancy</th><th>Productivity</th></tr>
+<% rows.forEach(r => { %>
+<tr>
+    <td><%= new Date(r.hour_bucket).toISOString().substr(11,5) %></td>
+    <td><%= new Date(r.login_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(r.available_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(r.break_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(r.acw_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= r.calls_offered %></td><td><%= r.calls_answered %></td><td><%= r.outbound_calls %></td>
+    <td><%= new Date(r.talk_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= new Date(r.hold_seconds*1000).toISOString().substr(11,8) %></td>
+    <td><%= Math.round(r.occupancy*100) %>%</td><td><%= Math.round(r.productivity*100) %>%</td>
+</tr>
+<% }) %>
+<% if (rows.length === 0) { %><tr><td colspan="12">No data for this range yet.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

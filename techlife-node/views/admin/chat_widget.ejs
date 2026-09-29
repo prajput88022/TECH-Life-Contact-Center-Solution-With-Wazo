@@ -1,0 +1,74 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Webchat Widget &amp; Chatbot</h1>
+<p class="tl-subtitle">Customer chat writes into the same conversations used by every other omnichannel report — no separate chat data model.</p>
+
+<% if (!widget) { %>
+<h2>Create Your Widget</h2>
+<form method="post" action="/admin/chat-widget/create" class="tl-card">
+    <div class="tl-filters">
+        <div style="flex:2"><label>Welcome Message</label><input name="welcome_message" value="Hi! How can we help you today?" style="width:100%"></div>
+        <div><label>Default Queue</label>
+            <select name="default_queue_id"><option value="">—</option>
+                <% queues.forEach(q => { %><option value="<%= q.id %>"><%= q.name %></option><% }) %>
+            </select>
+        </div>
+    </div>
+    <div class="tl-filters">
+        <div><label><input type="checkbox" name="bot_enabled"> Enable chatbot auto-reply</label></div>
+        <div style="flex:2"><label>Bot fallback (when no rule matches)</label><input name="bot_fallback_message" value="Let me connect you with an agent." style="width:100%"></div>
+    </div>
+    <button class="tl-btn" type="submit">Create Widget</button>
+</form>
+<% } else { %>
+<h2>Your Widget</h2>
+<div class="tl-card">
+    <p><strong>Embed this on your website:</strong></p>
+    <code style="display:block;padding:10px;background:#f4f6fa;border-radius:6px;white-space:pre-wrap;word-break:break-all;">&lt;script src="https://YOUR-TECHLIFE-HOST/assets/webchat-widget.js" data-public-key="<%= widget.public_key %>" data-api-base="https://YOUR-TECHLIFE-HOST"&gt;&lt;/script&gt;</code>
+</div>
+
+<form method="post" action="/admin/chat-widget/<%= widget.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div style="flex:2"><label>Welcome Message</label><input name="welcome_message" value="<%= widget.welcome_message %>" style="width:100%"></div>
+        <div><label>Default Queue</label>
+            <select name="default_queue_id"><option value="">—</option>
+                <% queues.forEach(q => { %><option value="<%= q.id %>" <%= widget.default_queue_id === q.id ? 'selected' : '' %>><%= q.name %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= widget.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !widget.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <div class="tl-filters">
+        <div><label><input type="checkbox" name="bot_enabled" <%= widget.bot_enabled ? 'checked' : '' %>> Enable chatbot auto-reply</label></div>
+        <div style="flex:2"><label>Bot fallback (when no rule matches)</label><input name="bot_fallback_message" value="<%= widget.bot_fallback_message %>" style="width:100%"></div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+</form>
+
+<h2>Chatbot Rules</h2>
+<p class="tl-subtitle">Keyword-based FAQ deflection — the first matching rule (highest priority first) auto-replies; if nothing matches, the fallback message above is sent and the conversation waits for an agent.</p>
+<form method="post" action="/admin/chat-widget/rules/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Trigger Keywords (comma-separated)</label><input name="trigger_keywords" placeholder="hours, open, when are you open" required></div>
+        <div style="flex:2"><label>Response</label><input name="response_text" placeholder="We're open Mon-Fri 9am-6pm." required></div>
+        <div><label>Priority</label><input type="number" name="priority" value="0"></div>
+    </div>
+    <button class="tl-btn" type="submit">Add Rule</button>
+</form>
+<table>
+<tr><th>Priority</th><th>Keywords</th><th>Response</th><th></th></tr>
+<% rules.forEach(r => { %>
+<tr>
+    <td><%= r.priority %></td><td><%= r.trigger_keywords %></td><td><%= r.response_text %></td>
+    <td>
+        <form method="post" action="/admin/chat-widget/rules/<%= r.id %>/delete" style="display:inline">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (rules.length === 0) { %><tr><td colspan="4">No rules yet — all chats go straight to an agent.</td></tr><% } %>
+</table>
+<% } %>
+<%- include('../partials/foot') %>

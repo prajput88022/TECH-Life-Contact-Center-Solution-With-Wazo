@@ -1,0 +1,44 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Sub-Tenants</h1>
+<p class="tl-subtitle">
+    As a reseller, you can create and manage your own sub-tenants — no other reseller or tenant
+    can see these, only you and the platform Superadmin. Use the tenant switcher in the sidebar
+    to manage a sub-tenant's users, queues, campaigns, DIDs, and trunks.
+</p>
+
+<form method="post" action="/admin/sub-tenants/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" required placeholder="Customer LLC"></div>
+        <div><label>Slug</label><input name="slug" required placeholder="customer-llc"></div>
+        <div><label>Timezone</label><input name="timezone" value="UTC"></div>
+    </div>
+    <p><strong>Initial admin login for this sub-tenant (optional, but needed for its own staff to sign in directly instead of you managing it via the switcher):</strong></p>
+    <div class="tl-filters">
+        <div><label>Admin Full Name</label><input name="admin_full_name" placeholder="Sub-Tenant Admin"></div>
+        <div><label>Admin Username</label><input name="admin_username" placeholder="admin"></div>
+        <div><label>Admin Email</label><input type="email" name="admin_email"></div>
+        <div><label>Admin Password</label><input type="password" name="admin_password"></div>
+    </div>
+    <button class="tl-btn" type="submit">Create Sub-Tenant</button>
+</form>
+
+<h2>Your Sub-Tenants</h2>
+<table>
+<tr><th>Name</th><th>Slug</th><th>Status</th><th></th></tr>
+<% subs.forEach(s => { %>
+<tr>
+    <td><%= s.name %></td>
+    <td><%= s.slug %></td>
+    <td><%= s.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <a href="/admin?as_tenant=<%= s.id %>">Manage as this tenant →</a> &middot;
+        <form method="post" action="/admin/sub-tenants/<%= s.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this sub-tenant and everything in it? This cannot be undone.');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (subs.length === 0) { %><tr><td colspan="4">No sub-tenants yet.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>
