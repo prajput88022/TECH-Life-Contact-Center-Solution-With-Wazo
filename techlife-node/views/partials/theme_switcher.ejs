@@ -1,0 +1,32 @@
+<!-- Global Theme Switcher -->
+<div class="theme-switcher-container">
+  <label for="themeSelect" class="theme-switcher-label">Theme:</label>
+  <select id="themeSelect" class="theme-switcher" onchange="switchTheme(this.value)">
+    <option value="brand" <%= currentUser && currentUser.themePreference === 'brand' ? 'selected' : '' %>>Brand</option>
+    <option value="ocean" <%= currentUser && currentUser.themePreference === 'ocean' ? 'selected' : '' %>>Ocean</option>
+    <option value="forest" <%= currentUser && currentUser.themePreference === 'forest' ? 'selected' : '' %>>Forest</option>
+    <option value="sunset" <%= currentUser && currentUser.themePreference === 'sunset' ? 'selected' : '' %>>Sunset</option>
+    <option value="midnight" <%= currentUser && currentUser.themePreference === 'midnight' ? 'selected' : '' %>>Midnight</option>
+  </select>
+</div>
+
+<script>
+function switchTheme(themeName) {
+  // Apply theme via data attribute and CSS variables
+  document.documentElement.setAttribute('data-theme', themeName);
+  localStorage.setItem('techlife-theme', themeName);
+  
+  // POST to server to persist in user profile
+  fetch('/api/v1/user/theme', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ theme: themeName })
+  }).catch(e => console.warn('Theme save failed:', e));
+}
+
+// Load theme on page load
+window.addEventListener('DOMContentLoaded', () => {
+  const savedTheme = localStorage.getItem('techlife-theme') || '<%= currentUser ? currentUser.themePreference : 'brand' %>';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+});
+</script>

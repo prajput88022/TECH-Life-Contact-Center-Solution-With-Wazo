@@ -1,0 +1,168 @@
+/* =====================================================================
+   TECH-Life Theme System - 5 Color Presets
+   CSS Variables for dynamic theming
+   ===================================================================== */
+
+:root[data-theme="brand"],
+:root:not([data-theme]) {
+  --primary-color: #1e3a8a;      /* Deep blue */
+  --secondary-color: #3b82f6;    /* Bright blue */
+  --accent-color: #ec4899;       /* Pink */
+  --success-color: #10b981;      /* Green */
+  --warning-color: #f59e0b;      /* Amber */
+  --danger-color: #ef4444;       /* Red */
+  --bg-color: #f9fafb;           /* Light gray */
+  --text-color: #1f2937;         /* Dark gray */
+  --border-color: #e5e7eb;       /* Medium gray */
+}
+
+:root[data-theme="ocean"] {
+  --primary-color: #0369a1;      /* Teal blue */
+  --secondary-color: #06b6d4;    /* Cyan */
+  --accent-color: #0ea5e9;       /* Sky blue */
+  --success-color: #06b6d4;      /* Teal */
+  --warning-color: #f59e0b;      /* Amber */
+  --danger-color: #ef4444;       /* Red */
+  --bg-color: #f0f9ff;           /* Light blue */
+  --text-color: #164e63;         /* Dark teal */
+  --border-color: #cffafe;       /* Cyan */
+}
+
+:root[data-theme="forest"] {
+  --primary-color: #15803d;      /* Dark green */
+  --secondary-color: #22c55e;    /* Green */
+  --accent-color: #84cc16;       /* Lime */
+  --success-color: #22c55e;      /* Green */
+  --warning-color: #f59e0b;      /* Amber */
+  --danger-color: #ef4444;       /* Red */
+  --bg-color: #f0fdf4;           /* Light green */
+  --text-color: #143424;         /* Dark green */
+  --border-color: #dcfce7;       /* Light green */
+}
+
+:root[data-theme="sunset"] {
+  --primary-color: #9333ea;      /* Purple */
+  --secondary-color: #f97316;    /* Orange */
+  --accent-color: #fb923c;       /* Light orange */
+  --success-color: #84cc16;      /* Lime */
+  --warning-color: #f97316;      /* Orange */
+  --danger-color: #ef4444;       /* Red */
+  --bg-color: #fdf2f8;           /* Light purple */
+  --text-color: #581c87;         /* Dark purple */
+  --border-color: #fce7f3;       /* Pink */
+}
+
+:root[data-theme="midnight"] {
+  --primary-color: #1e1b4b;      /* Deep indigo */
+  --secondary-color: #4f46e5;    /* Indigo */
+  --accent-color: #818cf8;       /* Light indigo */
+  --success-color: #10b981;      /* Green */
+  --warning-color: #f59e0b;      /* Amber */
+  --danger-color: #ef4444;       /* Red */
+  --bg-color: #0f172a;           /* Very dark blue */
+  --text-color: #f1f5f9;         /* Light slate */
+  --border-color: #334155;       /* Slate */
+}
+
+/* Apply theme colors globally */
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+a {
+  color: var(--primary-color);
+}
+
+a:hover {
+  color: var(--secondary-color);
+}
+
+.tl-btn,
+button {
+  background-color: var(--primary-color);
+  color: white;
+  border: 1px solid var(--primary-color);
+  transition: background-color 0.2s ease;
+}
+
+.tl-btn:hover,
+button:hover {
+  background-color: var(--secondary-color);
+  border-color: var(--secondary-color);
+}
+
+.tl-btn.bad,
+button.bad {
+  background-color: var(--danger-color);
+  border-color: var(--danger-color);
+}
+
+.tl-btn.bad:hover,
+button.bad:hover {
+  background-color: #dc2626;
+}
+
+.tl-status-pill.status-available {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.tl-status-pill.status-offline {
+  background-color: #6b7280;
+  color: white;
+}
+
+.tl-status-pill.status-break {
+  background-color: var(--warning-color);
+  color: white;
+}
+
+.tl-card {
+  background-color: white;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+input,
+textarea,
+select {
+  border: 1px solid var(--border-color);
+  background-color: white;
+  color: var(--text-color);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--primary-color);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
+.theme-switcher-container {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+}
+
+.theme-switcher {
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: white;
+  color: var(--text-color);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.theme-switcher:hover {
+  border-color: var(--primary-color);
+}
+
+.theme-switcher-label {
+  font-weight: 500;
+  font-size: 14px;
+}

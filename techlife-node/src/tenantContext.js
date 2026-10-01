@@ -1,5 +1,5 @@
 /**
- * Reseller / Sub-Tenant isolation.
+ * Reseller / Sub-Tenant isolation with strict boundary enforcement.
  *
  * A tenant admin normally operates on their own tenant only. A
  * 'reseller' tenant's admin may additionally switch into and manage any
@@ -38,10 +38,16 @@ async function resolveTenantContext(req, res, next) {
     let manageable = [own];
     if (own.tenant_type === 'reseller') {
         const subsRes = await pool.query(
-            'SELECT * FROM tenants WHERE parent_tenant_id = $1 ORDER BY name',
+            'SELECT * FROM tenants WHERE parent_tenant_id = $1 AND is_active = TRUE ORDER BY name',
             [own.id]
         );
         manageable = manageable.concat(subsRes.rows);
+    }
+
+    // For superadmin, allow access to any tenant for inspection/management
+    if (u.roles && u.roles.includes('superadmin')) {
+        const allRes = await pool.query('SELECT * FROM tenants WHERE is_active = TRUE ORDER BY name');
+        manageable = allRes.rows;
     }
 
     const requestedId = req.query.as_tenant || req.session.activeTenantId;
@@ -52,7 +58,16 @@ async function resolveTenantContext(req, res, next) {
         // Only remember the switch if it was actually a valid target --
         // an invalid/foreign id in the query string is simply ignored,
         // never stored.
-        req.session.activeTenantId = match ? match.id : own.id;
+        if (match) {
+            req.session.activeTenantId = match.id;
+            // Log tenant context switch for audit
+            const { writeAuditLog } = require('./auditLog');
+            await writeAuditLog(own.id, u.id, 'TENANT_CONTEXT_SWITCHED', 'tenant', match.id);
+        } else {
+            // Attempt to switch to unauthorized tenant
+            const { writeAuditLog } = require('./auditLog');
+            await writeAuditLog(own.id, u.id, 'TENANT_CONTEXT_SWITCH_DENIED', 'tenant', requestedId);
+        }
     }
 
     req.effectiveTenant = effective;
