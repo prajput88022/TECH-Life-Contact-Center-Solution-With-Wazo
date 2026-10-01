@@ -1,0 +1,90 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Queue Monitor</h1>
+<p class="tl-subtitle">Live queue pressure, active calls, agent state, and IVR activity for this tenant.</p>
+
+<div class="tl-grid">
+    <div class="tl-card">
+        <div class="tl-kpi-value" id="kpiQueues">0</div>
+        <div class="tl-kpi-label">Queues</div>
+    </div>
+    <div class="tl-card">
+        <div class="tl-kpi-value" id="kpiActiveCalls">0</div>
+        <div class="tl-kpi-label">Active Calls</div>
+    </div>
+    <div class="tl-card">
+        <div class="tl-kpi-value" id="kpiAgents">0</div>
+        <div class="tl-kpi-label">Agents</div>
+    </div>
+    <div class="tl-card">
+        <div class="tl-kpi-value" id="kpiAvailable">0</div>
+        <div class="tl-kpi-label">Available</div>
+    </div>
+</div>
+
+<h2>Queues</h2>
+<table id="queueTable">
+    <tr><th>Queue</th><th>Strategy</th><th>Active Calls</th><th>Longest Wait</th></tr>
+</table>
+
+<h2>Agents</h2>
+<table id="agentTable">
+    <tr><th>Agent</th><th>Status</th><th>Queue</th></tr>
+</table>
+
+<h2>IVR Activity</h2>
+<table id="ivrTable">
+    <tr><th>Menu</th><th>Sessions (24h)</th><th>Last Activity</th></tr>
+</table>
+
+<script>
+async function refresh() {
+    const res = await fetch('/supervisor/queue-monitor-data');
+    const data = await res.json();
+    const queues = data.queues || [];
+    const agents = data.agents || [];
+    const ivr = data.ivr || [];
+
+    const totalActiveCalls = queues.reduce((sum, q) => sum + Number(q.active_calls || 0), 0);
+    const available = agents.filter(a => (a.status || 'offline') === 'available').length;
+
+    document.getElementById('kpiQueues').textContent = queues.length;
+    document.getElementById('kpiActiveCalls').textContent = totalActiveCalls;
+    document.getElementById('kpiAgents').textContent = agents.length;
+    document.getElementById('kpiAvailable').textContent = available;
+
+    document.getElementById('queueTable').innerHTML = '<tr><th>Queue</th><th>Strategy</th><th>Active Calls</th><th>Longest Wait</th></tr>' +
+        (queues.length ? queues.map(q => `
+            <tr>
+                <td>${q.name}</td>
+                <td>${q.strategy || '—'}</td>
+                <td>${q.active_calls || 0}</td>
+                <td>${q.longest_wait_seconds ? q.longest_wait_seconds + 's' : '0s'}</td>
+            </tr>
+        `).join('') : '<tr><td colspan="4">No queues found.</td></tr>');
+
+    document.getElementById('agentTable').innerHTML = '<tr><th>Agent</th><th>Status</th><th>Queue</th></tr>' +
+        (agents.length ? agents.map(a => `
+            <tr>
+                <td>${a.agent_name || '—'}</td>
+                <td><span class="tl-status-pill status-${(a.status || 'offline')}">${a.status || 'offline'}</span></td>
+                <td>${a.queue_name || '—'}</td>
+            </tr>
+        `).join('') : '<tr><td colspan="3">No agents found.</td></tr>');
+
+    document.getElementById('ivrTable').innerHTML = '<tr><th>Menu</th><th>Sessions (24h)</th><th>Last Activity</th></tr>' +
+        (ivr.length ? ivr.map(m => `
+            <tr>
+                <td>${m.name}</td>
+                <td>${m.sessions_24h || 0}</td>
+                <td>${m.last_activity ? new Date(m.last_activity).toLocaleString() : '—'}</td>
+            </tr>
+        `).join('') : '<tr><td colspan="3">No IVR menus found.</td></tr>');
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+
+<%- include('../partials/foot') %>
