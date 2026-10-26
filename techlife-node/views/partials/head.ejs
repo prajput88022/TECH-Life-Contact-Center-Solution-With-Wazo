@@ -1,5 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<%
+const appearance = (typeof tenantAppearance !== 'undefined' && tenantAppearance)
+    ? tenantAppearance : {};
+const allowedThemes = ['blue', 'purple', 'green', 'yellow', 'light', 'dark'];
+const activeTheme = allowedThemes.includes(appearance.theme) ? appearance.theme : 'blue';
+const safeAccent = typeof appearance.primary_color === 'string' &&
+    /^#[0-9a-fA-F]{6}$/.test(appearance.primary_color)
+    ? appearance.primary_color : null;
+const customAccentVars = safeAccent
+    ? `--acc:${safeAccent};--acc2:${appearance.accent_light || safeAccent};--acc3:${appearance.accent_dark || safeAccent};--acc-rgb:${appearance.accent_rgb || '59,130,246'};`
+    : '';
+%>
+<html lang="en" data-tenant-theme="<%= activeTheme %>"<% if (customAccentVars) { %> style="<%= customAccentVars %>"<% } %>>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">

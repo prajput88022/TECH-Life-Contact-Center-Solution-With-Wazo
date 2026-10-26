@@ -51,6 +51,56 @@
 </div>
 <audio id="remoteAudio" autoplay></audio>
 
+<!-- Completed-call disposition panel -->
+<div class="tl-card" id="dispositionPanel" style="margin-top:20px">
+    <h2>Call Disposition</h2>
+    <p class="tl-subtitle">Choose a completed call, then save its outcome.</p>
+
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label for="dispositionCall" style="flex:1;min-width:220px">Completed call</label>
+        <button type="button" class="tl-btn secondary" id="refreshDispositionCalls">Refresh</button>
+    </div>
+    <select id="dispositionCall" style="width:100%;margin:8px 0">
+        <option value="">Loading completed calls…</option>
+    </select>
+    <p id="dispositionCallInfo" class="tl-subtitle">Loading call history…</p>
+
+    <form id="dispositionForm">
+        <label for="dispositionCode">Disposition</label>
+        <select id="dispositionCode" required style="width:100%;margin:6px 0 12px">
+            <option value="">Select disposition…</option>
+            <option value="SALEDONE">Sale done</option>
+            <option value="NORMAL">Normal</option>
+            <option value="OTHERS">Others</option>
+            <option value="TRANSFER">Transfer</option>
+            <option value="DND">Do Not Call (DND)</option>
+            <option value="FOLLOW_UP">Schedule callback</option>
+        </select>
+
+        <div id="dndScopeRow" style="display:none;margin-bottom:12px">
+            <label for="dndScope">Do Not Call scope</label>
+            <select id="dndScope" style="width:100%;margin-top:6px">
+                <option value="tenant">All campaigns in this tenant</option>
+                <option value="campaign">This campaign only</option>
+            </select>
+        </div>
+
+        <div id="callbackAtRow" style="display:none;margin-bottom:12px">
+            <label for="callbackAt">Callback date and time</label>
+            <input type="datetime-local" id="callbackAt" style="width:100%;margin-top:6px">
+        </div>
+
+        <label for="dispositionNotes">Notes (optional)</label>
+        <textarea id="dispositionNotes" rows="3" maxlength="4000"
+            style="width:100%;margin:6px 0 12px;box-sizing:border-box"
+            placeholder="Add call notes…"></textarea>
+
+        <button type="submit" class="tl-btn" id="saveDispositionBtn">Save disposition</button>
+        <span id="dispositionMessage" role="status" style="margin-left:8px"></span>
+    </form>
+</div>
+
+
 <!-- CRM screen-pop panel: only shown/used when the tenant has an active
      integration with popup_mode = 'iframe_panel'. Otherwise a screen-pop
      opens a new tab/window instead, and this stays empty. -->
@@ -59,7 +109,7 @@
     <iframe id="crmPanel" style="width:100%;height:600px;border:1px solid var(--tl-border);border-radius:8px" title="CRM"></iframe>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/sip.js@0.21.2/lib/platform/web/sip.min.js"></script>
+<script src="/vendor/sip.js"></script>
 <script>
 const AGENT_ID = <%- JSON.stringify(agentId) %>;
 let userAgent = null;
@@ -197,6 +247,7 @@ function wireSessionEvents(session) {
     const { SessionState } = SIP;
     session.stateChange.addListener((state) => {
         if (state === SessionState.Established) {
+            stopRingback();
             document.getElementById('callState').textContent = 'In call';
             attachRemoteAudio(session);
             showInCallUI();
@@ -212,6 +263,7 @@ function wireSessionEvents(session) {
                 fireCrmScreenPop({ customer_number: remoteNumber, direction: 'unknown' });
             }
         } else if (state === SessionState.Terminated) {
+            stopRingback();
             document.getElementById('callState').textContent = 'Idle';
             document.getElementById('callStatusCard').style.display = 'none';
             currentSession = null;
@@ -240,26 +292,160 @@ function showIdleUI() {
     document.getElementById('holdBtn').classList.remove('active');
 }
 
+// Local audible keypad feedback; SIP DTMF is still sent separately via RTP.
+function playLocalKeyTone(key) {
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const frequencies = {
+            '1':[697,1209], '2':[697,1336], '3':[697,1477],
+            '4':[770,1209], '5':[770,1336], '6':[770,1477],
+            '7':[852,1209], '8':[852,1336], '9':[852,1477],
+            '*':[941,1209], '0':[941,1336], '#':[941,1477]
+        };
+        const pair = frequencies[key];
+        if (!pair) return;
+
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.015);
+        gain.gain.setValueAtTime(0.12, audioCtx.currentTime + 0.10);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.16);
+        gain.connect(audioCtx.destination);
+
+        pair.forEach((frequency) => {
+            const oscillator = audioCtx.createOscillator();
+            oscillator.frequency.value = frequency;
+            oscillator.connect(gain);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.17);
+        });
+        setTimeout(() => { try { gain.disconnect(); } catch (_) {} }, 250);
+    } catch (e) {
+        console.warn('Local keypad tone unavailable:', e);
+    }
+}
+
+let ringbackTimer = null;
+let ringbackSecondBurst = null;
+let ringbackNodes = [];
+
+function ringbackBurst() {
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.07;
+        gain.connect(audioCtx.destination);
+        ringbackNodes.push(gain);
+
+        [400, 450].forEach((frequency) => {
+            const oscillator = audioCtx.createOscillator();
+            oscillator.frequency.value = frequency;
+            oscillator.connect(gain);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.38);
+            ringbackNodes.push(oscillator);
+        });
+        setTimeout(() => {
+            try { gain.disconnect(); } catch (_) {}
+            ringbackNodes = ringbackNodes.filter((node) => node !== gain);
+        }, 500);
+    } catch (e) {
+        console.warn('Local ringback unavailable:', e);
+    }
+}
+
+function startRingback() {
+    stopRingback();
+    ringbackBurst();
+    ringbackSecondBurst = setTimeout(ringbackBurst, 600);
+    ringbackTimer = setInterval(() => {
+        ringbackBurst();
+        ringbackSecondBurst = setTimeout(ringbackBurst, 600);
+    }, 3000);
+}
+
+function stopRingback() {
+    if (ringbackTimer !== null) clearInterval(ringbackTimer);
+    if (ringbackSecondBurst !== null) clearTimeout(ringbackSecondBurst);
+    ringbackTimer = null;
+    ringbackSecondBurst = null;
+    ringbackNodes.forEach((node) => {
+        try { node.stop(); } catch (_) {}
+        try { node.disconnect(); } catch (_) {}
+    });
+    ringbackNodes = [];
+}
+
 function dtmfOrDial(key) {
+    playLocalKeyTone(key);
+
     if (currentSession && currentSession.state === SIP.SessionState.Established) {
-        currentSession.sessionDescriptionHandler.sendDtmf(key);
+        const sent = currentSession.sessionDescriptionHandler.sendDtmf(key);
+        if (!sent) console.warn('RTP DTMF could not be sent for key:', key);
     } else {
         document.getElementById('dialInput').value += key;
     }
 }
 
 async function placeCall() {
-    if (!userAgent) { alert('Phone is not registered yet.'); return; }
+    if (!userAgent) {
+        alert('Phone is not registered yet.');
+        return;
+    }
+
     const number = document.getElementById('dialInput').value.trim();
     if (!number) return;
+
+    try {
+        const response = await fetch('/api/v1/dnd/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone_number: number })
+        });
+
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok || result.allowed !== true) {
+            alert(result.message ||
+                (result.error === 'do_not_call'
+                    ? 'This number is on the Do Not Call list.'
+                    : 'Unable to verify the Do Not Call list. Call blocked.'));
+            return;
+        }
+    } catch (err) {
+        console.error('DND preflight failed:', err);
+        alert('Unable to verify the Do Not Call list. Call blocked.');
+        return;
+    }
+
     const cfgDomain = userAgent.configuration.uri.host;
     const target = SIP.UserAgent.makeURI(`sip:${number}@${cfgDomain}`);
-    const inviter = new SIP.Inviter(userAgent, target, { sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+
+    if (!target) {
+        alert('Invalid destination number.');
+        return;
+    }
+
+    const inviter = new SIP.Inviter(userAgent, target, {
+        sessionDescriptionHandlerOptions: {
+            constraints: { audio: true, video: false }
+        }
+    });
+
     currentSession = inviter;
     wireSessionEvents(inviter);
     document.getElementById('callState').textContent = 'Calling ' + number + '…';
     showInCallUI();
-    try { await inviter.invite(); } catch (e) {
+    startRingback();
+
+    try {
+        await inviter.invite();
+    } catch (e) {
+        stopRingback();
         console.error(e);
         document.getElementById('callState').textContent = 'Call failed';
         showIdleUI();
@@ -267,6 +453,7 @@ async function placeCall() {
 }
 
 function hangupCall() {
+    stopRingback();
     if (!currentSession) return;
     const { SessionState } = SIP;
     if (currentSession.state === SessionState.Established) currentSession.bye();
@@ -438,6 +625,176 @@ async function toggleHold() {
         document.getElementById('callState').textContent = isHeld ? 'On hold' : 'In call';
     } catch (e) { console.error('hold toggle failed', e); }
 }
+
+
+// ---------------- Completed calls and disposition ----------------
+let completedDispositionCalls = [];
+
+function dispositionPhoneIsValid(call) {
+    const digits = String(call && call.phone_number || '').replace(/\D/g, '');
+    return digits.length >= 7 && digits.length <= 15;
+}
+
+function selectedDispositionCall() {
+    const id = document.getElementById('dispositionCall').value;
+    return completedDispositionCalls.find(call => call.id === id) || null;
+}
+
+function updateDispositionFields() {
+    const code = document.getElementById('dispositionCode').value;
+    const call = selectedDispositionCall();
+    const validPhone = dispositionPhoneIsValid(call);
+
+    document.getElementById('callbackAtRow').style.display =
+        code === 'FOLLOW_UP' ? 'block' : 'none';
+    document.getElementById('dndScopeRow').style.display =
+        code === 'DND' ? 'block' : 'none';
+
+    const callback = document.getElementById('callbackAt');
+    callback.required = code === 'FOLLOW_UP';
+
+    for (const option of document.getElementById('dispositionCode').options) {
+        if (option.value === 'DND' || option.value === 'FOLLOW_UP') {
+            option.disabled = !!call && !validPhone;
+        }
+    }
+
+    const info = document.getElementById('dispositionCallInfo');
+    if (!call) {
+        info.textContent = 'Select a completed call to continue.';
+    } else {
+        const when = call.end_time ? new Date(call.end_time).toLocaleString() : 'time unavailable';
+        const phone = String(call.phone_number || 'Unknown number');
+        info.textContent = `${call.direction || 'Call'} · ${phone} · Ended ${when}` +
+            (call.disposition_code ? ` · Current: ${call.disposition_code}` : '') +
+            (!validPhone
+                ? ' · This record has no valid phone number; DND and callback are unavailable.'
+                : '');
+    }
+}
+
+async function loadCompletedDispositionCalls() {
+    const select = document.getElementById('dispositionCall');
+    const previousId = select.value;
+    const message = document.getElementById('dispositionMessage');
+
+    try {
+        const response = await fetch(`/api/v1/agents/${encodeURIComponent(AGENT_ID)}/completed-calls`,
+            { headers: { 'Accept': 'application/json' } });
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not load completed calls.');
+        }
+
+        completedDispositionCalls = Array.isArray(data.results) ? data.results : [];
+        select.replaceChildren();
+
+        if (!completedDispositionCalls.length) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No completed calls found';
+            select.appendChild(option);
+        } else {
+            for (const call of completedDispositionCalls) {
+                const option = document.createElement('option');
+                option.value = call.id;
+                const when = call.end_time ? new Date(call.end_time).toLocaleString() : 'time unavailable';
+                option.textContent =
+                    `${call.direction || 'Call'} · ${call.phone_number || 'Unknown number'} · ${when}` +
+                    (call.disposition_code ? ` · ${call.disposition_code}` : '');
+                select.appendChild(option);
+            }
+            if (completedDispositionCalls.some(call => call.id === previousId)) {
+                select.value = previousId;
+            }
+        }
+
+        updateDispositionFields();
+    } catch (err) {
+        console.error('Completed-call list failed:', err);
+        message.textContent = err.message || 'Could not load completed calls.';
+    }
+}
+
+document.getElementById('dispositionCall').addEventListener('change', updateDispositionFields);
+document.getElementById('dispositionCode').addEventListener('change', updateDispositionFields);
+document.getElementById('refreshDispositionCalls').addEventListener('click', loadCompletedDispositionCalls);
+
+document.getElementById('dispositionForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const call = selectedDispositionCall();
+    const code = document.getElementById('dispositionCode').value;
+    const message = document.getElementById('dispositionMessage');
+    const button = document.getElementById('saveDispositionBtn');
+
+    if (!call) {
+        message.textContent = 'Select a completed call first.';
+        return;
+    }
+    if (!code) {
+        message.textContent = 'Select a disposition.';
+        return;
+    }
+    if ((code === 'DND' || code === 'FOLLOW_UP') && !dispositionPhoneIsValid(call)) {
+        message.textContent = 'This call has no valid phone number.';
+        return;
+    }
+
+    let callbackAt = null;
+    if (code === 'FOLLOW_UP') {
+        const value = document.getElementById('callbackAt').value;
+        callbackAt = value ? new Date(value) : null;
+        if (!callbackAt || Number.isNaN(callbackAt.getTime()) || callbackAt <= new Date()) {
+            message.textContent = 'Choose a future callback date and time.';
+            return;
+        }
+    }
+
+    button.disabled = true;
+    message.textContent = 'Saving…';
+
+    try {
+        const response = await fetch(`/api/v1/agents/${encodeURIComponent(AGENT_ID)}/disposition`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({
+                call_id: call.id,
+                code,
+                notes: document.getElementById('dispositionNotes').value,
+                callback_at: callbackAt ? callbackAt.toISOString() : null,
+                dnc_scope: document.getElementById('dndScope').value
+            })
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+            const messages = {
+                call_not_completed: 'This call is not completed yet. Refresh and try again.',
+                call_has_no_valid_phone_number: 'This call has no valid phone number.',
+                call_has_no_campaign_for_campaign_dnc: 'This call has no campaign for campaign-only DND.',
+                disposition_not_configured: 'This disposition is not configured for this tenant.',
+                valid_future_callback_at_required: 'Choose a valid future callback time.',
+                forbidden: 'You are not allowed to disposition this call.'
+            };
+            throw new Error(messages[result.error] || result.error || 'Could not save disposition.');
+        }
+
+        message.textContent = `Saved: ${result.code}`;
+        document.getElementById('dispositionNotes').value = '';
+        document.getElementById('callbackAt').value = '';
+        await loadCompletedDispositionCalls();
+    } catch (err) {
+        message.textContent = err.message || 'Could not save disposition.';
+    } finally {
+        button.disabled = false;
+    }
+});
+
+loadCompletedDispositionCalls();
+// Collector updates can lag behind the browser hang-up event; periodically refresh.
+setInterval(loadCompletedDispositionCalls, 10000);
 
 initSip();
 </script>

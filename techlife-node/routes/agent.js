@@ -4,8 +4,10 @@ const { requireRole } = require('../src/auth');
 const { pool } = require('../src/db');
 const callRecordService = require('../src/services/callRecordService');
 const phoneMasker = require('../src/phoneMasker');
+const { loadTenantAppearance } = require('../src/tenantAppearance');
 
 router.use(requireRole(['agent', 'supervisor', 'admin', 'superadmin']));
+router.use(loadTenantAppearance);
 
 router.get('/', async (req, res) => {
     const u = req.session.user;

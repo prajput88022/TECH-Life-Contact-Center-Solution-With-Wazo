@@ -19,6 +19,20 @@
         <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="1.0"></div>
         <div><label>Start Date</label><input type="date" name="start_date"></div>
         <div><label>End Date</label><input type="date" name="end_date"></div>
+        <div>
+            <label>Campaign Caller ID / CLI (optional)</label>
+            <input name="caller_id" maxlength="30" pattern="[+0-9*#]{1,30}"
+                   placeholder="e.g. +911234567890">
+        </div>
+        <div>
+            <label>Outbound Trunk (optional)</label>
+            <select name="trunk_id">
+                <option value="">Use default routing</option>
+                <% trunks.forEach(tr => { %>
+                    <option value="<%= tr.id %>"><%= tr.name %> — <%= tr.sip_server %></option>
+                <% }) %>
+            </select>
+        </div>
     </div>
     <div class="tl-filters" id="robo_opts" style="display:none">
         <div><label>Max Concurrent Robo Calls</label><input type="number" name="max_concurrent_robo_calls" placeholder="e.g. 10"></div>
@@ -56,6 +70,20 @@
         <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="<%= c.dial_level %>"></div>
         <div><label>Start Date</label><input type="date" name="start_date" value="<%= c.start_date ? new Date(c.start_date).toISOString().slice(0,10) : '' %>"></div>
         <div><label>End Date</label><input type="date" name="end_date" value="<%= c.end_date ? new Date(c.end_date).toISOString().slice(0,10) : '' %>"></div>
+        <div>
+            <label>Campaign Caller ID / CLI (optional)</label>
+            <input name="caller_id" maxlength="30" pattern="[+0-9*#]{1,30}"
+                   value="<%= c.caller_id || '' %>" placeholder="e.g. +911234567890">
+        </div>
+        <div>
+            <label>Outbound Trunk (optional)</label>
+            <select name="trunk_id">
+                <option value="">Use default routing</option>
+                <% trunks.forEach(tr => { %>
+                    <option value="<%= tr.id %>" <%= c.trunk_id === tr.id ? 'selected' : '' %>><%= tr.name %> — <%= tr.sip_server %></option>
+                <% }) %>
+            </select>
+        </div>
         <% if (c.is_robo_campaign) { %>
         <div><label>Max Concurrent Robo Calls</label><input type="number" name="max_concurrent_robo_calls" value="<%= c.max_concurrent_robo_calls || '' %>"></div>
         <div><label><input type="checkbox" name="amd" <%= c.answering_machine_detection ? 'checked' : '' %>> Answering-machine detection</label></div>

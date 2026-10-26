@@ -1,0 +1,42 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Super Admin Users</h1>
+<p class="tl-subtitle">
+  Only users with the global Super Admin role can access this page or create these accounts.
+</p>
+
+<div class="tl-card">
+  <h2>Create Super Admin</h2>
+  <form method="POST" action="/superadmin/users/create" autocomplete="off">
+    <label for="username">Username</label>
+    <input id="username" name="username" required minlength="3" maxlength="50"
+           pattern="[A-Za-z0-9_.-]+" autocomplete="off">
+
+    <label for="full_name">Full name</label>
+    <input id="full_name" name="full_name" required maxlength="150">
+
+    <label for="password">Password (minimum 12 characters)</label>
+    <input id="password" name="password" type="password" required minlength="12"
+           autocomplete="new-password">
+
+    <button type="submit">Create Super Admin</button>
+  </form>
+</div>
+
+<h2>Existing Super Admin Accounts</h2>
+<table>
+  <tr><th>Username</th><th>Full name</th><th>Internal tenant</th><th>Status</th><th>Created</th></tr>
+  <% superAdmins.forEach(function(u) { %>
+    <tr>
+      <td><%= u.username %></td>
+      <td><%= u.full_name %></td>
+      <td><%= u.tenant_slug %></td>
+      <td><%= u.is_active ? 'Active' : 'Disabled' %></td>
+      <td><%= u.created_at %></td>
+    </tr>
+  <% }) %>
+</table>
+
+<p><a href="/superadmin">Back to Platform Dashboard</a></p>
+<%- include('../partials/foot') %>

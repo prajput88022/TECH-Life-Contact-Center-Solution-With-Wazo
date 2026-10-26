@@ -16,6 +16,7 @@ app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
+app.use('/vendor', express.static(path.join(__dirname, 'public/vendor')));
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 app.use(session({

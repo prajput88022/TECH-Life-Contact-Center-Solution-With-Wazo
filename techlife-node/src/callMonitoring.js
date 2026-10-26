@@ -20,6 +20,7 @@
 const { pool } = require('./db');
 const { wazoFetch } = require('./wazoFetch');
 const config = require('../config/config');
+const { agentAccessPredicate } = require('./supervisorScope');
 
 async function getToken() {
     const resp = await wazoFetch(`${config.wazo.authUrl.replace(/\/$/, '')}/token`, {
@@ -40,16 +41,28 @@ async function getToken() {
  * agent -- a supervisor who wants to listen/whisper/barge needs a SIP
  * line too, since the ChanSpy target rings THEM).
  */
-async function startMonitoring(tenantId, supervisorUserId, callId, mode) {
+async function startMonitoring(tenantId, supervisorUserId, callId, mode, isAdmin = false) {
     if (!['listen', 'whisper', 'barge'].includes(mode)) {
         throw new Error('mode must be listen, whisper, or barge');
     }
 
     const callRes = await pool.query(
-        'SELECT wazo_call_id FROM calls WHERE id = $1 AND tenant_id = $2', [callId, tenantId]
+        'SELECT wazo_call_id, agent_id FROM calls WHERE id = $1 AND tenant_id = $2', [callId, tenantId]
     );
     const call = callRes.rows[0];
     if (!call || !call.wazo_call_id) throw new Error('Call not found or has no active Wazo channel');
+
+    if (!isAdmin) {
+        if (!call.agent_id) throw new Error('Call is not associated with an assigned agent');
+        const access = await pool.query(
+            `SELECT 1 FROM agents ag
+             WHERE ag.id = $1 AND ag.tenant_id = $2
+               AND ${agentAccessPredicate('ag', '$2', '$3')}
+             LIMIT 1`,
+            [call.agent_id, tenantId, supervisorUserId]
+        );
+        if (!access.rowCount) throw new Error('Call is outside your assigned supervisor scope');
+    }
 
     // Supervisor's own SIP line -- reuses the same wazo_user_id concept
     // as agents; a supervisor monitoring calls needs to be provisioned
@@ -87,13 +100,20 @@ async function startMonitoring(tenantId, supervisorUserId, callId, mode) {
     return { monitoringSessionId: insertRes.rows[0].id, wazoCallId: originateResult.call_id || null };
 }
 
-async function stopMonitoring(tenantId, monitoringSessionId) {
+async function stopMonitoring(tenantId, monitoringSessionId, requesterUserId, isAdmin = false) {
     const sessRes = await pool.query(
-        'SELECT wazo_monitor_call_id FROM call_monitoring_sessions WHERE id = $1 AND tenant_id = $2',
+        'SELECT wazo_monitor_call_id, supervisor_id FROM call_monitoring_sessions WHERE id = $1 AND tenant_id = $2',
         [monitoringSessionId, tenantId]
     );
     const session = sessRes.rows[0];
-    await pool.query('UPDATE call_monitoring_sessions SET ended_at = now() WHERE id = $1', [monitoringSessionId]);
+    if (!session) throw new Error('Monitoring session not found');
+    if (!isAdmin && session.supervisor_id !== requesterUserId) {
+        throw new Error('You may only stop your own monitoring session');
+    }
+    await pool.query(
+        'UPDATE call_monitoring_sessions SET ended_at = now() WHERE id = $1 AND tenant_id = $2',
+        [monitoringSessionId, tenantId]
+    );
 
     if (session?.wazo_monitor_call_id) {
         const token = await getToken();

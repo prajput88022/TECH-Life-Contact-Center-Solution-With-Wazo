@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%= pageTitle %></title>
+  <style>
+    body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#172033}
+    h1{font-size:1.6rem} .panel{border:1px solid #d8dee9;border-radius:10px;padding:1rem;margin:1rem 0}
+    label{display:block;font-weight:600;margin:.5rem 0} select{width:100%;min-height:13rem;padding:.5rem}
+    .small{font-size:.9rem;color:#526078} button{padding:.7rem 1rem;cursor:pointer}
+    .ok{color:#146c43}.err{color:#b42318}.cols{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+    @media(max-width:700px){.cols{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <p><a href="/admin/users">← Admin users</a></p>
+  <h1>Supervisor assignments</h1>
+  <p class="small">Only tenant admins can change these assignments. A supervisor can see an agent through a direct assignment or membership in an assigned active group. Changes are enforced by API and server routes.</p>
+  <% if (saved) { %><p class="ok">Assignments saved.</p><% } %>
+  <% if (errorMessage) { %><p class="err">Could not save assignments (<%= errorMessage %>). Check the selected supervisor, agents, and groups.</p><% } %>
+  <form method="get" action="/admin/supervisor-assignments" class="panel">
+    <label for="supervisor_id">Supervisor</label>
+    <select id="supervisor_id" name="supervisor_id" size="1" required>
+      <% supervisors.forEach(function(s) { %>
+        <option value="<%= s.id %>" <%= selectedSupervisor === s.id ? 'selected' : '' %>><%= s.display_name %></option>
+      <% }); %>
+    </select>
+    <p><button type="submit">Load assignments</button></p>
+  </form>
+  <% if (selectedSupervisor) { %>
+  <form method="post" action="/admin/supervisor-assignments" class="panel">
+    <input type="hidden" name="supervisor_id" value="<%= selectedSupervisor %>">
+    <div class="cols">
+      <div>
+        <label for="agent_ids">Direct agent assignments</label>
+        <select id="agent_ids" name="agent_ids" multiple>
+          <% agents.forEach(function(a) { %>
+            <option value="<%= a.id %>" <%= assignedAgentIds.includes(a.id) ? 'selected' : '' %>><%= a.display_name %></option>
+          <% }); %>
+        </select>
+        <p class="small">Use Ctrl (Windows) or Cmd (Mac) to select multiple agents.</p>
+      </div>
+      <div>
+        <label for="group_ids">Assigned groups</label>
+        <select id="group_ids" name="group_ids" multiple>
+          <% groups.forEach(function(g) { %>
+            <option value="<%= g.id %>" <%= assignedGroupIds.includes(g.id) ? 'selected' : '' %>><%= g.name %></option>
+          <% }); %>
+        </select>
+        <p class="small">Group membership is managed under Admin → User Groups. Inactive groups do not grant access.</p>
+      </div>
+    </div>
+    <button type="submit">Save assignments</button>
+  </form>
+  <% } else { %><p>No active supervisor users were found for this tenant.</p><% } %>
+</body>
+</html>

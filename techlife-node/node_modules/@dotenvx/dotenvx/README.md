@@ -1,0 +1,3390 @@
+[![dotenvx](https://dotenvx.com/banner.png?v2)](https://dotenvx.com)
+
+*A secure dotenv*–from the creator of [`dotenv`](https://github.com/motdotla/dotenv).
+
+* Encrypt
+* Commit
+* Ship
+
+[Install](https://dotenvx.com/docs/install) · [Quickstart](https://dotenvx.com/docs/quickstart)
+
+&nbsp;
+
+
+### Quickstart [![npm version](https://img.shields.io/npm/v/@dotenvx/dotenvx.svg)](https://www.npmjs.com/package/@dotenvx/dotenvx) [![downloads](https://img.shields.io/npm/dw/@dotenvx/dotenvx)](https://www.npmjs.com/package/@dotenvx/dotenvx)
+
+Install and use it in code just like `dotenv`.
+
+```sh
+npm install @dotenvx/dotenvx --save
+```
+```js
+// index.js
+require('@dotenvx/dotenvx').config()
+// or import '@dotenvx/dotenvx/config' // for esm
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+&nbsp;
+
+or install globally - *unlocks dotenv for any language, framework, or platform!*
+
+<details><summary>with npm 🌍</summary><br>
+
+```sh
+npm i -g @dotenvx/dotenvx
+dotenvx encrypt
+```
+
+[![npm installs](https://img.shields.io/npm/dt/@dotenvx/dotenvx)](https://npmjs.com/@dotenvx/dotenvx)
+
+&nbsp;
+
+</details>
+<details><summary>with curl 🌐</summary><br>
+
+```sh
+curl -sfS https://dotenvx.sh | sh
+dotenvx encrypt
+```
+
+[![curl installs](https://img.shields.io/endpoint?url=https://dotenvx.sh/stats/curl&label=curl%20installs)](https://github.com/dotenvx/dotenvx.sh/blob/main/install.sh)
+
+&nbsp;
+
+</details>
+
+<details><summary>with brew 🍺</summary><br>
+
+```sh
+brew tap dotenvx/brew
+brew trust dotenvx/brew
+brew install dotenvx
+dotenvx encrypt
+```
+
+[![brew installs](https://img.shields.io/github/downloads/dotenvx/dotenvx/total?label=brew%20installs)](https://github.com/dotenvx/homebrew-brew/blob/main/Formula/dotenvx.rb)
+
+&nbsp;
+
+</details>
+
+<details><summary>with docker 🐳</summary><br>
+
+```sh
+docker run -it --rm -v $(pwd):/app dotenv/dotenvx encrypt
+```
+
+[![docker pulls](https://img.shields.io/docker/pulls/dotenv/dotenvx)](https://hub.docker.com/r/dotenv/dotenvx)
+
+&nbsp;
+
+</details>
+
+<details><summary>with github releases 🐙</summary><br>
+
+```sh
+curl -L -o dotenvx.tar.gz "https://github.com/dotenvx/dotenvx/releases/latest/download/dotenvx-$(uname -s)-$(uname -m).tar.gz"
+tar -xzf dotenvx.tar.gz
+./dotenvx encrypt
+```
+
+[![github releases](https://img.shields.io/github/downloads/dotenvx/dotenvx/total)](https://github.com/dotenvx/dotenvx/releases)
+
+&nbsp;
+
+</details>
+
+
+<details><summary>or windows 🪟</summary><br>
+
+```sh
+winget install dotenvx
+dotenvx encrypt
+```
+
+</details>
+
+&nbsp;
+
+## Usage
+
+*Encrypt* your secrets in `.env` files. The values become ciphertext and only your private key can unlock them.
+
+```sh
+$ dotenvx encrypt
+◈ encrypted (.env)
+```
+
+To encrypt a fresh plaintext file with a public key created elsewhere:
+
+```sh
+dotenvx encrypt -f .env.production --with <public-key>
+```
+
+This writes the supplied public key into the file and encrypts its values without creating or storing a private key. If every existing `DOTENV_PUBLIC_KEY*` entry matches the supplied key, it reuses that key, preserves existing ciphertext, and encrypts new plaintext values. A different public key, or an `encrypted:` value without a matching declared public key, fails with `ALREADY_ENCRYPTED` and leaves the file unchanged.
+
+*Commit* your encrypted `.env` files with your code. It's safe. Now you can securely share secrets through git.
+
+```sh
+$ git add .env
+$ git commit -m "encrypt .env"
+```
+
+*Ship* your code and secrets together. Dotenvx uses your private key to decrypt and inject your secrets just-in-time to your code.
+
+```sh
+$ dotenvx run -- node index.js
+⟐ injected env (2) from .env
+```
+
+&nbsp;
+
+## Design
+
+Three widely used and proven primitives make up Dotenvx's design. Git, .env, and secp256k1.
+
+We chose git because it is the best way to deliver digital goods. It is the container ship of the digital world. All code travels on its ships. Why not secrets? Why invent an inferior secrets delivery mechanism when the world class one is right there at your fingertips.
+
+We chose .env because it is the open standard for loading secrets into code. It represents environment variables, the core primitive that all secrets end up injected into at runtime of code.
+
+Lastly, we needed to choose an encryption algorithm. Encryption of the values inside the .env file would allow us to place those values with code, leveraging git's distribution advantages while still following the twelve-factor config – by separating the decryption key from the code (environment).
+
+It was important that we choose a proven, simple, asymmetric standard with small keys. We chose secp256k1, battle-tested by Bitcoin for more than seventeen years. We made cryptography an opinionated choice so developers wouldn't have to. Encryption just worked.
+
+The result is a system built entirely from primitives, developers already understand, and infrastructure they already use. Secrets can travel with code without becoming part of the code. Git distributes them, .env defines how apps consume them, and secp256k1 keeps their values unreadable. The kicker, all this works by setting a single private key on your infrastructure - no more risky async coordination of secrets, no more centralized downtime risk. Your secrets are always just there with your code, ready to be unlocked at runtime.
+
+[Read the whitepaper →](https://dotenvx.com/dotenvx.pdf?v=README)
+
+&nbsp;
+
+## Run Anywhere
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ node index.js
+Hello undefined # without dotenvx
+
+$ dotenvx run -- node index.js
+Hello World # with dotenvx
+> :-D
+```
+
+see [quickstart guides](https://dotenvx.com/docs)
+
+More examples
+
+<details><summary>Claude 🤖</summary><br>
+
+Run Claude with your real secrets while redacting them from its output.
+
+Prerequisite: install [Claude Code](https://code.claude.com/docs/en/setup) to get the `claude` command.
+
+```sh
+$ curl -fsSL https://claude.ai/install.sh | bash
+$ claude --version
+```
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx spec
+$ dotenvx run -- claude -p 'Run `dotenvx get HELLO` and echo back just Hello VALUE' --dangerously-skip-permissions
+Hello [REDACTED]
+```
+
+see [Claude redaction guide](https://dotenvx.com/docs/cli/run-redact-claude-print)
+
+</details>
+<details><summary>Codex ✨</summary><br>
+
+Run Codex with your real secrets while redacting them from its output.
+
+Prerequisite: install the [Codex CLI](https://developers.openai.com/codex/cli/) to get the `codex` command.
+
+```sh
+$ npm install -g @openai/codex
+$ codex --version
+```
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx spec
+$ dotenvx run -- codex exec 'Run `dotenvx get HELLO` and echo back just Hello VALUE' --skip-git-repo-check
+Hello [REDACTED]
+```
+
+see [Codex redaction guide](https://dotenvx.com/docs/cli/run-redact-codex-exec)
+
+</details>
+<details><summary>Cursor 🖱️</summary><br>
+
+Run Cursor with your real secrets while redacting them from its output.
+
+Prerequisite: install the separate [Cursor CLI](https://cursor.com/cli). Installing the Cursor desktop app does not necessarily install the `agent` command.
+
+```sh
+$ curl https://cursor.com/install -fsS | bash
+$ agent --version
+```
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx spec
+$ dotenvx run -- agent -p --force 'Run `dotenvx get HELLO` and echo back just Hello VALUE' --output-format text
+Hello [REDACTED]
+```
+
+see [Cursor redaction guide](https://dotenvx.com/docs/cursor)
+
+</details>
+<details><summary>1Password 🔐</summary><br>
+
+Run with secrets resolved directly from 1Password.
+
+```sh
+$ echo "HELLO=op://Personal/hello/password" > .env
+$ dotenvx run -- sh -c 'echo Hello $HELLO'
+Hello World
+```
+
+see [1Password guide](https://dotenvx.com/docs/1password)
+
+</details>
+<details><summary>Bitwarden 🛡️</summary><br>
+
+Run with secrets resolved directly from Bitwarden Password Manager.
+
+```sh
+$ echo 'HELLO="bw://My Hello Login/password"' > .env
+$ dotenvx run -- sh -c 'echo Hello $HELLO'
+Hello World
+```
+
+Install the [Bitwarden Password Manager CLI](https://bitwarden.com/help/cli/) before running dotenvx.
+
+</details>
+<details><summary>TypeScript 📘</summary><br>
+
+```json
+// package.json
+{
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.3.0"
+  }
+}
+```
+
+```js
+// index.ts
+import chalk from 'chalk'
+console.log(chalk.blue(`Hello ${process.env.HELLO}`))
+```
+
+```sh
+$ npm install
+$ echo "HELLO=World" > .env
+
+$ dotenvx run -- npx tsx index.ts
+Hello World
+```
+
+</details>
+<details><summary>Astro 🚀</summary><br>
+
+Preface Astro scripts with `dotenvx run --` and read your env values in Astro.
+
+```json
+{
+  "scripts": {
+    "dev": "dotenvx run -- astro dev",
+    "build": "dotenvx run -- astro build",
+    "preview": "dotenvx run -- astro preview"
+  }
+}
+```
+
+```astro
+export async function GET() {
+  return new Response(
+    JSON.stringify({
+      HELLO: process.env.HELLO,
+    }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    }
+  );
+}
+```
+
+see [astro guide](https://dotenvx.com/docs/astro)
+
+</details>
+<details><summary>Expo 🧭</summary><br>
+
+Preface Expo scripts with `dotenvx run --`.
+
+```json
+{
+  "scripts": {
+    "start": "dotenvx run -- expo start",
+    "reset-project": "node ./scripts/reset-project.js",
+    "android": "dotenvx run -- expo start --android",
+    "ios": "dotenvx run -- expo start --ios",
+    "web": "dotenvx run -- expo start --web",
+    "lint": "expo lint"
+  }
+}
+```
+
+see [expo guide](https://dotenvx.com/docs/expo)
+
+</details>
+<details><summary>Next.js ▲</summary><br>
+
+Install Dotenvx and `@dotenvx/next-env`.
+
+```sh
+$ npm install @dotenvx/dotenvx
+$ npm install @dotenvx/next-env
+```
+
+Override `@next/env` in your `package.json`.
+
+```json
+{
+  "overrides": {
+    "@next/env": "npm:@dotenvx/next-env"
+  }
+}
+```
+
+Encrypt your `.env` file.
+
+```sh
+$ npx dotenvx encrypt
+◈ encrypted (.env)
+```
+
+Your encrypted secrets are automatically injected and readable in Next.js.
+
+```ts
+import { NextResponse } from 'next/server'
+
+export async function GET() {
+  return NextResponse.json({
+    HELLO: process.env.HELLO
+  })
+}
+```
+
+Set `DOTENV_PRIVATE_KEY` in production before deploying.
+
+</details>
+<details><summary>Cloudflare Workers ⛅️</summary><br>
+
+```sh
+$ dotenvx encrypt -f .env.txt
+```
+
+```js
+// src/index.js
+import envSrc from '../.env.txt'
+import dotenvx from '@dotenvx/dotenvx'
+
+const config = dotenvx.config({ envs: [{ type: 'env', value: envSrc, privateKeyName: 'DOTENV_PRIVATE_KEY' }] })
+const envx = config.parsed
+
+export default {
+  async fetch(request, env, ctx) {
+    return new Response(`Hello ${envx.HELLO}`)
+  }
+}
+```
+```json
+"scripts": {
+  "deploy": "wrangler deploy",
+  "dev": "wrangler dev --var $(dotenvx keypair -f .env.txt --format=colon)",
+  "start": "wrangler dev --var $(dotenvx keypair -f .env.txt --format=colon)",
+}
+```
+
+</details>
+<details><summary>Bun 🥟</summary><br>
+
+```sh
+$ echo "HELLO=Test" > .env.test
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ bun index.js
+Hello undefined
+
+$ dotenvx run -f .env.test -- bun index.js
+Hello Test
+```
+
+</details>
+<details><summary>Deno 🦕</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "console.log('Hello ' + Deno.env.get('HELLO'))" > index.ts
+
+$ deno run --allow-env index.ts
+Hello undefined
+
+$ dotenvx run -- deno run --allow-env index.ts
+Hello World
+```
+
+> [!WARNING]
+> Some of you are attempting to use the npm module directly with `deno run`. Don't, because deno currently has incomplete support for these encryption ciphers.
+>
+> ```
+> $ deno run -A npm:@dotenvx/dotenvx encrypt
+> Unknown cipher
+> ```
+> 
+> Instead, use `dotenvx` as designed, by installing the cli as a binary - via curl, brew, etc.
+
+</details>
+<details><summary>Python 🐍</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'import os;print("Hello " + os.getenv("HELLO", ""))' > index.py
+
+$ dotenvx run -- python3 index.py
+Hello World
+```
+
+see [extended python guide](https://dotenvx.com/docs/python)
+
+</details>
+<details><summary>PHP 🐘</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo '<?php echo "Hello {$_SERVER["HELLO"]}\n";' > index.php
+
+$ dotenvx run -- php index.php
+Hello World
+```
+
+see [extended php guide](https://dotenvx.com/docs/php)
+
+</details>
+<details><summary>Ruby 💎</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'puts "Hello #{ENV["HELLO"]}"' > index.rb
+
+$ dotenvx run -- ruby index.rb
+Hello World
+```
+
+see [extended ruby guide](https://dotenvx.com/docs/ruby)
+
+</details>
+<details><summary>Go 🐹</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'package main; import ("fmt"; "os"); func main() { fmt.Printf("Hello %s\n", os.Getenv("HELLO")) }' > main.go
+
+$ dotenvx run -- go run main.go
+Hello World
+```
+
+see [extended go guide](https://dotenvx.com/docs/go)
+
+</details>
+<details><summary>Rust 🦀</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'fn main() {let hello = std::env::var("HELLO").unwrap_or("".to_string());println!("Hello {hello}");}' > src/main.rs
+
+$ dotenvx run -- cargo run
+Hello World
+```
+
+see [extended rust guide](https://dotenvx.com/docs/rust)
+
+</details>
+<details><summary>Java ☕️</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'public class Index { public static void main(String[] args) { System.out.println("Hello " + System.getenv("HELLO")); } }' > index.java
+
+$ dotenvx run -- java index.java
+Hello World
+```
+
+</details>
+<details><summary>Clojure 🌿</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo '(println "Hello" (System/getenv "HELLO"))' > index.clj
+
+$ dotenvx run -- clojure -M index.clj
+Hello World
+```
+
+</details>
+<details><summary>Kotlin 📐</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo 'fun main() { val hello = System.getenv("HELLO") ?: ""; println("Hello $hello") }' > index.kt
+$ kotlinc index.kt -include-runtime -d index.jar
+
+$ dotenvx run -- java -jar index.jar
+Hello World
+```
+
+</details>
+<details><summary>.NET 🔵</summary><br>
+
+```sh
+$ dotnet new console -n HelloWorld -o HelloWorld
+$ cd HelloWorld
+$ echo "HELLO=World" | Out-File -FilePath .env -Encoding utf8
+$ echo 'Console.WriteLine($"Hello {Environment.GetEnvironmentVariable("HELLO")}");' > Program.cs
+
+$ dotenvx run -- dotnet run
+Hello World
+```
+
+</details>
+<details><summary>Bash 🖥️</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx run --quiet -- sh -c 'echo Hello $HELLO'
+Hello World
+```
+
+</details>
+<details><summary>Frameworks ▲</summary><br>
+
+```sh
+$ dotenvx run -- next dev
+$ dotenvx run -- npm start
+$ dotenvx run -- bin/rails s
+$ dotenvx run -- php artisan serve
+```
+
+see [framework guides](https://dotenvx.com/docs/quickstarts)
+
+</details>
+<details><summary>Docker 🐳</summary><br>
+
+```sh
+$ docker run -it --rm -v $(pwd):/app dotenv/dotenvx run -- node index.js
+```
+
+Or in any image:
+
+```Containerfile
+FROM node:latest
+RUN echo "HELLO=World" > .env && echo "console.log('Hello ' + process.env.HELLO)" > index.js
+RUN curl -fsS https://dotenvx.sh/install.sh | sh
+CMD ["/usr/local/bin/dotenvx", "run", "--", "echo", "Hello $HELLO"]
+```
+
+see [docker guide](https://dotenvx.com/docs/docker)
+
+</details>
+<details><summary>CI/CDs 🐙</summary><br>
+
+```yaml
+name: build
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 16
+    - run: curl -fsS https://dotenvx.sh/install.sh | sh
+    - run: dotenvx run -- node build.js
+      env:
+        DOTENV_KEY: ${{ secrets.DOTENV_KEY }}
+```
+
+see [github actions guide](https://dotenvx.com/docs/github-actions)
+
+</details>
+<details><summary>Platforms</summary><br>
+
+```sh
+# heroku
+heroku buildpacks:add https://github.com/dotenvx/heroku-buildpack-dotenvx
+
+# docker
+RUN curl -fsS https://dotenvx.sh | sh
+
+# vercel
+npm install @dotenvx/dotenvx --save
+```
+
+see [platform guides](https://dotenvx.com/docs/platforms)
+
+</details>
+<details><summary>Process Managers</summary><br>
+
+```js
+// pm2
+"scripts": {
+  "start": "dotenvx run -- pm2-runtime start ecosystem.config.js --env production"
+},
+```
+
+see [process manager guides](https://dotenvx.com/docs/process-managers/pm2)
+
+</details>
+<details><summary>npx</summary><br>
+
+```sh
+# alternatively use npx
+$ npx @dotenvx/dotenvx run -- node index.js
+$ npx @dotenvx/dotenvx run -- next dev
+$ npx @dotenvx/dotenvx run -- npm start
+```
+
+</details>
+<details><summary>npm</summary><br>
+
+```sh
+$ npm install @dotenvx/dotenvx --save
+```
+
+```json
+{
+  "scripts": {
+    "start": "./node_modules/.bin/dotenvx run -- node index.js"
+  },
+  "dependencies": {
+    "@dotenvx/dotenvx": "^0.5.0"
+  }
+}
+```
+
+```sh
+$ npm run start
+
+> start
+> ./node_modules/.bin/dotenvx run -- node index.js
+
+[dotenvx@1.X.X] injecting env (1) from .env.production
+Hello World
+```
+
+</details>
+<details><summary>Variable Expansion</summary><br>
+
+Reference and expand variables already on your machine for use in your .env file.
+
+```ini
+# .env
+USERNAME="username"
+DATABASE_URL="postgres://${USERNAME}@localhost/my_database"
+```
+```js
+// index.js
+console.log('DATABASE_URL', process.env.DATABASE_URL)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@0.14.1] injecting env (2) from .env
+DATABASE_URL postgres://username@localhost/my_database
+```
+
+</details>
+<details><summary>Command Substitution</summary><br>
+
+Add the output of a command to one of your variables in your .env file.
+
+```ini
+# .env
+DATABASE_URL="postgres://$(whoami)@localhost/my_database"
+```
+```js
+// index.js
+console.log('DATABASE_URL', process.env.DATABASE_URL)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@0.14.1] injecting env (1) from .env
+DATABASE_URL postgres://yourusername@localhost/my_database
+```
+
+</details>
+
+
+&nbsp;
+
+## Multiple Environments
+
+> Create a `.env.production` file and use `-f` to load it. It's straightforward, yet flexible.
+```sh
+$ echo "HELLO=production" > .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.production -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.production
+Hello production
+> ^^
+```
+
+More examples
+
+<details><summary>multiple `.env` files</summary><br>
+
+```sh
+$ echo "HELLO=local" > .env.local
+
+$ echo "HELLO=World" > .env
+
+$ dotenvx run -f .env.local,.env -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local,.env
+Hello local
+```
+
+Comma-separate multiple files after a single `-f`. Subsequent files do NOT override pre-existing variables defined in previous files or env. This follows historic principle. For example, above `local` wins – from the first file.
+
+</details>
+
+<details><summary>`--overload` flag</summary><br>
+
+```sh
+$ echo "HELLO=local" > .env.local
+
+$ echo "HELLO=World" > .env
+
+$ dotenvx run -f .env.local,.env --overload -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local,.env
+Hello World
+```
+
+Note that with `--overload` subsequent files DO override pre-existing variables defined in previous files.
+</details>
+<details><summary>`--verbose` flag</summary><br>
+
+```sh
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx run -f .env.production --verbose -- node index.js
+[dotenvx][verbose] injecting env from /path/to/.env.production
+[dotenvx][verbose] HELLO set
+[dotenvx@1.X.X] injecting env (1) from .env.production
+Hello production
+```
+
+</details>
+<details><summary>`--debug` flag</summary><br>
+
+```sh
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx run -f .env.production --debug -- node index.js
+[dotenvx][debug] configuring options
+[dotenvx][debug] {"envFile":[".env.production"]}
+[dotenvx][verbose] injecting env from /path/to/.env.production
+[dotenvx][debug] reading env from /path/to/.env.production
+[dotenvx][debug] parsing env from /path/to/.env.production
+[dotenvx][debug] {"HELLO":"production"}
+[dotenvx][debug] writing env from /path/to/.env.production
+[dotenvx][verbose] HELLO set
+[dotenvx][debug] HELLO set to production
+[dotenvx@1.X.X] injecting env (1) from .env.production
+Hello production
+```
+
+</details>
+<details><summary>`--quiet` flag</summary><br>
+
+Use `--quiet` to suppress all output (except errors).
+
+```sh
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx run -f .env.production --quiet -- node index.js
+Hello production
+```
+
+You can also set `DOTENV_QUIET=true`.
+
+```sh
+$ DOTENV_QUIET=true dotenvx run -f .env.production -- node index.js
+Hello production
+```
+
+</details>
+<details><summary>`--log-level` flag</summary><br>
+
+Set `--log-level` to whatever you wish. For example, to suppress warnings (risky), set log level to `error`:
+
+```sh
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx run -f .env.production --log-level=error -- node index.js
+Hello production
+```
+
+Available log levels are `error, warn, info, verbose, debug, silly`
+
+</details>
+<details><summary>`--convention` flag</summary><br>
+
+Load envs using [Next.js' convention](https://nextjs.org/docs/pages/building-your-application/configuring/environment-variables#environment-variable-load-order) or [dotenv-flow convention](https://www.npmjs.com/package/dotenv-flow). Set `--convention` to `nextjs` or `flow`:
+
+```sh
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=env" > .env
+
+$ dotenvx run --convention=nextjs -- node index.js
+Hello development local
+
+$ dotenvx run --convention=flow -- node index.js
+Hello development local
+```
+
+(more conventions available upon request)
+
+</details>
+
+&nbsp;
+
+## Encryption
+
+> Add encryption to your `.env` files with a single command. Use `dotenvx encrypt`.
+
+```sh
+$ dotenvx encrypt
+◈ encrypted (.env)
+```
+
+[![encrypted .env](https://github.com/user-attachments/assets/46dfe1a7-a027-4d80-9207-789eccc325dc)](https://dotenvx.com)
+
+> A `DOTENV_PUBLIC_KEY` (encryption key) and a `DOTENV_PRIVATE_KEY` (decryption key) are generated using the same public-key cryptography as [Bitcoin](https://en.bitcoin.it/wiki/Secp256k1).
+
+More examples
+
+<details><summary>`.env`</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env
+Hello World
+```
+
+</details>
+<details><summary>`.env.production`</summary><br>
+
+```sh
+$ echo "HELLO=Production" > .env.production
+$ dotenvx encrypt -f .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ DOTENV_PRIVATE_KEY_PRODUCTION="<.env.production private key>" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env.production
+Hello Production
+```
+
+Note the `DOTENV_PRIVATE_KEY_PRODUCTION` ends with `_PRODUCTION`. This instructs `dotenvx run` to load the `.env.production` file.
+
+</details>
+<details><summary>`.env.ci`</summary><br>
+
+```sh
+$ echo "HELLO=Ci" > .env.ci
+$ dotenvx encrypt -f .env.ci
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ DOTENV_PRIVATE_KEY_CI="<.env.ci private key>" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env.ci
+Hello Ci
+```
+
+Note the `DOTENV_PRIVATE_KEY_CI` ends with `_CI`. This instructs `dotenvx run` to load the `.env.ci` file. See the pattern?
+
+</details>
+<details><summary>combine multiple encrypted .env files</summary><br>
+
+```sh
+$ dotenvx set HELLO World -f .env
+$ dotenvx set HELLO Production -f .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ DOTENV_PRIVATE_KEY="<.env private key>" DOTENV_PRIVATE_KEY_PRODUCTION="<.env.production private key>" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (3) from .env, .env.production
+Hello World
+```
+
+Note the `DOTENV_PRIVATE_KEY` instructs `dotenvx run` to load the `.env` file and the `DOTENV_PRIVATE_KEY_PRODUCTION` instructs it to load the `.env.production` file. See the pattern?
+
+</details>
+<details><summary>use directories with monorepos</summary><br>
+
+Point `-f` at a directory to load the `.env` inside it. From a workspace, this makes a shared root `.env` available without repeating its filename.
+
+```text
+my-monorepo/
+  .env
+  apps/
+    web/
+      index.js
+```
+
+```sh
+$ dotenvx encrypt
+$ cd apps/web
+
+$ dotenvx get HELLO -f ../..
+World
+
+$ dotenvx run -f ../.. -- node index.js
+[dotenvx@1.X.X] injecting env (1) from ../../.env
+Hello World
+```
+
+With the private key in your OS secret store, dotenvx finds it automatically from any workspace on the same machine.
+
+The directory also becomes the base when using a convention:
+
+```sh
+$ dotenvx run -f ../.. --convention=nextjs -- node index.js
+[dotenvx@1.X.X] injecting env (1) from ../../.env.development.local, ../../.env.local, ../../.env.development, ../../.env
+Hello development local
+```
+
+For a workspace with its own encrypted `.env`, run from that workspace:
+
+```sh
+$ dotenvx run -- node index.js
+```
+
+</details>
+<details><summary>`--stdout`</summary><br>
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt --stdout
+$ dotenvx encrypt --stdout > .env.encrypted
+```
+
+</details>
+
+<details><summary>other curves</summary><br>
+
+> `secp256k1` is a well-known and battle tested curve, in use with Bitcoin and other cryptocurrencies, but we are open to adding support for more curves.
+> 
+> If your organization's compliance department requires [NIST approved curves](https://csrc.nist.gov/projects/elliptic-curve-cryptography) or other curves like `curve25519`, please reach out at [security@dotenvx.com](mailto:security@dotenvx.com).
+
+</details>
+&nbsp;
+
+## Advanced
+
+> Become a `dotenvx` power user.
+>
+
+### CLI 📟
+
+Advanced CLI commands.
+
+<details><summary>`run` - Variable Expansion</summary><br>
+
+Reference and expand variables already on your machine for use in your .env file.
+
+```ini
+# .env
+USERNAME="username"
+DATABASE_URL="postgres://${USERNAME}@localhost/my_database"
+```
+```js
+// index.js
+console.log('DATABASE_URL', process.env.DATABASE_URL)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env
+DATABASE_URL postgres://username@localhost/my_database
+```
+
+</details>
+<details><summary>`run` - Default Values</summary><br>
+
+Use default values when environment variables are unset or empty.
+
+```ini
+# .env
+# Default value syntax: use value if set, otherwise use default
+DATABASE_HOST=${DB_HOST:-localhost}
+DATABASE_PORT=${DB_PORT:-5432}
+
+# Alternative syntax (no colon): use value if set, otherwise use default
+API_URL=${API_BASE_URL-https://api.example.com}
+```
+```js
+// index.js
+console.log('DATABASE_HOST', process.env.DATABASE_HOST)
+console.log('DATABASE_PORT', process.env.DATABASE_PORT)
+console.log('API_URL', process.env.API_URL)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@1.X.X] injecting env (3) from .env
+DATABASE_HOST localhost
+DATABASE_PORT 5432
+API_URL https://api.example.com
+```
+
+</details>
+<details><summary>`run` - Alternate Values</summary><br>
+
+Use alternate values when environment variables are set and non-empty.
+
+```ini
+# .env
+NODE_ENV=production
+
+# Alternate value syntax: use alternate if set and non-empty, otherwise empty
+DEBUG_MODE=${NODE_ENV:+false}
+LOG_LEVEL=${NODE_ENV:+error}
+
+# Alternative syntax (no colon): use alternate if set, otherwise empty  
+CACHE_ENABLED=${NODE_ENV+true}
+```
+```js
+// index.js
+console.log('NODE_ENV', process.env.NODE_ENV)
+console.log('DEBUG_MODE', process.env.DEBUG_MODE)
+console.log('LOG_LEVEL', process.env.LOG_LEVEL)
+console.log('CACHE_ENABLED', process.env.CACHE_ENABLED)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@1.X.X] injecting env (4) from .env
+NODE_ENV production
+DEBUG_MODE false
+LOG_LEVEL error
+CACHE_ENABLED true
+```
+
+</details>
+<details><summary>`run` - Interpolation Syntax Summary (Variable Expansion, Default/Alternate Values)</summary><br>
+
+Complete reference for variable interpolation patterns supported by dotenvx:
+
+```ini
+# .env
+DEFINED_VAR=hello
+EMPTY_VAR=
+# UNDEFINED_VAR is not set
+
+# Default value syntax - use variable if set/non-empty, otherwise use default
+TEST1=${DEFINED_VAR:-fallback}     # Result: "hello"
+TEST2=${EMPTY_VAR:-fallback}       # Result: "fallback"  
+TEST3=${UNDEFINED_VAR:-fallback}   # Result: "fallback"
+
+# Default value syntax (no colon) - use variable if set, otherwise use default
+TEST4=${DEFINED_VAR-fallback}      # Result: "hello"
+TEST5=${EMPTY_VAR-fallback}        # Result: "" (empty, but set)
+TEST6=${UNDEFINED_VAR-fallback}    # Result: "fallback"
+
+# Alternate value syntax - use alternate if variable is set/non-empty, otherwise empty
+TEST7=${DEFINED_VAR:+alternate}    # Result: "alternate"
+TEST8=${EMPTY_VAR:+alternate}      # Result: "" (empty)
+TEST9=${UNDEFINED_VAR:+alternate}  # Result: "" (empty)
+
+# Alternate value syntax (no colon) - use alternate if variable is set, otherwise empty  
+TEST10=${DEFINED_VAR+alternate}    # Result: "alternate"
+TEST11=${EMPTY_VAR+alternate}      # Result: "alternate" (empty but set)
+TEST12=${UNDEFINED_VAR+alternate}  # Result: "" (empty)
+```
+
+**Key differences:**
+- `:-` vs `-`: The colon makes empty values trigger the fallback
+- `:+` vs `+`: The colon makes empty values not trigger the alternate  
+- Default syntax (`-`): Use variable value or fallback
+- Alternate syntax (`+`): Use alternate value or empty string
+
+</details>
+<details><summary>`run` - Command Substitution</summary><br>
+
+Add the output of a command to one of your variables in your .env file.
+
+```ini
+# .env
+DATABASE_URL="postgres://$(whoami)@localhost/my_database"
+```
+```js
+// index.js
+console.log('DATABASE_URL', process.env.DATABASE_URL)
+```
+```sh
+$ dotenvx run --debug -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env
+DATABASE_URL postgres://yourusername@localhost/my_database
+```
+
+</details>
+<details><summary>`run` - Shell Expansion</summary><br>
+
+Prevent your shell from expanding inline `$VARIABLES` before dotenvx has a chance to inject it. Use a subshell.
+
+```sh
+$ dotenvx run --env="HELLO=World" -- sh -c 'echo Hello $HELLO'
+Hello World
+```
+
+</details>
+<details><summary>`run` - Multiline</summary><br>
+
+Dotenvx supports multiline values. This is particularly useful in conjunction with Docker - which [does not support multiline values](https://stackoverflow.com/questions/50299617/set-multiline-environment-variable-with-dockerfile/79578348#79578348).
+
+```ini
+# .env
+MULTILINE_PEM="-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnNl1tL3QjKp3DZWM0T3u
+LgGJQwu9WqyzHKZ6WIA5T+7zPjO1L8l3S8k8YzBrfH4mqWOD1GBI8Yjq2L1ac3Y/
+bTdfHN8CmQr2iDJC0C6zY8YV93oZB3x0zC/LPbRYpF8f6OqX1lZj5vo2zJZy4fI/
+kKcI5jHYc8VJq+KCuRZrvn+3V+KuL9tF9v8ZgjF2PZbU+LsCy5Yqg1M8f5Jp5f6V
+u4QuUoobAgMBAAE=
+-----END PUBLIC KEY-----"
+```
+
+```js
+// index.js
+console.log('MULTILINE_PEM', process.env.MULTILINE_PEM)
+```
+
+```sh
+$ dotenvx run -- node index.js
+MULTILINE_PEM -----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnNl1tL3QjKp3DZWM0T3u
+LgGJQwu9WqyzHKZ6WIA5T+7zPjO1L8l3S8k8YzBrfH4mqWOD1GBI8Yjq2L1ac3Y/
+bTdfHN8CmQr2iDJC0C6zY8YV93oZB3x0zC/LPbRYpF8f6OqX1lZj5vo2zJZy4fI/
+kKcI5jHYc8VJq+KCuRZrvn+3V+KuL9tF9v8ZgjF2PZbU+LsCy5Yqg1M8f5Jp5f6V
+u4QuUoobAgMBAAE=
+-----END PUBLIC KEY-----
+```
+
+</details>
+<details><summary>`run` - Contextual Help</summary><br>
+
+Unlike other dotenv libraries, dotenvx attempts to unblock you with contextual help.
+
+For example, when missing a custom .env file:
+
+```sh
+$ dotenvx run -f .env.missing -- echo $HELLO
+[MISSING_ENV_FILE] missing file (/Users/scottmotte/Code/dotenvx/playground/apr-16/.env.missing). fix: [echo "HELLO=World" > .env.missing]
+```
+
+or when missing a KEY:
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx get GOODBYE
+[MISSING_KEY] missing key (GOODBYE)
+```
+
+</details>
+<details><summary>`run` - 1Password</summary><br>
+
+Resolve [1Password op://](https://developer.1password.com/docs/cli/secrets-reference-syntax/) directly from your `.env` file.
+
+```ini
+# .env
+API_KEY=op://Personal/my_api_key/password
+```
+
+Install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/) and authenticate with `op`. Dotenvx automatically reads `op://` values through `op read` before injecting them.
+
+```sh
+$ dotenvx run -- node index.js
+```
+
+Use `--no-1password` to leave `op://` values unresolved.
+
+```sh
+$ dotenvx run --no-1password -- node index.js
+```
+
+The same flag is available for `dotenvx get` and `dotenvx check`.
+
+</details>
+<details><summary>`run` - Bitwarden</summary><br>
+
+Resolve `bw://` references directly from your `.env` file through the [Bitwarden Password Manager CLI](https://bitwarden.com/help/cli/).
+
+```ini
+# .env
+API_KEY="bw://My GitHub Account/password"
+```
+
+The reference format is `bw://<item>/<field>`. The item can be a human-readable Bitwarden search term or an exact item UUID. Quote the dotenv value when the item name contains spaces.
+
+Supported fields are:
+
+- `username`
+- `password`
+- `uri`
+
+When the vault is locked in an interactive terminal, dotenvx prompts for your Bitwarden master password.
+
+Human-readable names are convenient, but must identify a single item. If multiple items match, Bitwarden returns an error. Use the item UUID when you need an unambiguous reference.
+
+If Bitwarden cannot resolve a reference, dotenvx reports the error and leaves the original `bw://` value unresolved.
+
+Use `--no-bitwarden` to skip Bitwarden resolution intentionally.
+
+```sh
+$ dotenvx run --no-bitwarden -- node index.js
+```
+
+The same flag is available for `dotenvx get` and `dotenvx check`.
+
+</details>
+<details><summary>`run -f <directory>`</summary><br>
+
+Run a command using the `.env` file in a directory. This is useful with monorepos.
+
+```sh
+$ dotenvx run -f ../.. -- node index.js
+[dotenvx@1.X.X] injecting env (1) from ../../.env
+Hello World
+```
+
+</details>
+<details><summary>`run -f` - multiple files</summary><br>
+
+Compose multiple `.env` files for environment variables loading, as you need.
+
+```sh
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=World" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.local,.env -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local, .env
+Hello local
+```
+
+Comma-separate multiple files after a single `-f`. Subsequent files do NOT override pre-existing variables defined in previous files or env. This follows historic principle. For example, above `local` wins – from the first file.
+
+</details>
+<details><summary>`run --env HELLO=String`</summary><br>
+
+Set environment variables as a simple `KEY=value` string pair.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run --env HELLO=String -f .env -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env, and --env flag
+Hello String
+```
+
+</details>
+<details><summary>`run with Envfile redaction`</summary><br>
+
+Run any command with real environment variables while automatically redacting values selected by your Envfile from stdout and stderr.
+
+```sh
+$ echo "SECRET=super-secret-value" > .env
+$ echo "PUBLIC_VALUE=visible-value" >> .env
+$ echo "console.log(process.env.SECRET, process.env.PUBLIC_VALUE)" > index.js
+
+$ dotenvx spec
+$ dotenvx run --quiet -- node index.js
+[REDACTED] visible-value
+```
+
+With an Envfile, all values are redacted by default. Use `redacted: false` on individual declarations to leave those values visible. `spec` generates these settings, including public-name exceptions. If an existing environment variable takes precedence, its effective value follows the same rules. Matching is exact, so transformed or derived values are not redacted.
+
+Without an Envfile, `dotenvx run --redact -- yourcommand` redacts loaded values except recognized public names (containing `PUBLIC` or starting with `VITE`, case-sensitive). `_PLAIN` values are redacted too. Without either an Envfile or `--redact`, output is not redacted. An Envfile always takes precedence: its rules apply automatically, even when `--redact` is passed.
+
+When stdin, stdout, and stderr are attached to a terminal, dotenvx preserves interactive behavior on macOS and Linux systems with `script` available. Piped and redirected commands continue to use normal stdin, stdout, and stderr streams.
+
+</details>
+<details><summary>`run -- claude -p`</summary><br>
+
+Run Claude in print mode with real environment variables while redacting any values it prints.
+
+```sh
+$ echo "SECRET=super-secret-value" > .env
+
+$ dotenvx spec
+$ dotenvx run --quiet -- claude -p 'Print the value of $SECRET'
+[REDACTED]
+```
+
+</details>
+<details><summary>`run -- claude`</summary><br>
+
+Start a fully interactive Claude session. Claude receives the real values, but any values it prints are redacted.
+
+```sh
+$ echo "SECRET=super-secret-value" > .env
+
+$ dotenvx spec
+$ dotenvx run --quiet -- claude
+```
+
+</details>
+<details><summary>`run -- codex exec`</summary><br>
+
+Run Codex non-interactively with real environment variables while redacting any values it prints.
+
+```sh
+$ echo "SECRET=super-secret-value" > .env
+
+$ dotenvx spec
+$ dotenvx run --quiet -- codex exec 'Print the value of $SECRET'
+[REDACTED]
+```
+
+</details>
+<details><summary>`run -- codex`</summary><br>
+
+Start a fully interactive Codex session. Codex receives the real values, but any values it prints are redacted.
+
+```sh
+$ echo "SECRET=super-secret-value" > .env
+
+$ dotenvx spec
+$ dotenvx run --quiet -- codex
+```
+
+</details>
+<details><summary>`run --overload`</summary><br>
+
+Override existing env variables. These can be variables already on your machine or variables loaded as files consecutively. The last variable seen will 'win'.
+
+```sh
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=World" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.local,.env --overload -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local, .env
+Hello World
+```
+
+Note that with `--overload` subsequent files DO override pre-existing variables defined in previous files.
+
+</details>
+<details><summary>`run` - Environment Variable Precedence (Container/Cloud Deployments)</summary><br>
+
+When deploying applications in containers or cloud environments, you often need to override specific environment variables at runtime without modifying committed `.env` files. By default, dotenvx follows the historic dotenv principle: **environment variables already present take precedence over `.env` files**.
+
+```sh
+# .env.prod contains: MODEL_REGISTRY=registry.company.com/models/v1
+$ echo "MODEL_REGISTRY=registry.company.com/models/v1" > .env.prod
+$ echo "console.log('MODEL_REGISTRY:', process.env.MODEL_REGISTRY)" > app.js
+
+# Without environment variable set - uses .env.prod value
+$ dotenvx run -f .env.prod -- node app.js
+MODEL_REGISTRY: registry.company.com/models/v1
+
+# With environment variable set (e.g., via Azure Container Service) - environment variable takes precedence
+$ MODEL_REGISTRY=registry.azure.com/models/v2 dotenvx run -f .env.prod -- node app.js
+MODEL_REGISTRY: registry.azure.com/models/v2
+
+# To force .env.prod to override environment variables, use --overload
+$ MODEL_REGISTRY=registry.azure.com/models/v2 dotenvx run -f .env.prod --overload -- node app.js
+MODEL_REGISTRY: registry.company.com/models/v1
+```
+
+**For container deployments:** Set environment variables through your cloud provider's UI/configuration (Azure Container Service, AWS ECS, etc.) to override specific values from committed `.env` files without rebuilding your application.
+
+</details>
+<details><summary>`DOTENV_PRIVATE_KEY=key run`</summary><br>
+
+Decrypt your encrypted `.env` by setting `DOTENV_PRIVATE_KEY` before `dotenvx run`.
+
+```sh
+$ touch .env
+$ dotenvx set HELLO encrypted
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+# check your .env.keys files for your privateKey
+$ DOTENV_PRIVATE_KEY="122...0b8" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env
+Hello encrypted
+```
+
+</details>
+<details><summary>`DOTENV_PRIVATE_KEY_PRODUCTION=key run`</summary><br>
+
+Decrypt your encrypted `.env.production` by setting `DOTENV_PRIVATE_KEY_PRODUCTION` before `dotenvx run`. Alternatively, this can be already set on your server or cloud provider.
+
+```sh
+$ touch .env.production
+$ dotenvx set HELLO "production encrypted" -f .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+# check .env.keys for your privateKey
+$ DOTENV_PRIVATE_KEY_PRODUCTION="122...0b8" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env.production
+Hello production encrypted
+```
+
+Note the `DOTENV_PRIVATE_KEY_PRODUCTION` ends with `_PRODUCTION`. This instructs dotenvx run to load the `.env.production` file.
+
+</details>
+<details><summary>`DOTENV_PRIVATE_KEY_CI=key dotenvx run`</summary><br>
+
+Decrypt your encrypted `.env.ci` by setting `DOTENV_PRIVATE_KEY_CI` before `dotenvx run`. Alternatively, this can be already set on your server or cloud provider.
+
+```sh
+$ touch .env.ci
+$ dotenvx set HELLO "ci encrypted" -f .env.ci
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+# check .env.keys for your privateKey
+$ DOTENV_PRIVATE_KEY_CI="122...0b8" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (2) from .env.ci
+Hello ci encrypted
+```
+
+Note the `DOTENV_PRIVATE_KEY_CI` ends with `_CI`. This instructs dotenvx run to load the `.env.ci` file. See the pattern?
+
+</details>
+<details><summary>`DOTENV_PRIVATE_KEY=key DOTENV_PRIVATE_KEY_PRODUCTION=key run` - Combine Multiple</summary><br>
+
+Decrypt your encrypted `.env` and `.env.production` files by setting `DOTENV_PRIVATE_KEY` and `DOTENV_PRIVATE_KEY_PRODUCTION` before `dotenvx run`. 
+
+```sh
+$ touch .env
+$ touch .env.production
+$ dotenvx set HELLO encrypted
+$ dotenvx set HELLO "production encrypted" -f .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+# check .env.keys for your privateKeys
+$ DOTENV_PRIVATE_KEY="122...0b8" DOTENV_PRIVATE_KEY_PRODUCTION="122...0b8" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (3) from .env, .env.production
+Hello encrypted
+
+$ DOTENV_PRIVATE_KEY_PRODUCTION="122...0b8" DOTENV_PRIVATE_KEY="122...0b8" dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (3) from .env.production, .env
+Hello production encrypted
+```
+
+Compose any encrypted files you want this way. As long as a `DOTENV_PRIVATE_KEY_${environment}` is set, the values from `.env.${environment}` will be decrypted at runtime.
+
+</details>
+<details><summary>`run --verbose`</summary><br>
+
+Set log level to `verbose`. ([log levels](https://docs.npmjs.com/cli/v8/using-npm/logging#setting-log-levels))
+
+```sh
+$ echo "HELLO=production" > .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.production --verbose -- node index.js
+loading env from .env.production (/path/to/.env.production)
+HELLO set
+[dotenvx@1.X.X] injecting env (1) from .env.production
+Hello production
+```
+
+</details>
+<details><summary>`run --debug`</summary><br>
+
+Set log level to `debug`. ([log levels](https://docs.npmjs.com/cli/v8/using-npm/logging#setting-log-levels))
+
+```sh
+$ echo "HELLO=production" > .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.production --debug -- node index.js
+process command [node index.js]
+options: {"env":[],"envFile":[".env.production"]}
+loading env from .env.production (/path/to/.env.production)
+{"HELLO":"production"}
+HELLO set
+HELLO set to production
+[dotenvx@1.X.X] injecting env (1) from .env.production
+executing process command [node index.js]
+expanding process command to [/opt/homebrew/bin/node index.js]
+Hello production
+```
+
+</details>
+<details><summary>`run --quiet`</summary><br>
+
+Use `--quiet` to suppress all output (except errors). ([log levels](https://docs.npmjs.com/cli/v8/using-npm/logging#setting-log-levels))
+
+```sh
+$ echo "HELLO=production" > .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.production --quiet -- node index.js
+Hello production
+```
+
+You can also set `DOTENV_QUIET=true`.
+
+```sh
+$ DOTENV_QUIET=true dotenvx run -f .env.production -- node index.js
+Hello production
+```
+
+</details>
+<details><summary>`run --log-level`</summary><br>
+
+Set `--log-level` to whatever you wish. For example, to suppress warnings (risky), set log level to `error`:
+
+```sh
+$ echo "HELLO=production" > .env.production
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.production --log-level=error -- node index.js
+Hello production
+```
+
+Available log levels are `error, warn, info, verbose, debug, silly` ([source](https://docs.npmjs.com/cli/v8/using-npm/logging#setting-log-levels))
+
+</details>
+<details><summary>`run with an Envfile`</summary><br>
+
+`Envfile` is like a Dockerfile for your secrets.
+
+When an `Envfile` is present, `run` and `check` validate the same requirements: required values, types, enums, and ranges. No validation flag is needed. `run` performs validation before starting your command.
+
+```ruby
+# Envfile
+env "DATABASE_URL", type: "url"
+env "API_KEY"
+env "SENTRY_DSN", optional: true
+```
+
+```sh
+$ dotenvx run -- node index.js
+[INVALID_ENV] DATABASE_URL is required; API_KEY is required
+```
+
+Envfile validation failures warn by default; `run --strict` stops before launching the command. A `strict true` setting in Envfile, at the root or in an active file block, also makes its validation failures fatal. `check` always exits with failure when validation fails. Strictness changes enforcement, not which rules are checked. Invalid Envfile syntax always stops execution.
+
+Envfile values default to `redacted: true`: `run` masks their values in child stdout/stderr and resolved-value debug output, while the child still receives the real values. Set `redacted: false` for values that may appear in output. This is independent of `encrypted: true`, which controls encryption in `encrypt`, `set`, and `protect`.
+
+The synchronous `dotenvx.config()` API also reads `Envfile` from the current working directory and validates the final resolved values using the same rules, including selected file blocks. Validation failures warn and are returned in `{ parsed, error }`; `config({ strict: true })` or an applicable Envfile `strict true` setting makes failures throw. `ignore: ['INVALID_ENV']` suppresses validation failures. Invalid Envfile syntax always throws before loading values. With an Envfile, `config()` automatically redacts subsequent writes through Node's stdout/stderr streams, including existing `console.log` and `console.error` calls. Environment values and returned values stay unchanged. Repeated calls retain earlier secrets and add newly loaded ones. An unfinished secret prefix is masked at shutdown. Direct native writes and child processes inheriting file descriptors bypass these wrappers; use `dotenvx run` to capture child output.
+
+```ruby
+file ".env.development" do
+  env "BASE_URL", type: "url", redacted: false
+  env "TOKEN_SECRET", encrypted: true
+end
+```
+
+`spec` generates declarations with encryption and redaction required by default. Encryption is required by default: root and file-level `encrypted` settings are not supported. Use `encrypted: false` on individual declarations to permit plaintext. Entirely plaintext inputs generate no encryption exceptions except for keys ending in `_PLAIN`, so the next `encrypt` encrypts the remaining values. `_PLAIN` keys get `encrypted: false` only when none of their assignments contain ciphertext; code-only references do not infer this exception. For files that already contain ciphertext, `spec` preserves plaintext values with per-key exceptions. Source files are never modified.
+
+`spec` infers `redacted: false` for names starting with `PUBLIC`, `VITE`, `NEXT_PUBLIC`, or `NUXT_PUBLIC`, or containing `PUBLIC` anywhere (case-sensitive). This affects visibility only; public names still require encryption unless explicitly exempted. Other names, including those ending in `_PLAIN`, remain redacted.
+
+`dotenvx spec` always generates `Envfile` with `strict true` at the top, including with `--overwrite` or `--stdout`. Generated policies stop commands on validation failures. Existing policies that omit `strict` continue to warn.
+
+If an Envfile already exists, `spec` leaves it untouched and prints `○ Envfile already exists [edit or run: spec --overwrite]`. Use `spec --overwrite` to regenerate it from the selected inputs, replacing custom rules, comments, and blocks for files absent from this machine. Interactive overwrite runs show the full file-and-code checklist with the prompt `Recreate Envfile from .env files and code`. Noninteractive runs use `.env.example` and `.env`, or the file selected with `-f`. Input validation finishes before the old Envfile is replaced; cancelled selection leaves it untouched. Symlinked Envfiles cannot be overwritten.
+
+Use `dotenvx spec --stdout` to print the generated Envfile without writing it, or `dotenvx spec --stdout -f .env.production` to select an input file. This works even when an Envfile already exists; `--stdout` leaves it untouched even with `--overwrite`. Prompts and progress stay on stderr so stdout contains only the generated content.
+
+Root and file-level `redacted` settings are not supported. Use per-key `redacted: false` to permit output visibility. When selected files specify conflicting options, the first file's explicit option wins. `check` previews values with policy-driven redaction and reports issues per key.
+
+
+</details>
+<details><summary>`run with Envfile file rules`</summary><br>
+
+Use exact file blocks to override rules for selected files:
+
+```ruby
+env "HELLO"
+env "PORT", type: "port"
+env "STRIPE_SECRET_KEY", optional: true
+
+file ".env.production" do
+  env "STRIPE_SECRET_KEY", required: true
+  env "PORT", min: 1024
+end
+```
+
+Profiles select file combinations:
+
+```ruby
+profile "development", files: [".env.local", ".env"]
+profile "production", files: [".env.production"]
+```
+
+Selection order is explicit `-f`, `--profile`, `DOTENV_FILE` / `DOTENV_PATH` / `DOTENV_F`, then `DOTENV_ENV`, `APP_ENV`, `RAILS_ENV`, `RACK_ENV`, `MIX_ENV`, and `NODE_ENV`. Without a selector, the development profile is used if declared; otherwise `.env`. Explicit unknown profiles fail.
+
+Both `dotenvx run -f .env.production -- node index.js` and `dotenvx check -f .env.production` use the production rules. Block declarations inherit top-level options and override only the options they specify. Encryption and redaction are specified per key.
+
+Paths in file blocks are relative to the Envfile. They match the selected paths exactly after path normalization (`./.env.production` matches `.env.production`); they are not basename matches or globs. Directory inputs and `DOTENV_FILE` use their resolved file paths.
+
+When no file block matches, top-level rules apply. Selected file blocks override explicit options in file order: the first file wins. Policy selection is independent of where the final value comes from, including shell values and `--overload`. A selected missing file still activates its block. Blocks cannot be nested, and duplicate declarations within one scope or duplicate file blocks are errors.
+
+</details>
+<details><summary>`check`</summary><br>
+
+Validate the final resolved environment against your Envfile, using the same loader and precedence as `run`:
+
+```sh
+$ dotenvx check -f .env.local -f .env
+✔ PORT=3000 # .env.local:1
+
+$ dotenvx check -f .env.production
+☠ PORT=bad # .env.production:4 !port
+```
+
+Envfile `file` blocks define policy; they do not select files to load. By default, `check` uses the same profile and file selection as `run`. Use repeated `-f` flags or `--convention` to select layers. `DOTENV_FILE` and its aliases are also supported.
+
+All selected sources are merged before validation. The first file wins by default, existing shell values take precedence, and `--overload` lets later sources override earlier values. Partial files can satisfy the schema together. Validation checks final values; encryption requirements are enforced separately by `encrypt`, `set`, and `protect`. Rules are combined independently, with the first explicit file option winning.
+
+Missing files explicitly selected with `-f` or `DOTENV_FILE` (and its aliases) fail the check. Missing optional convention layers and implicit default files are reported as `○ skipped (filename)`. `check` has no `--strict` flag. Required values must still resolve; shell or inline values can satisfy the schema without a local file. A check with no readable files, inline values, or declared shell values fails rather than reporting an empty success.
+
+The preview shows redacted values and per-key diagnostics on stdout, with source locations where available. Loading errors go to stderr. `--quiet` suppresses the preview. Failed checks exit with code 1.
+
+</details>
+<details><summary>`protect with an Envfile`</summary><br>
+
+The Git protection filter reads `Envfile` in the same directory as the file being staged. Encryption is required by default. Keys explicitly marked `encrypted: false` may be committed as plaintext:
+
+```ruby
+env "BASE_URL", encrypted: false
+env "TOKEN_SECRET"
+```
+
+This permits plaintext `BASE_URL` while requiring `TOKEN_SECRET` and undeclared keys to be encrypted. Only keys explicitly marked `encrypted: false` may remain plaintext. `redacted` only controls output visibility.
+
+Without an Envfile, protection keeps its existing rules, including exemptions for `.env.example`, `.env.vault`, and `.env.x`. A `_PLAIN` suffix alone does not permit plaintext through Git protection.
+
+Protection inspects every assignment in the incoming Git blob, including duplicates. It does not merge files, use shell overrides, or decrypt values. Empty values, public encryption keys, and `op://` / `bw://` references remain allowed. Private-key files (`.env.keys*`) and nonempty plaintext `DOTENV_PRIVATE_KEY` values remain blocked even with `encrypted: false`.
+
+The policy is read from the working-tree Envfile beside the staged file, even if that policy itself is unstaged. If no adjacent Envfile exists, the Git repository root is checked. Invalid or unreadable policies block staging with an error. Envfile encryption rules also apply to otherwise exempt files such as `.env.example`.
+
+Accepted blobs pass through byte-for-byte. This integration applies to Git protection, not `protect --docker`.
+
+</details>
+<details><summary>`run --strict`</summary><br>
+
+Exit with code `1` if any errors are encountered - like a missing .env file or decryption failure.
+
+```sh
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.missing --strict -- node index.js
+[MISSING_ENV_FILE] missing file (/path/to/.env.missing). fix: [echo "HELLO=World" > .env.missing]
+```
+
+This can be useful in `ci` scripts where you want to fail the ci if your `.env` file could not be decrypted at runtime.
+
+</details>
+<details><summary>`run --ignore`</summary><br>
+
+Ignore errors like `MISSING_ENV_FILE`.
+
+```sh
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run -f .env.missing --ignore=MISSING_ENV_FILE -- node index.js
+...
+```
+
+You can also set `DOTENV_IGNORE="MISSING_ENV_FILE"`. It is parsed as a comma-separated list.
+
+```sh
+$ DOTENV_IGNORE="MISSING_ENV_FILE,OTHER_ERROR_CODE" dotenvx run -f .env.missing -- node index.js
+```
+</details>
+<details><summary>`run --convention=nextjs`</summary><br>
+
+Load envs using [Next.js' convention](https://nextjs.org/docs/pages/building-your-application/configuring/environment-variables#environment-variable-load-order). Set `--convention` to `nextjs`:
+
+```sh
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=env" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx run --convention=nextjs -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.development.local, .env.local, .env.development, .env
+Hello development local
+```
+
+You can also set `DOTENV_CONVENTION=nextjs`.
+
+```sh
+$ DOTENV_CONVENTION=nextjs dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.development.local, .env.local, .env.development, .env
+Hello development local
+```
+
+(more conventions available upon request)
+
+</details>
+<details><summary>`run -f <directory> --convention=nextjs`</summary><br>
+
+Run a command using Next.js' convention from a directory. This is useful with monorepos.
+
+```sh
+$ dotenvx run -f ../.. --convention=nextjs -- node index.js
+[dotenvx@1.X.X] injecting env (1) from ../../.env.development.local, ../../.env.local, ../../.env.development, ../../.env
+Hello development local
+```
+
+</details>
+<details><summary>`run --convention=flow`</summary><br>
+
+Load envs using [dotenv-flow's convention](https://www.npmjs.com/package/dotenv-flow). Set `--convention` to `flow`:
+
+```sh
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=env" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ NODE_ENV=development dotenvx run --convention=flow -- node index.js 
+[dotenvx@1.X.X] injecting env (1) from .env.development.local, .env.development, .env.local, .env
+Hello development local
+```
+
+You can also set `DOTENV_CONVENTION=flow`.
+
+```sh
+$ NODE_ENV=development DOTENV_CONVENTION=flow dotenvx run -- node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.development.local, .env.development, .env.local, .env
+Hello development local
+```
+
+Further, we recommend using `DOTENV_ENV` over `NODE_ENV`– as `dotenvx` works everywhere, not just node.
+
+```sh
+$ DOTENV_ENV=development dotenvx run --convention=flow -- node index.js 
+[dotenvx@1.X.X] injecting env (1) from .env.development.local, .env.development, .env.local, .env
+Hello development local
+```
+
+</details>
+<details><summary>`run -fk`</summary><br>
+
+Specify a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ touch apps/app1/.env
+$ dotenvx set HELLO World -fk .env.keys -f apps/app1/.env
+
+$ dotenvx run -fk .env.keys -f apps/app1/.env -- yourcommand
+```
+
+</details>
+<details><summary>`run --mask`</summary><br>
+
+Inject masked values into the command. By default, up to the first six characters are visible.
+
+```sh
+$ echo "SECRET=abcdefghijkl" > .env
+$ echo "console.log(process.env.SECRET)" > index.js
+
+$ dotenvx run --mask --quiet -- node index.js
+abcdef******
+```
+
+Pass a number to control how many characters are visible, such as `--mask 0` to fully mask values.
+
+</details>
+<details><summary>`run --token`</summary><br>
+
+Set Armor ⛨ token for retrieving armored private keys.
+
+```sh
+$ dotenvx run --token "$DOTENVX_ARMOR_TOKEN" -- yourcommand
+```
+
+</details>
+<details><summary>`run --no-native`</summary><br>
+
+Turn off OS secret store lookups.
+
+```sh
+$ dotenvx run --no-native -- yourcommand
+```
+
+</details>
+<details><summary>`run --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features.
+
+```sh
+$ dotenvx run --no-armor -- yourcommand
+```
+
+</details>
+<details><summary>`get KEY`</summary><br>
+
+Return a single environment variable's value.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get HELLO
+World
+```
+
+</details>
+<details><summary>`get KEY --mask`</summary><br>
+
+Return a masked environment variable value. By default, up to the first six characters are visible.
+
+```sh
+$ echo "SECRET=abcdefghijkl" > .env
+
+$ dotenvx get SECRET --mask
+abcdef******
+```
+
+Pass a number to control how many characters are visible, such as `--mask 0` to fully mask values.
+
+</details>
+<details><summary>`get KEY --no-native`</summary><br>
+
+Turn off OS secret store lookups for get.
+
+```sh
+$ dotenvx get HELLO --no-native
+```
+
+</details>
+<details><summary>`get KEY --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features for get.
+
+```sh
+$ dotenvx get HELLO --no-armor
+World
+```
+
+</details>
+<details><summary>`get KEY --ignore`</summary><br>
+
+Ignore specific error codes.
+
+```sh
+$ dotenvx get HELLO --ignore=MISSING_ENV_FILE
+```
+
+Ignore multiple error codes by separating them with spaces.
+
+```sh
+$ dotenvx get HELLO --ignore=MISSING_ENV_FILE MISSING_KEY
+```
+
+You can also set `DOTENV_IGNORE`. Its value is a comma-separated list.
+
+```sh
+$ DOTENV_IGNORE=MISSING_ENV_FILE,OTHER dotenvx get HELLO
+```
+
+</details>
+<details><summary>`get KEY -f`</summary><br>
+
+Return a single environment variable's value from a specific `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx get HELLO -f .env.production
+production
+```
+
+</details>
+<details><summary>`get KEY -f <directory>`</summary><br>
+
+Return a single environment variable's value from the `.env` file in a directory. This is useful with monorepos.
+
+```sh
+$ dotenvx get HELLO -f ../..
+World
+```
+
+</details>
+<details><summary>`get KEY -fk`</summary><br>
+
+Specify a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ touch apps/app1/.env
+$ dotenvx set HELLO World -fk .env.keys -f apps/app1/.env
+
+$ dotenvx get HELLO -fk .env.keys -f apps/app1/.env
+world
+```
+
+</details>
+<details><summary>`get KEY --env`</summary><br>
+
+Return a single environment variable's value from a `--env` string.
+
+```sh
+$ dotenvx get HELLO --env HELLO=String -f .env.production
+String
+```
+
+</details>
+
+<details><summary>`get KEY --overload`</summary><br>
+
+Return a single environment variable's value where each found value is overloaded.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx get HELLO -f .env.production --env HELLO=String -f .env --overload
+World
+```
+
+</details>
+<details><summary>`get KEY --strict`</summary><br>
+
+Exit with code `1` if any errors are encountered - like a missing key, missing .env file, or decryption failure.
+
+```sh
+$ dotenvx get DOES_NOT_EXIST --strict
+[MISSING_KEY] missing key (DOES_NOT_EXIST)
+```
+
+</details>
+<details><summary>`get KEY --convention=nextjs`</summary><br>
+
+Return a single environment variable's value using [Next.js' convention](https://nextjs.org/docs/pages/building-your-application/configuring/environment-variables#environment-variable-load-order). Set `--convention` to `nextjs`:
+
+```sh
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=env" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ dotenvx get HELLO --convention=nextjs
+development local
+```
+
+You can also set `DOTENV_CONVENTION=nextjs`.
+
+```sh
+$ DOTENV_CONVENTION=nextjs dotenvx get HELLO
+development local
+```
+
+</details>
+<details><summary>`get KEY -f <directory> --convention=nextjs`</summary><br>
+
+Return a single environment variable's value using Next.js' convention from a directory. This is useful with monorepos.
+
+```sh
+$ dotenvx get HELLO -f ../.. --convention=nextjs
+development local
+```
+
+</details>
+<details><summary>`get KEY --convention=flow`</summary><br>
+
+Return a single environment variable's value using [dotenv-flow's convention](https://www.npmjs.com/package/dotenv-flow). Set `--convention` to `flow`:
+
+```sh
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=env" > .env
+$ echo "console.log('Hello ' + process.env.HELLO)" > index.js
+
+$ NODE_ENV=development dotenvx get HELLO --convention=flow
+development local
+```
+
+You can also set `DOTENV_CONVENTION=flow`.
+
+```sh
+$ NODE_ENV=development DOTENV_CONVENTION=flow dotenvx get HELLO
+development local
+```
+
+Further, we recommend using `DOTENV_ENV` over `NODE_ENV`– as `dotenvx` works everywhere, not just node.
+
+```sh
+$ DOTENV_ENV=development dotenvx get HELLO --convention=flow
+development local
+```
+
+</details>
+<details><summary>`get` (json)</summary><br>
+
+Return a json response of all key/value pairs in a `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get
+{"HELLO":"World"}
+```
+
+</details>
+<details><summary>`get --pretty-print`</summary><br>
+
+Make the JSON output more readable.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get --pretty-print
+{
+  "HELLO": "World"
+}
+```
+
+</details>
+<details><summary>`get -ik`</summary><br>
+
+Include only matching keys by passing `--include-key`. Glob patterns are supported.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo\nGOODBYE=World" > .env
+
+$ dotenvx get -ik "H*"
+{"HELLO":"World","HOLA":"Mundo"}
+```
+
+</details>
+<details><summary>`get -ek`</summary><br>
+
+Exclude matching keys by passing `--exclude-key`. Glob patterns are supported.
+
+```sh
+$ echo "DOTENV_PUBLIC_KEY=public\nHELLO=World" > .env
+
+$ dotenvx get --format=eval-export -ek "DOTENV_PUBLIC_KEY*"
+export HELLO='World'
+```
+
+</details>
+<details><summary>`get --format colon`</summary><br>
+
+Return a colon-formatted response of all key/value pairs in a `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get --format colon
+HELLO: World
+```
+
+</details>
+<details><summary>`get --format shell`</summary><br>
+
+Return a shell formatted response of all key/value pairs in a `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "KEY=value" >> .env
+
+$ dotenvx get --format shell
+HELLO=World KEY=value
+```
+
+This can be useful when combined with `env` on the command line.
+
+```
+$ echo "console.log('Hello ' + process.env.KEY + ' ' + process.env.HELLO)" > index.js
+$ env $(dotenvx get --format=shell) node index.js
+Hello value World
+```
+
+or with `export`.
+
+```
+$ echo "console.log('Hello ' + process.env.KEY + ' ' + process.env.HELLO)" > index.js
+$ export $(dotenvx get --format=shell)
+$ node index.js
+Hello value World
+```
+
+</details>
+<details><summary>`get --format eval`</summary><br>
+
+Return an `eval`-ready shell formatted response of all key/value pairs in a `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "KEY=value" >> .env
+
+$ dotenvx get --format eval
+HELLO="World"
+KEY="value"
+```
+
+Note that this exports newlines and quoted strings.
+
+This can be useful for more complex .env values (spaces, escaped characters, quotes, etc) combined with `eval` on the command line.
+
+```sh
+$ echo "console.log('Hello ' + process.env.KEY + ' ' + process.env.HELLO)" > index.js
+$ eval $(dotenvx get --format=eval) node index.js
+Hello value World
+```
+
+Be careful with `eval` as it allows for arbitrary execution of commands. Prefer `dotenvx run --` but in some cases `eval` is a sharp knife that is useful to have.
+
+</details>
+
+<details><summary>`get --all`</summary><br>
+
+Return preset machine envs as well.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get --all
+{"PWD":"/some/file/path","USER":"username","LIBRARY_PATH":"/usr/local/lib", ..., "HELLO":"World"}
+```
+
+</details>
+<details><summary>`get --all --pretty-print`</summary><br>
+
+Make the output more readable - pretty print it.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx get --all --pretty-print
+{
+  "PWD": "/some/filepath",
+  "USER": "username",
+  "LIBRARY_PATH": "/usr/local/lib",
+  ...,
+  "HELLO": "World"
+}
+```
+
+</details>
+<details><summary>`set KEY value`</summary><br>
+
+Set an encrypted key/value (on by default).
+
+```sh
+$ touch .env
+
+$ dotenvx set HELLO World
+set HELLO with encryption (.env)
+```
+
+</details>
+<details><summary>`set KEY value -f`</summary><br>
+
+Set an (encrypted) key/value for another `.env` file.
+
+```sh
+$ touch .env.production
+
+$ dotenvx set HELLO production -f .env.production
+set HELLO with encryption (.env.production)
+```
+
+</details>
+<details><summary>`set KEY value -fk`</summary><br>
+
+Specify a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ touch apps/app1/.env
+
+$ dotenvx set HELLO World -fk .env.keys -f apps/app1/.env
+set HELLO with encryption (.env)
+```
+
+Put it to use.
+
+```sh
+$ dotenvx get -fk .env.keys -f apps/app1/.env
+```
+
+Use it with a relative path.
+
+```sh
+$ cd apps/app1
+$ dotenvx get -fk ../../.env.keys -f .env
+```
+
+</details>
+<details><summary>`set KEY "value with spaces"`</summary><br>
+
+Set a value containing spaces.
+
+```sh
+$ touch .env.ci
+
+$ dotenvx set HELLO "my ci" -f .env.ci
+set HELLO with encryption (.env.ci)
+```
+
+</details>
+<details><summary>`set KEY -- "- + * ÷"`</summary><br>
+
+If your value starts with a dash (`-`), then place two dashes instructing the cli that there are no more flag arguments.
+
+```sh
+$ touch .env.ci
+
+$ dotenvx set HELLO -f .env.ci -- "- + * ÷"
+set HELLO with encryption (.env.ci)
+```
+
+</details>
+<details><summary>`set KEY value --plain`</summary><br>
+
+Set a plaintext key/value.
+
+```sh
+$ touch .env
+
+$ dotenvx set HELLO World --plain
+set HELLO (.env)
+```
+
+</details>
+<details><summary>`set KEY_PLAIN value`</summary><br>
+
+Set a plaintext key/value inside an encrypted `.env` file by ending the key with `_PLAIN`.
+
+```sh
+$ touch .env
+
+$ dotenvx set HELLO_PLAIN World
+set HELLO_PLAIN (.env)
+```
+
+Without an Envfile, `dotenvx set` and `dotenvx encrypt` skip keys ending in `_PLAIN`. With an Envfile, its per-key encryption rules take precedence.
+
+</details>
+<details><summary>`set KEY value --no-native`</summary><br>
+
+Turn off OS secret store lookups for set.
+
+```sh
+$ dotenvx set HELLO World --no-native
+```
+
+</details>
+<details><summary>`set KEY value --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features for set.
+
+```sh
+$ dotenvx set HELLO World --no-armor
+◈ encrypted HELLO (.env)
+```
+
+</details>
+<details><summary>`set KEY value --no-create`</summary><br>
+
+Do not create a missing `.env` file.
+
+```sh
+$ dotenvx set HELLO World -f .env.production --no-create
+```
+
+</details>
+<details><summary>`del KEY`</summary><br>
+
+Delete a key from your `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx del HELLO
+◇ removed HELLO (.env)
+```
+
+</details>
+<details><summary>`del KEY -f`</summary><br>
+
+Delete a key from another `.env` file.
+
+```sh
+$ echo "HELLO=production" > .env.production
+
+$ dotenvx del HELLO -f .env.production
+◇ removed HELLO (.env.production)
+```
+
+</details>
+<details><summary>`encrypt`</summary><br>
+
+Encrypt the contents of a `.env` file to an encrypted `.env` file.
+
+When the current directory contains an Envfile, `encrypt` encrypts all keys except those explicitly marked `encrypted: false` in the applicable declarations. Values with effective `encrypted: false` remain unchanged, including any existing ciphertext. Undeclared keys require encryption too; both `run` and `check` validate loaded keys and their shell overrides without checking unrelated host environment variables. `run` warns on validation failures by default and refuses to launch when strictness is enabled; `check` exits with failure. The policy applies even with `--key` or `--stdout`; `--exclude-key` can further narrow the selection. If no values need encryption, no keypair is generated. Invalid Envfiles fail rather than falling back to encrypting everything. The Envfile itself is never modified.
+
+```sh
+$ echo "HELLO=World" > .env
+
+$ dotenvx encrypt
+◈ encrypted (.env) + local key (.env.keys)
+⮕  next run [dotenvx gitignore --pattern .env.keys] to gitignore .env.keys
+⮕  next run [DOTENV_PRIVATE_KEY='122...0b8' dotenvx run -- yourcommand] to test decryption locally
+```
+
+</details>
+<details><summary>`encrypt -f`</summary><br>
+
+Encrypt the contents of a specified `.env` file to an encrypted `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "HELLO=Production" > .env.production
+
+$ dotenvx encrypt -f .env.production
+◈ encrypted (.env.production) + local key (.env.keys)
+⮕  next run [dotenvx gitignore --pattern .env.keys] to gitignore .env.keys
+⮕  next run [DOTENV_PRIVATE_KEY='bff...bc4' dotenvx run -- yourcommand] to test decryption locally
+```
+
+</details>
+<details><summary>`encrypt --no-native`</summary><br>
+
+Turn off OS secret store lookups for encrypt.
+
+```sh
+$ dotenvx encrypt --no-native
+◈ encrypted (.env)
+```
+
+</details>
+<details><summary>`encrypt --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features for encrypt.
+
+```sh
+$ dotenvx encrypt --no-armor
+◈ encrypted (.env)
+```
+
+</details>
+<details><summary>`encrypt --token`</summary><br>
+
+Set the Armor token.
+
+```sh
+$ dotenvx encrypt --token token
+◈ encrypted (.env) · armored ⛨
+```
+
+</details>
+<details><summary>`encrypt --no-create`</summary><br>
+
+Do not create a missing `.env` file.
+
+```sh
+$ dotenvx encrypt -f .env.production --no-create
+```
+
+</details>
+<details><summary>`encrypt -fk`</summary><br>
+
+Specify a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ echo "HELLO=World" > apps/app1/.env
+
+$ dotenvx encrypt -fk .env.keys -f apps/app1/.env
+◈ encrypted (apps/app1/.env)
+```
+
+Put it to use.
+
+```sh
+$ dotenvx run -fk .env.keys -f apps/app1/.env
+```
+
+Use with a relative path.
+
+```sh
+$ cd apps/app1
+$ dotenvx run -fk ../../.env.keys -f .env
+```
+
+</details>
+<details><summary>`encrypt -k`</summary><br>
+
+Specify the key(s) to encrypt by passing `--key`.
+
+```sh
+$ echo "HELLO=World\nHELLO2=Universe" > .env
+
+$ dotenvx encrypt -k HELLO2
+◈ encrypted (.env)
+```
+
+Even specify a glob pattern.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+
+$ dotenvx encrypt -k "HE*"
+◈ encrypted (.env)
+```
+
+</details>
+<details><summary>`encrypt -ek`</summary><br>
+
+Specify the key(s) to NOT encrypt by passing `--exclude-key`.
+
+```sh
+$ echo "HELLO=World\nHELLO2=Universe" > .env
+
+$ dotenvx encrypt -ek HELLO
+◈ encrypted (.env)
+```
+
+Even specify a glob pattern.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+
+$ dotenvx encrypt -ek "HO*"
+◈ encrypted (.env)
+```
+
+</details>
+<details><summary>`encrypt KEY_PLAIN`</summary><br>
+
+Skip encryption for keys ending in `_PLAIN`.
+
+```sh
+$ echo "HELLO=World\nHELLO_PLAIN=visible" > .env
+
+$ dotenvx encrypt
+◈ encrypted (.env)
+```
+
+`HELLO` is encrypted. `HELLO_PLAIN` stays plaintext.
+
+</details>
+<details><summary>`encrypt --stdout`</summary><br>
+
+Encrypt the contents of a `.env` file and send to stdout.
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt --stdout
+#/-------------------[DOTENV_PUBLIC_KEY]--------------------/
+#/            public-key encryption for .env files          /
+#/       [how it works](https://dotenvx.com/docs/quickstart/encryption)     /
+#/----------------------------------------------------------/
+DOTENV_PUBLIC_KEY="034af93e93708b994c10f236c96ef88e47291066946cce2e8d98c9e02c741ced45"
+# .env
+HELLO="encrypted:BDqDBibm4wsYqMpCjTQ6BsDHmMadg9K3dAt+Z9HPMfLEIRVz50hmLXPXRuDBXaJi/LwWYEVUNiq0HISrslzQPaoyS8Lotg3gFWJTsNCdOWnqpjF2xNUX2RQiP05kAbEXM6MWVjDr"
+```
+
+or send to a file:
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt --stdout > somefile.txt
+```
+
+</details>
+<details><summary>`decrypt`</summary><br>
+
+Decrypt the contents of an encrypted `.env` file to an unencrypted `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+$ dotenvx decrypt
+◇ decrypted (.env)
+```
+
+</details>
+<details><summary>`decrypt --no-native`</summary><br>
+
+Turn off OS secret store lookups for decrypt.
+
+```sh
+$ dotenvx decrypt --no-native
+◇ decrypted (.env)
+```
+
+</details>
+<details><summary>`decrypt --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features for decrypt.
+
+```sh
+$ dotenvx decrypt --no-armor
+◇ decrypted (.env)
+```
+
+</details>
+<details><summary>`decrypt -f`</summary><br>
+
+Decrypt the contents of a specified encrypted `.env` file to an unencrypted `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ echo "HELLO=Production" > .env.production
+
+$ dotenvx encrypt -f .env.production
+◈ encrypted (.env.production)
+$ dotenvx decrypt -f .env.production
+◇ decrypted (.env.production)
+```
+
+</details>
+<details><summary>`decrypt -fk`</summary><br>
+
+Specify a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ echo "HELLO=World" > apps/app1/.env
+
+$ dotenvx encrypt -fk .env.keys -f apps/app1/.env
+◈ encrypted (apps/app1/.env)
+$ dotenvx decrypt -fk .env.keys -f apps/app1/.env
+◇ decrypted (apps/app1/.env)
+```
+
+</details>
+<details><summary>`decrypt -k`</summary><br>
+
+Decrypt the contents of a specified key inside an encrypted `.env` file.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+$ dotenvx decrypt -k HELLO
+◇ decrypted (.env)
+```
+
+Even specify a glob pattern.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+$ dotenvx decrypt -k "HE*"
+◇ decrypted (.env)
+```
+
+</details>
+<details><summary>`decrypt -ek`</summary><br>
+
+Decrypt the contents inside an encrypted `.env` file except for an excluded key.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+$ dotenvx decrypt -ek HOLA
+◇ decrypted (.env)
+```
+
+Even specify a glob pattern.
+
+```sh
+$ echo "HELLO=World\nHOLA=Mundo" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+$ dotenvx decrypt -ek "HO*"
+◇ decrypted (.env)
+```
+
+</details>
+<details><summary>`decrypt --stdout`</summary><br>
+
+Decrypt the contents of an encrypted `.env` file and send to stdout.
+
+```sh
+$ dotenvx decrypt --stdout
+#/-------------------[DOTENV_PUBLIC_KEY]--------------------/
+#/            public-key encryption for .env files          /
+#/       [how it works](https://dotenvx.com/docs/quickstart/encryption)     /
+#/----------------------------------------------------------/
+DOTENV_PUBLIC_KEY="034af93e93708b994c10f236c96ef88e47291066946cce2e8d98c9e02c741ced45"
+# .env
+HELLO="World"
+```
+
+or send to a file:
+
+```sh
+$ dotenvx decrypt --stdout > somefile.txt
+```
+
+</details>
+<details><summary>`decrypt --stdout --mask`</summary><br>
+
+Decrypt the contents of an encrypted `.env` file to stdout with its values masked. The encrypted `.env` file remains unchanged.
+
+```sh
+$ echo "SECRET=abcdefghijkl" > .env
+$ dotenvx encrypt
+◈ encrypted (.env)
+
+$ dotenvx decrypt --stdout --mask
+...
+SECRET="abcdef******"
+```
+
+Pass a number to control how many characters are visible, such as `--mask 0` to fully mask values.
+
+</details>
+<details><summary>`keypair`</summary><br>
+
+Print public/private keys for `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt
+
+$ dotenvx keypair
+{"DOTENV_PUBLIC_KEY":"<publicKey>","DOTENV_PRIVATE_KEY":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair --no-native`</summary><br>
+
+Turn off OS secret store lookups for keypair.
+
+```sh
+$ dotenvx keypair --no-native
+{"DOTENV_PUBLIC_KEY":"<publicKey>","DOTENV_PRIVATE_KEY":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair --no-armor`</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features for keypair.
+
+```sh
+$ dotenvx keypair --no-armor
+{"DOTENV_PUBLIC_KEY":"<publicKey>","DOTENV_PRIVATE_KEY":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair -f`</summary><br>
+
+Print public/private keys for `.env.production` file.
+
+```sh
+$ echo "HELLO=Production" > .env.production
+$ dotenvx encrypt -f .env.production
+
+$ dotenvx keypair -f .env.production
+{"DOTENV_PUBLIC_KEY_PRODUCTION":"<publicKey>","DOTENV_PRIVATE_KEY_PRODUCTION":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair -fk`</summary><br>
+
+Print keys from a custom private-key file when using file storage.
+
+```sh
+$ mkdir -p apps/app1
+$ echo "HELLO=World" > apps/app1/.env
+$ dotenvx encrypt -fk .env.keys -f apps/app1/.env
+
+$ dotenvx keypair -fk .env.keys -f apps/app1/.env
+{"DOTENV_PUBLIC_KEY":"<publicKey>","DOTENV_PRIVATE_KEY":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair DOTENV_PRIVATE_KEY`</summary><br>
+
+Print specific keypair for `.env` file.
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenvx encrypt
+
+$ dotenvx keypair DOTENV_PRIVATE_KEY
+<privateKey>
+```
+
+</details>
+<details><summary>`keypair --format shell`</summary><br>
+
+Print a shell formatted response of public/private keys.
+
+```sh
+$ echo "HELLO=World" > .env
+$ dotenx encrypt
+
+$ dotenvx keypair --format shell
+DOTENV_PUBLIC_KEY=<publicKey> DOTENV_PRIVATE_KEY=<privateKey>
+```
+
+</details>
+<details><summary>`keypair --format colon`</summary><br>
+
+Return a colon-formatted keypair.
+
+```sh
+$ dotenvx keypair --format colon
+DOTENV_PUBLIC_KEY:<publicKey> DOTENV_PRIVATE_KEY:<privateKey>
+```
+
+</details>
+<details><summary>`keypair --format json`</summary><br>
+
+Return a JSON-formatted keypair.
+
+```sh
+$ dotenvx keypair --format json
+{"DOTENV_PUBLIC_KEY":"<publicKey>","DOTENV_PRIVATE_KEY":"<privateKey>"}
+```
+
+</details>
+<details><summary>`keypair --pretty-print`</summary><br>
+
+Make the JSON output more readable.
+
+```sh
+$ dotenvx keypair --pretty-print
+{
+  "DOTENV_PUBLIC_KEY": "<publicKey>",
+  "DOTENV_PRIVATE_KEY": "<privateKey>"
+}
+```
+
+</details>
+<details><summary>`hidden`</summary><br>
+
+Dotenvx has a slew of hidden commands.
+
+[See their documentation →](https://dotenvx.com/docs/cli/hidden/)
+
+</details>
+
+&nbsp;
+
+### Library 📦
+
+Use dotenvx directly in code.
+
+<details><summary>`config()`</summary><br>
+
+Use directly in node.js code.
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config()
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+[dotenvx@1.X.X] injecting env (1) from .env
+Hello World
+```
+
+It defaults to looking for a `.env` file.
+
+</details>
+<details><summary>`config(mask: true)` - mask</summary><br>
+
+Inject and return masked values. By default, up to the first six characters are visible.
+
+```ini
+# .env
+SECRET="abcdefghijkl"
+```
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const result = dotenvx.config({ mask: true, quiet: true })
+
+console.log(process.env.SECRET)
+console.log(result.parsed.SECRET)
+```
+
+```sh
+$ node index.js
+abcdef******
+abcdef******
+```
+
+Set `mask: 0` to fully mask values.
+
+</details>
+<details><summary>`config(path: ['.env.local', '.env'])` - multiple files</summary><br>
+
+Specify path(s) to multiple .env files.
+
+```ini
+# .env.local
+HELLO="Me"
+```
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env.local', '.env']})
+
+// esm
+// import dotenvx from "@dotenvx/dotenvx";
+// dotenvx.config({path: ['.env.local', '.env']});
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local, .env
+Hello Me
+```
+
+</details>
+<details><summary>`config(overload: true)` - overload</summary><br>
+
+Use `overload` to overwrite the prior set value.
+
+```ini
+# .env.local
+HELLO="Me"
+```
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env.local', '.env'], overload: true})
+
+// esm
+// import dotenvx from "@dotenvx/dotenvx";
+// dotenvx.config({path: ['.env.local', '.env'], overload: true});
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+[dotenvx@1.X.X] injecting env (1) from .env.local, .env
+Hello World
+```
+
+</details>
+<details><summary>`config(quiet: true)` - quiet</summary><br>
+
+Suppress all output (except errors).
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env.missing', '.env'], quiet: true})
+
+// esm
+// import dotenvx from "@dotenvx/dotenvx";
+// dotenvx.config({path: ['.env.missing', '.env'], quiet: true});
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+Error: [MISSING_ENV_FILE] missing .env.missing file (/path/to/.env.missing)
+Hello World
+```
+
+You can also set `DOTENV_QUIET=true`.
+
+```sh
+$ DOTENV_QUIET=true node index.js
+Error: [MISSING_ENV_FILE] missing .env.missing file (/path/to/.env.missing)
+Hello World
+```
+
+</details>
+<details><summary>`config(strict: true)` - strict</summary><br>
+
+Exit with code `1` if any errors are encountered - like a missing .env file or decryption failure.
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env.missing', '.env'], strict: true})
+
+// esm
+// import dotenvx from "@dotenvx/dotenvx";
+// dotenvx.config({path: ['.env.missing', '.env'], strict: true});
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+Error: [MISSING_ENV_FILE] missing .env.missing file (/path/to/.env.missing)
+```
+
+</details>
+<details><summary>`config(ignore:)` - ignore</summary><br>
+
+Use `ignore` to suppress specific errors like `MISSING_ENV_FILE`.
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env.missing', '.env'], ignore: ['MISSING_ENV_FILE']})
+
+// esm
+// import dotenvx from "@dotenvx/dotenvx";
+// dotenvx.config({path: ['.env.missing', '.env'], ignore: ['MISSING_ENV_FILE']});
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ node index.js
+[dotenvx@1.X.X] injecting env (1) from .env
+Hello World
+```
+
+</details>
+<details><summary>`config(envKeysFile:)` - envKeysFile</summary><br>
+
+Use `envKeysFile` to specify a custom private-key file when using file storage.
+
+```ini
+# .env
+HELLO="World"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({path: ['.env'], envKeysFile: '../../.env.keys'})
+```
+
+</details>
+<details><summary>`config(convention:)` - convention</summary><br>
+
+Set a convention when using `dotenvx.config()`. This allows you to use the same file loading order as the CLI without needing to specify each file individually.
+
+```sh
+# Setup environment files
+$ echo "HELLO=development local" > .env.development.local
+$ echo "HELLO=local" > .env.local
+$ echo "HELLO=development" > .env.development
+$ echo "HELLO=env" > .env
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({ convention: 'nextjs' })
+
+console.log(`Hello ${process.env.HELLO}`)
+```
+
+```sh
+$ NODE_ENV=development node index.js
+[dotenvx@1.28.0] injecting env (1) from .env.development.local, .env.local, .env.development, .env
+Hello development local
+```
+
+This is equivalent to using `--convention=nextjs` with the CLI:
+
+```sh
+$ dotenvx run --convention=nextjs -- node index.js
+```
+
+You can also set `DOTENV_CONVENTION=nextjs`.
+
+```sh
+$ DOTENV_CONVENTION=nextjs node index.js
+```
+
+</details>
+<details><summary>`config(path: directory, convention: 'nextjs')` - directory</summary><br>
+
+Use a directory as `path` to make it the base for convention files. This is useful when loading a workspace's env files from a monorepo root.
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({
+  path: 'apps/web',
+  convention: 'nextjs'
+})
+```
+
+This loads the convention from `apps/web`:
+
+```text
+apps/web/.env.development.local
+apps/web/.env.local
+apps/web/.env.development
+apps/web/.env
+```
+
+</details>
+<details><summary>`config(noArmor:)` - noArmor</summary><br>
+
+Turn off [Dotenvx Armor ⛨](https://dotenvx.com/armor) features.
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({noArmor: true})
+```
+
+</details>
+<details><summary>`config(no1Password:)` - no1Password</summary><br>
+
+By default, `config()` automatically resolves `op://` values through the installed [1Password CLI](https://developer.1password.com/docs/cli/get-started/).
+
+```ini
+# .env
+API_KEY=op://Personal/my_api_key/password
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config()
+
+console.log(process.env.API_KEY)
+```
+
+Set `no1Password` to leave `op://` values unresolved and avoid calling `op`.
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({no1Password: true})
+```
+
+</details>
+<details><summary>`config(noBitwarden:)` - noBitwarden</summary><br>
+
+By default, `config()` automatically resolves `bw://` values through the installed [Bitwarden Password Manager CLI](https://bitwarden.com/help/cli/).
+
+```ini
+# .env
+API_KEY="bw://My GitHub Account/password"
+```
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config()
+
+console.log(process.env.API_KEY)
+```
+
+Set `noBitwarden` to leave `bw://` values unresolved and avoid calling `bw`.
+
+```js
+// index.js
+require('@dotenvx/dotenvx').config({noBitwarden: true})
+```
+
+</details>
+<details><summary>`parse(src)`</summary><br>
+
+Parse a `.env` string directly in node.js code.
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const src = 'HELLO=World'
+const parsed = dotenvx.parse(src)
+console.log(`Hello ${parsed.HELLO}`)
+```
+
+```sh
+$ node index.js
+Hello World
+```
+
+</details>
+<details><summary>`parse(src, {processEnv:})`</summary><br>
+
+Sometimes, you want to run `parse` without it accessing `process.env`. (You can pass a fake processEnv this way as well - sometimes useful.)
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const src = 'USER=Me'
+const parsed = dotenvx.parse(src, { processEnv: {} })
+console.log(`Hello ${parsed.USER}`)
+```
+
+```sh
+$ node index.js
+Hello Me
+```
+
+</details>
+<details><summary>`parse(src, {privateKey:})`</summary><br>
+
+Decrypt an encrypted `.env` string with `privateKey`.
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const src = 'HELLO="encrypted:BEiK4SwVe4rznIrZKW7qcnEBxo6Qxy0gv8xXiPN90N1jjhwkyVqzgoszZEI00tEeRWHsfQyJbCVy11qOEkkmERWbvOBzHve8/7WmVwyo5Z3HIOhlI45C+zmFgqmS2zMw9GPzHd9e"'
+const parsed = dotenvx.parse(src, { privateKey: 'a4547dcd9d3429615a3649bb79e87edb62ee6a74b007075e9141ae44f5fb412c' })
+console.log(`Hello ${parsed.HELLO}`)
+```
+
+```sh
+$ node index.js
+Hello World
+```
+</details>
+<details><summary>`set(KEY, value)`</summary><br>
+
+Programmatically set an environment variable. 
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+dotenvx.set('HELLO', 'World', { path: '.env' })
+```
+
+</details>
+<details><summary>`set(KEY, value, {plain:})`</summary><br>
+
+Programmatically set a plaintext environment variable.
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+dotenvx.set('HELLO', 'World', { plain: true })
+```
+
+</details>
+<details><summary>`get(KEY)` - <i>Decryption at Access</i></summary><br>
+
+Programmatically get an environment variable at access/runtime.
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const decryptedValue = await dotenvx.get('HELLO')
+console.log(decryptedValue)
+```
+
+This is known as *Decryption at Access* and is written about in [the whitepaper](https://dotenvx.com/dotenvx.pdf).
+
+</details>
+<details><summary>`getSync(KEY)` - synchronous access</summary><br>
+
+Synchronously resolve an environment variable without populating `process.env`. This is useful in configuration files that cannot await `get()`.
+
+```js
+const dotenvx = require('@dotenvx/dotenvx')
+const decryptedValue = dotenvx.getSync('HELLO', { path: '.env.credentials', strict: true })
+```
+
+`getSync()` accepts the same options as `get()`, including masking, multiple paths, and error handling. Omit the key to return all values from the selected files. It blocks while files and providers are resolved.
+
+If you already called `dotenvx.config()`, you can read the loaded value directly from `process.env.HELLO` instead.
+
+</details>
+<details><summary>`get(KEY, {mask:})`</summary><br>
+
+Programmatically return a masked environment variable value.
+
+```js
+// index.js
+const dotenvx = require('@dotenvx/dotenvx')
+const maskedValue = await dotenvx.get('SECRET', { mask: true })
+console.log(maskedValue)
+```
+
+```sh
+$ node index.js
+abcdef******
+```
+
+Set `mask: 0` to fully mask values.
+
+</details>
+
+&nbsp;
+
+### More
+
+<details><summary>Settings ⚙️</summary><br>
+
+There are global settings available that can be configured as environment variables.
+
+```ini
+# config
+DOTENV_CONVENTION= # set to a default convention like 'nextjs' or 'flow'
+DOTENV_FILE= # path to your env file; comma-separate multiple paths
+DOTENV_PATH= # synonym for DOTENV_FILE
+DOTENV_F= # synonym for DOTENV_FILE
+DOTENV_IGNORE= # MISSING_ENV_FILE,OTHER
+DOTENV_QUIET= # set to "true" to default to --quiet
+
+# legacy aliases (still supported)
+DOTENV_CONFIG_CONVENTION=
+DOTENV_CONFIG_IGNORE=
+DOTENV_CONFIG_QUIET=
+
+# armor
+DOTENVX_ARMOR_TOKEN= # for api calls
+DOTENVX_NO_ARMOR= # set to "true" to turn off Armor support
+
+# 1password
+DOTENVX_NO_1PASSWORD= # set to "true" to turn off 1Password support
+
+# bitwarden
+DOTENVX_NO_BITWARDEN= # set to "true" to turn off Bitwarden support
+BW_SESSION= # set to bitwarden session token to bypass password prompt
+```
+
+</details>
+<details><summary>Error Codes 🚨</summary><br>
+
+Dotenvx errors begin with a stable code in square brackets like `[MISSING_ENV_FILE]`.
+
+```ini
+# error codes
+1PASSWORD_FAILED= # a value could not be resolved with the 1Password CLI
+ACCESS_APPROVAL_TIMEOUT= # an Armor access-approval request timed out
+BITWARDEN_FAILED= # a value could not be resolved with the Bitwarden CLI
+COMMAND_EXITED_WITH_CODE= # the command run by dotenvx exited with a non-zero status
+COMMAND_SUBSTITUTION_FAILED= # a $(command) expression in an environment value could not be evaluated
+DECRYPTION_FAILED= # an encrypted value could not be decrypted
+FILE_NOT_WRITABLE= # dotenvx could not write to the target file
+INVALID_COLOR= # the requested terminal color is invalid
+INVALID_CONVENTION= # the requested environment-file convention is invalid
+INVALID_PRIVATE_KEY= # a private key is malformed or otherwise invalid
+INVALID_PUBLIC_KEY= # a public key is malformed or otherwise invalid
+MALFORMED_ENCRYPTED_DATA= # the encrypted value is malformed
+MISPAIRED_PRIVATE_KEY= # a private key does not match the existing public key
+MISSING_DIRECTORY= # the requested directory does not exist
+ENVSPEC_REQUIRED= # the required Envfile does not exist
+MISSING_ENV_FILE= # a requested environment file does not exist
+MISSING_ENV_FILES= # no .env* files were found
+MISSING_ENV_KEYS_FILE= # the requested .env.keys file does not exist
+MISSING_KEY= # a requested environment key does not exist
+MISSING_LOG_LEVEL= # the requested log level is not supported
+MISSING_PRIVATE_KEY= # the private key required to decrypt a value is missing
+MISSING_PUBLIC_KEY= # the public key required to encrypt a value is missing
+MISSING_REQUIRED= # validation detail for which required variables are missing; surfaced by INVALID_ENV
+MISSING_VALUE= # no value was supplied for a key
+NOT_FOUND= # a private key was not found in the native secret store
+PRECOMMIT_HOOK_MODIFY_FAILED= # dotenvx could not update the pre-commit hook
+INVALID_ENV= # resolved values do not satisfy Envfile rules
+MALFORMED_ENVSPEC= # Envfile syntax or configuration is invalid
+WRONG_PRIVATE_KEY= # the supplied private key cannot decrypt the value
+```
+
+</details>
+
+&nbsp;
+
+## FAQ
+
+<details><summary>How does encryption work?</summary><br>
+
+Dotenvx uses Elliptic Curve Integrated Encryption Scheme (ECIES) to encrypt each secret with a unique ephemeral key, while ensuring it can be decrypted using a long-term private key.
+
+When you initialize encryption, a DOTENV_PUBLIC_KEY (encryption key) and DOTENV_PRIVATE_KEY (decryption key) are generated. The DOTENV_PUBLIC_KEY is used to encrypt secrets, and the DOTENV_PRIVATE_KEY is securely stored in your cloud secrets manager or .env.keys file.
+
+Your encrypted .env file is then safely committed to code. Even if the file is exposed, secrets remain protected since decryption requires the separate DOTENV_PRIVATE_KEY, which is never stored alongside it. Read [the whitepaper](https://dotenvx.com/dotenvx.pdf?v=README) for more details.
+
+</details>
+<details><summary>Is it safe to commit an encrypted .env file to code?</summary><br>
+
+Yes. Dotenvx encrypts secrets using AES-256 with ephemeral keys, ensuring that even if the encrypted .env file is exposed, its contents remain secure. The encryption keys themselves are protected using Secp256k1 elliptic curve cryptography, which is widely used for secure key exchange in technologies like Bitcoin.
+
+This means that every secret in the .env file is encrypted with a unique AES-256 key, and that key is further encrypted using a public key (Secp256k1). Even if an attacker obtains the encrypted .env file, they would still need the corresponding private key—stored separately in a secrets manager—to decrypt anything.
+
+Breaking this encryption would require brute-forcing both AES-256 and elliptic curve cryptography, which is computationally infeasible with current technology. Read [the whitepaper](https://dotenvx.com/dotenvx.pdf?v=README) for more details.
+
+</details>
+<details><summary>Why am I getting the error <code>node: .env: not found</code>?</summary><br>
+
+You are using Node 20 or greater and it adds a differing implementation of `--env-file` flag support. Rather than warn on a missing `.env` file (like dotenv has historically done), it raises an error: `node: .env: not found`.
+
+This fix is easy. Replace `--env-file` with `--file` (or `-f`).
+
+```bash
+# from this (legacy spelling):
+./node_modules/.bin/dotenvx run --env-file .env -- yourcommand
+# to this:
+./node_modules/.bin/dotenvx run --file .env -- yourcommand
+```
+
+[more context](https://github.com/dotenvx/dotenvx/issues/131)
+
+</details>
+
+&nbsp;
+
+## Contributing
+
+You can fork this repo and create [pull requests](https://github.com/dotenvx/dotenvx/pulls) or if you have questions or feedback:
+
+* [github.com/dotenvx/dotenvx](https://github.com/dotenvx/dotenvx/issues) - bugs and discussions
+* [@dotenvx 𝕏](https://x.com/dotenvx) (DMs are open)

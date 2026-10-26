@@ -26,8 +26,13 @@
     "multer": "^2.3.0",
     "node-fetch": "^3.3.2",
     "pg": "^8.23.0",
+    "sip.js": "0.21.2",
     "undici": "^7.30.0",
     "uuid": "^14.0.2",
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@dotenvx/dotenvx": "^2.38.2",
+    "esbuild": "^0.28.2"
   }
 }

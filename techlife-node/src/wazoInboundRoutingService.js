@@ -1,0 +1,293 @@
+'use strict';
+
+const { pool } = require('./db');
+const { wazoFetch } = require('./wazoFetch');
+const config = require('../config/config');
+
+async function getToken() {
+  const response = await wazoFetch(
+    `${config.wazo.authUrl.replace(/\/$/, '')}/token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Basic ' + Buffer.from(
+          `${config.wazo.authUsername}:${config.wazo.authPassword}`
+        ).toString('base64'),
+      },
+      body: JSON.stringify({ backend: 'wazo_user', expiration: 300 }),
+    }
+  );
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.data?.token) {
+    throw new Error(`Wazo authentication failed (HTTP ${response.status})`);
+  }
+  return body.data.token;
+}
+
+async function api(method, path, token, tenantUuid, body) {
+  const response = await wazoFetch(
+    `${config.wazo.confdUrl.replace(/\/$/, '')}${path}`,
+    {
+      method,
+      headers: {
+        'X-Auth-Token': token,
+        'Wazo-Tenant': tenantUuid,
+        'Content-Type': 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }
+  );
+
+  const raw = await response.text().catch(() => '');
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch (_) {}
+
+  if (!response.ok) {
+    throw new Error(
+      `Wazo ${method} ${path} failed (HTTP ${response.status}): ` +
+      String(payload?.message || payload?.error || raw || 'no response body').slice(0, 300)
+    );
+  }
+  return payload?.data?.data || payload?.data || payload;
+}
+
+function items(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
+async function getTenantAndDid(didId, appTenantId) {
+  const result = await pool.query(
+    `SELECT d.id AS did_id, d.tenant_id, d.did_number, d.description,
+            d.destination_type, d.default_queue_id, d.default_ivr_id,
+            d.default_agent_id, d.default_extension, d.wazo_incall_id,
+            d.is_active, t.wazo_tenant_uuid, t.wazo_context_status,
+            t.wazo_context_name
+       FROM dids d
+       JOIN tenants t ON t.id = d.tenant_id
+      WHERE d.id = $1 AND d.tenant_id = $2`,
+    [didId, appTenantId]
+  );
+  if (!result.rows.length) throw new Error('DID not found in this tenant');
+  const did = result.rows[0];
+  if (!did.wazo_tenant_uuid) throw new Error('Tenant has no Wazo tenant UUID');
+  if (did.wazo_context_status !== 'provisioned') {
+    throw new Error('Tenant Wazo contexts are not provisioned');
+  }
+  return did;
+}
+
+async function destinationFor(did, token) {
+  if (did.destination_type === 'queue') {
+    const result = await pool.query(
+      `SELECT q.wazo_queue_id
+         FROM queues q
+        WHERE q.id = $1 AND q.tenant_id = $2 AND q.is_active = TRUE`,
+      [did.default_queue_id, did.tenant_id]
+    );
+    const id = Number(result.rows[0]?.wazo_queue_id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new Error('DID queue has no active, provisioned Wazo queue ID');
+    }
+    return { type: 'queue', queue_id: id };
+  }
+
+  if (did.destination_type === 'ivr') {
+    const result = await pool.query(
+      `SELECT i.wazo_ivr_id
+         FROM ivr_menus i
+        WHERE i.id = $1 AND i.tenant_id = $2 AND i.is_active = TRUE`,
+      [did.default_ivr_id, did.tenant_id]
+    );
+    const id = Number(result.rows[0]?.wazo_ivr_id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new Error('DID IVR has no active, provisioned Wazo IVR ID');
+    }
+    return { type: 'ivr', ivr_id: id };
+  }
+
+  if (did.destination_type === 'agent') {
+    const result = await pool.query(
+      `SELECT wazo_user_id
+         FROM agents
+        WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+      [did.default_agent_id, did.tenant_id]
+    );
+    const id = Number(result.rows[0]?.wazo_user_id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new Error('DID agent has no active, provisioned Wazo user ID');
+    }
+
+    const user = await api('GET', `/users/${id}`, token, did.wazo_tenant_uuid);
+    if (Number(user?.id) !== id) {
+      throw new Error('Wazo agent user could not be verified');
+    }
+    return { type: 'user', user_id: id };
+  }
+
+  if (did.destination_type === 'extension') {
+    const target = String(did.default_extension || '').trim();
+    if (!target) throw new Error('DID extension destination is empty');
+
+    const result = await pool.query(
+      `SELECT a.extension, t.wazo_context_name AS target_context, 'agent' AS target_kind
+         FROM agents a
+         JOIN tenants t ON t.id = a.tenant_id
+        WHERE a.tenant_id = $1 AND a.extension = $2
+          AND a.is_active = TRUE
+      UNION ALL
+      SELECT d.did_number AS extension, t.wazo_context_name AS target_context, 'did' AS target_kind
+         FROM dids d
+         JOIN tenants t ON t.id = d.tenant_id
+        WHERE d.tenant_id = $1 AND d.did_number = $2
+          AND d.is_active = TRUE`,
+      [did.tenant_id, target]
+    );
+    if (result.rows.length !== 1 || !result.rows[0]?.target_context) {
+      throw new Error('Target extension is missing or ambiguous in this tenant');
+    }
+
+    const found = result.rows[0];
+    let targetContext = found.target_context;
+    if (found.target_kind === 'did') {
+      const contexts = items(await api(
+        'GET', '/contexts?limit=100&offset=0', token, did.wazo_tenant_uuid
+      ));
+      const inboundContext = contexts.find((context) =>
+        context.type === 'incall' &&
+        String(context.tenant_uuid || '').toLowerCase() ===
+          String(did.wazo_tenant_uuid).toLowerCase()
+      );
+      if (!inboundContext?.name) {
+        throw new Error('Tenant Wazo inbound context was not found');
+      }
+      targetContext = inboundContext.name;
+    }
+
+    const extensions = items(await api(
+      'GET', '/extensions?limit=100&offset=0', token, did.wazo_tenant_uuid
+    ));
+    const match = extensions.find((x) =>
+      String(x.exten) === target &&
+      String(x.context) === String(targetContext) &&
+      String(x.tenant_uuid || '').toLowerCase() ===
+        String(did.wazo_tenant_uuid).toLowerCase()
+    );
+    if (!match) {
+      throw new Error(`Wazo extension ${target} could not be verified in context ${targetContext}`);
+    }
+    return { type: 'extension', exten: target, context: targetContext };
+  }
+
+  throw new Error(`Unsupported DID destination type: ${did.destination_type}`);
+}
+
+async function provisionInboundDid(didId, appTenantId) {
+  const did = await getTenantAndDid(didId, appTenantId);
+  if (!did.is_active) {
+    return { ok: true, skipped: true, reason: 'DID is inactive' };
+  }
+
+  const token = await getToken();
+  const contextList = items(await api(
+    'GET', '/contexts?limit=100&offset=0', token, did.wazo_tenant_uuid
+  ));
+  const incallContext = contextList.find((context) =>
+    context.type === 'incall' &&
+    String(context.tenant_uuid || '').toLowerCase() ===
+      String(did.wazo_tenant_uuid).toLowerCase()
+  );
+  if (!incallContext?.name) {
+    throw new Error('Tenant Wazo inbound context was not found');
+  }
+
+  const destination = await destinationFor(did, token);
+  const description = String(
+    did.description || `TechLife DID ${did.did_number}`
+  ).slice(0, 150);
+  const incallBody = { description, destination };
+
+  let incallId = did.wazo_incall_id ? Number(did.wazo_incall_id) : null;
+
+  if (incallId) {
+    const existing = await api(
+      'GET', `/incalls/${incallId}`, token, did.wazo_tenant_uuid
+    );
+    if (String(existing?.tenant_uuid).toLowerCase() !==
+        String(did.wazo_tenant_uuid).toLowerCase()) {
+      throw new Error('Saved Wazo inbound call belongs to a different tenant');
+    }
+  } else {
+    // Recover an existing route only when the DID extension and context
+    // identify it unambiguously. Never create a duplicate on an uncertain match.
+    const incallList = items(await api(
+      'GET', '/incalls?limit=100&offset=0', token, did.wazo_tenant_uuid
+    ));
+    const matches = incallList.filter((incall) =>
+      String(incall.tenant_uuid || '').toLowerCase() ===
+        String(did.wazo_tenant_uuid).toLowerCase() &&
+      Array.isArray(incall.extensions) &&
+      incall.extensions.some((extension) =>
+        String(extension.exten) === String(did.did_number) &&
+        String(extension.context) === String(incallContext.name)
+      )
+    );
+
+    if (matches.length > 1) {
+      throw new Error('Multiple Wazo inbound calls match this DID; refusing to guess');
+    }
+
+    if (matches.length === 1) {
+      incallId = Number(matches[0].id);
+      if (!Number.isSafeInteger(incallId) || incallId < 1) {
+        throw new Error('Recovered Wazo inbound call has an invalid ID');
+      }
+    } else {
+      const extensionList = items(await api(
+        'GET', '/extensions?limit=100&offset=0', token, did.wazo_tenant_uuid
+      ));
+      const orphaned = extensionList.some((extension) =>
+        String(extension.exten) === String(did.did_number) &&
+        String(extension.context) === String(incallContext.name) &&
+        String(extension.tenant_uuid || '').toLowerCase() ===
+          String(did.wazo_tenant_uuid).toLowerCase()
+      );
+      if (orphaned) {
+        throw new Error('A matching inbound extension exists but its incall association could not be verified; refusing to create a duplicate');
+      }
+
+      const created = await api(
+        'POST', '/incalls', token, did.wazo_tenant_uuid, incallBody
+      );
+      incallId = Number(created?.id);
+      if (!Number.isSafeInteger(incallId) || incallId < 1) {
+        throw new Error('Wazo did not return a usable inbound call ID');
+      }
+    }
+  }
+
+  // Wazo updates only the supplied fields. The DID's inbound extension is
+  // managed separately by Wazo and is not recreated here.
+  await api('PUT', `/incalls/${incallId}`, token, did.wazo_tenant_uuid, incallBody);
+
+  await pool.query(
+    `UPDATE dids SET wazo_incall_id = $1
+      WHERE id = $2 AND tenant_id = $3`,
+    [incallId, did.did_id, did.tenant_id]
+  );
+
+  return {
+    ok: true,
+    did_id: did.did_id,
+    did_number: did.did_number,
+    wazo_incall_id: incallId,
+    destination_type: did.destination_type,
+  };
+}
+
+module.exports = { provisionInboundDid };

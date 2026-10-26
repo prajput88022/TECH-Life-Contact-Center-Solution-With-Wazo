@@ -1,0 +1,86 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Media Assets</h1>
+<p class="tl-subtitle">
+    Upload audio for this tenant. Accepted source formats: WAV, MP3, OGG and GSM.
+    Files are converted and validated as 16-bit PCM, mono, 8 kHz WAV for telephony.
+</p>
+
+<% if (error) { %>
+    <div class="tl-card" role="alert"><strong>Error:</strong> <%= error %></div>
+<% } %>
+<% if (success) { %>
+    <div class="tl-card" role="status"><strong>Success:</strong> <%= success %></div>
+<% } %>
+
+<form method="post" action="/admin/media-assets/upload"
+      enctype="multipart/form-data" class="tl-card">
+    <h2>Upload Audio</h2>
+    <div class="tl-filters">
+        <div>
+            <label for="asset-name">Asset Name</label>
+            <input id="asset-name" name="name" maxlength="160" required
+                   placeholder="Welcome greeting">
+        </div>
+        <div>
+            <label for="asset-description">Description</label>
+            <input id="asset-description" name="description" maxlength="500"
+                   placeholder="Optional notes">
+        </div>
+        <div>
+            <label for="audio-upload">Audio File (max 25 MB)</label>
+            <input id="audio-upload" type="file" name="audio_upload"
+                   accept=".wav,.mp3,.ogg,.gsm,audio/*" required>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Upload and Convert</button>
+</form>
+
+<h2>Tenant Audio Library</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Original File</th>
+            <th>Duration</th>
+            <th>Size</th>
+            <th>Created</th>
+            <th>Status</th>
+            <th>Audio</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    <% assets.forEach(a => { %>
+        <tr>
+            <td>
+                <strong><%= a.name %></strong>
+                <% if (a.description) { %>
+                    <div><small><%= a.description %></small></div>
+                <% } %>
+            </td>
+            <td><%= a.original_filename || '—' %></td>
+            <td><%= a.duration_seconds == null ? '—' : Number(a.duration_seconds).toFixed(2) + ' s' %></td>
+            <td><%= a.file_size_bytes == null ? '—' : (Number(a.file_size_bytes) / 1024).toFixed(1) + ' KB' %></td>
+            <td><%= a.created_at ? new Date(a.created_at).toLocaleString() : '—' %></td>
+            <td><%= a.is_active ? 'Active' : 'Inactive' %></td>
+            <td>
+                <audio controls preload="none" src="<%= a.storage_path %>"></audio>
+            </td>
+            <td>
+                <form method="post" action="/admin/media-assets/<%= a.id %>/toggle">
+                    <button class="tl-btn" type="submit">
+                        <%= a.is_active ? 'Deactivate' : 'Activate' %>
+                    </button>
+                </form>
+            </td>
+        </tr>
+    <% }) %>
+    <% if (!assets.length) { %>
+        <tr><td colspan="8">No audio assets uploaded for this tenant yet.</td></tr>
+    <% } %>
+    </tbody>
+</table>
+
+<%- include('../partials/foot') %>

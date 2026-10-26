@@ -25,10 +25,10 @@ async function getToken() {
     return data.data.token;
 }
 
-async function confdRequest(method, path, token, body) {
+async function confdRequest(method, path, token, body, tenantUuid) {
     const resp = await wazoFetch(`${config.wazo.confdUrl.replace(/\/$/, '')}${path}`, {
         method,
-        headers: { 'X-Auth-Token': token, 'Content-Type': 'application/json' },
+        headers: { 'X-Auth-Token': token, 'Wazo-Tenant': tenantUuid, 'Content-Type': 'application/json' },
         body: method === 'GET' ? undefined : JSON.stringify(body),
     });
     if (resp.status >= 400) {
@@ -59,10 +59,40 @@ async function sipDomain(tenantId) {
     return res.rows[0]?.sip_domain || config.wazo.sipDomain || config.wazo.host;
 }
 
-async function provisionForAgent(tenantId, agentId, requestedExtension = null) {
+async function provisionForAgent(tenantId, agentId, requestedExtension = null, reuseWazoUserId = null) {
     try {
         const extension = requestedExtension || (await nextAvailableExtension(tenantId));
         const token = await getToken();
+
+        const tenantRes = await pool.query(
+            'SELECT wazo_tenant_uuid FROM tenants WHERE id = $1',
+            [tenantId]
+        );
+        const tenantUuid = tenantRes.rows[0]?.wazo_tenant_uuid;
+        if (!tenantUuid) throw new Error(`Missing Wazo tenant UUID for ${tenantId}`);
+
+        const contextRes = await confdRequest('GET', '/contexts', token, undefined, tenantUuid);
+        const contexts = contextRes.items || [];
+        const internalContext = contexts.find(c =>
+            c.type === 'internal' &&
+            c.name === config.wazo.defaultContext &&
+            (c.user_ranges || []).some(r =>
+                Number(extension) >= Number(r.start) &&
+                Number(extension) <= Number(r.end)
+            )
+        ) || contexts.find(c =>
+            c.type === 'internal' &&
+            (c.user_ranges || []).some(r =>
+                Number(extension) >= Number(r.start) &&
+                Number(extension) <= Number(r.end)
+            )
+        );
+
+        if (!internalContext) {
+            throw new Error(
+                `No internal Wazo context accepts extension ${extension} for tenant ${tenantUuid}`
+            );
+        }
 
         const sipUsername = 'agt' + extension;
         const sipPassword = crypto.randomBytes(12).toString('hex');
@@ -73,21 +103,38 @@ async function provisionForAgent(tenantId, agentId, requestedExtension = null) {
         );
         const fullName = agentRes.rows[0]?.full_name || `Agent ${extension}`;
 
-        const wazoUser = await confdRequest('POST', '/users', token, { firstname: fullName });
+        let wazoUser;
+        if (reuseWazoUserId !== null) {
+            wazoUser = await confdRequest('GET', `/users/${reuseWazoUserId}`, token, undefined, tenantUuid);
+            if (
+                Number(wazoUser.id) !== Number(reuseWazoUserId) ||
+                wazoUser.firstname !== fullName ||
+                !Array.isArray(wazoUser.lines) ||
+                wazoUser.lines.length !== 0 ||
+                wazoUser.tenant_uuid !== tenantUuid
+            ) {
+                throw new Error(
+                    `Refusing to reuse Wazo user ${reuseWazoUserId}: identity, tenant, or line checks failed`
+                );
+            }
+        } else {
+            wazoUser = await confdRequest('POST', '/users', token, { firstname: fullName }, tenantUuid);
+        }
         const wazoLine = await confdRequest('POST', '/lines', token, {
+            context: internalContext.name,
             protocol: 'sip',
             device_slot: 1,
             endpoint_sip: {
                 auth_section_options: [['username', sipUsername], ['password', sipPassword]],
                 endpoint_section_options: [['webrtc', 'yes'], ['transport', 'wss']],
             },
-        });
+        }, tenantUuid);
         const wazoExtension = await confdRequest('POST', '/extensions', token, {
             exten: extension,
-            context: config.wazo.defaultContext,
-        });
-        await confdRequest('PUT', `/users/${wazoUser.id}/lines/${wazoLine.id}`, token, {});
-        await confdRequest('PUT', `/lines/${wazoLine.id}/extensions/${wazoExtension.id}`, token, {});
+            context: internalContext.name,
+        }, tenantUuid);
+        await confdRequest('PUT', `/users/${wazoUser.id}/lines/${wazoLine.id}`, token, {}, tenantUuid);
+        await confdRequest('PUT', `/lines/${wazoLine.id}/extensions/${wazoExtension.id}`, token, {}, tenantUuid);
 
         const domain = await sipDomain(tenantId);
         await pool.query(

@@ -10,7 +10,7 @@
         <div><label>Email</label><input type="email" name="email"></div>
         <div><label>Password</label><input type="password" name="password" required></div>
         <div><label>Role</label>
-            <select name="role_type" id="roleSelect" onchange="document.getElementById('sipBlock').style.display = this.value === 'agent' ? 'block' : 'none'">
+            <select name="role_type" id="roleSelect" onchange="document.getElementById('sipBlock').style.display = this.value === 'agent' ? 'block' : 'none'; document.getElementById('createSupervisorAssignments').style.display = this.value === 'supervisor' ? 'block' : 'none'">
                 <option value="agent">Agent</option>
                 <option value="supervisor">Supervisor</option>
                 <option value="mis_agent">MIS Agent</option>
@@ -21,6 +21,15 @@
 
     <div id="sipBlock" class="tl-card" style="background:#f7f9fc">
         <p><strong>SIP / WebRTC Line Provisioning</strong></p>
+        <div class="tl-filters">
+            <div>
+                <label>Agent Caller ID / CLI (optional)</label>
+                <input name="caller_id" maxlength="30"
+                       placeholder="e.g. +911234567890"
+                       pattern="[+0-9*#]{1,30}">
+                <small>Use a caller ID authorized by your telephony provider.</small>
+            </div>
+        </div>
         <div class="tl-filters">
             <div>
                 <label>Provisioning Mode</label>
@@ -40,6 +49,23 @@
             <div><label>Extension</label><input name="manual_extension" placeholder="1042"></div>
             <div><label>SIP Username</label><input name="manual_sip_username" placeholder="agt1042"></div>
             <div><label>SIP Password</label><input name="manual_sip_password" placeholder="leave blank to auto-generate"></div>
+        </div>
+    </div>
+
+    <div id="createSupervisorAssignments" class="tl-card" style="display:none;background:#f7f9fc">
+        <h3>Supervisor access assignments</h3>
+        <p class="tl-subtitle">Choose only the agents and groups this supervisor may access. You can change these later by editing the supervisor here.</p>
+        <div class="tl-filters">
+            <div><strong>Agents</strong>
+                <% if (assignmentAgents.length) { assignmentAgents.forEach(a => { %>
+                    <label style="display:block;font-weight:normal"><input type="checkbox" name="supervisor_agent_ids" value="<%= a.id %>"> <%= a.display_name %></label>
+                <% }); } else { %><p>No active agents exist yet.</p><% } %>
+            </div>
+            <div><strong>Groups</strong>
+                <% if (assignmentGroups.length) { assignmentGroups.forEach(g => { %>
+                    <label style="display:block;font-weight:normal"><input type="checkbox" name="supervisor_group_ids" value="<%= g.id %>"> <%= g.name %></label>
+                <% }); } else { %><p>No active groups exist yet.</p><% } %>
+            </div>
         </div>
     </div>
 
@@ -85,6 +111,35 @@
             <select name="is_active"><option value="1" <%= u.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !u.is_active ? 'selected' : '' %>>Disabled</option></select>
         </div>
         <div><label>New Password (leave blank to keep current)</label><input type="password" name="new_password"></div>
+        <% const uRoles = (Array.isArray(u.roles) ? u.roles : String(u.roles || '').replace(/[{}]/g,'').split(',')).filter(Boolean); %>
+        <% if (uRoles.includes('supervisor')) { %>
+        <div style="grid-column:1/-1">
+            <h3>Supervisor access assignments</h3>
+            <p class="tl-subtitle">Only admins can change these assignments. Unselected agents and groups remain outside this supervisor's scope.</p>
+            <div class="tl-filters">
+                <div><strong>Agents</strong>
+                    <% assignmentAgents.forEach(a => { %>
+                        <label style="display:block;font-weight:normal"><input type="checkbox" name="supervisor_agent_ids" value="<%= a.id %>" <%= assignedAgentIds.includes(a.id) ? 'checked' : '' %>> <%= a.display_name %></label>
+                    <% }); %>
+                </div>
+                <div><strong>Groups</strong>
+                    <% assignmentGroups.forEach(g => { %>
+                        <label style="display:block;font-weight:normal"><input type="checkbox" name="supervisor_group_ids" value="<%= g.id %>" <%= assignedGroupIds.includes(g.id) ? 'checked' : '' %>> <%= g.name %></label>
+                    <% }); %>
+                </div>
+            </div>
+        </div>
+        <% } %>
+        <% if (u.agent_id) { %>
+        <div>
+            <label>Agent Caller ID / CLI (optional)</label>
+            <input name="caller_id" maxlength="30"
+                   value="<%= u.caller_id || '' %>"
+                   placeholder="e.g. +911234567890"
+                   pattern="[+0-9*#]{1,30}">
+            <small>Leave blank to clear the agent override.</small>
+        </div>
+        <% } %>
     </div>
     <button class="tl-btn" type="submit">Save Changes</button>
     <a class="tl-btn secondary" href="/admin/users">Cancel</a>
@@ -92,4 +147,12 @@
 <p class="tl-subtitle">Role and SIP provisioning can't be changed after creation in this build — deactivate this account and create a new one with the correct role if needed.</p>
 <% } } %>
 
+<script>
+(function () {
+    const role = document.getElementById('roleSelect');
+    if (role) {
+        document.getElementById('createSupervisorAssignments').style.display = role.value === 'supervisor' ? 'block' : 'none';
+    }
+})();
+</script>
 <%- include('../partials/foot') %>

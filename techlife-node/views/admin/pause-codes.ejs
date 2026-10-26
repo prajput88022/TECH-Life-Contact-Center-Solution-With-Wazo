@@ -1,0 +1,202 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<style id="pause-codes-layout">
+main.tl-page { width: 100%; max-width: 1440px; min-width: 0; }
+main.tl-page > section.tl-card { width: 100%; box-sizing: border-box; }
+main.tl-page .pause-code-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+main.tl-page .pause-code-form > p { margin: 0; min-width: 0; }
+main.tl-page .pause-code-form label {
+  display: block; margin-bottom: 6px; font-weight: 600;
+}
+main.tl-page .pause-code-form input:not([type="checkbox"]),
+main.tl-page .pause-code-form textarea {
+  display: block; width: 100%; max-width: 100%;
+  min-width: 0; box-sizing: border-box;
+}
+main.tl-page .pause-code-form textarea { min-height: 88px; resize: vertical; }
+main.tl-page .pause-code-form input[type="checkbox"] { width: auto; }
+main.tl-page .pause-code-form button,
+main.tl-page .pause-code-form > a { align-self: start; }
+main.tl-page .pause-code-form button { justify-self: start; }
+main.tl-page .pause-table-wrap { width: 100%; overflow-x: auto; }
+main.tl-page .pause-table-wrap table { width: 100%; min-width: 760px; }
+@media (max-width: 700px) {
+  main.tl-page .pause-code-form { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+
+<style id="pause-codes-polish">
+.tl-page { max-width: 1440px; margin: 0 auto; padding: 24px; }
+.tl-page > h1 { margin: 0 0 6px; }
+.tl-page > p { margin: 0 0 22px; color: var(--tl-muted, #a9a2c7); }
+.tl-page .tl-card { padding: 22px; margin: 0 0 18px; border-radius: 14px; }
+.tl-page .tl-card h2 { margin: 0 0 20px; font-size: 1.05rem; }
+.tl-page #createPauseCodeForm,
+.tl-page form[action*="/pause-codes/"][method="post"] {
+  min-width: 0;
+}
+.tl-page label { display: block; margin-bottom: 7px; font-weight: 600; }
+.tl-page input:not([type="checkbox"]),
+.tl-page textarea {
+  box-sizing: border-box; width: 100%; max-width: 100%;
+  min-height: 42px; padding: 10px 12px; border-radius: 9px;
+}
+.tl-page textarea { min-height: 92px; resize: vertical; }
+.tl-page .tl-card > form > p {
+  display: inline-flex; flex-direction: column; vertical-align: top;
+  width: min(100%, 340px); margin: 0 16px 16px 0;
+}
+.tl-page .tl-card > form > p:has(input[type="checkbox"]) {
+  display: inline-block; width: auto; margin-right: 24px;
+}
+.tl-page input[type="checkbox"] { accent-color: var(--tl-primary, #4387f5); }
+.tl-page .tl-btn { margin: 4px 8px 4px 0; }
+.tl-page table { width: 100%; border-collapse: collapse; }
+.tl-page th, .tl-page td { padding: 12px 14px; text-align: left; }
+.tl-page th { white-space: nowrap; }
+.tl-page td { overflow-wrap: anywhere; }
+.tl-page td form { display: inline-block !important; }
+.tl-page td .tl-btn { white-space: nowrap; }
+@media (max-width: 760px) {
+  .tl-page { padding: 14px; }
+  .tl-page .tl-card { padding: 15px; }
+  .tl-page .tl-card > form > p { width: 100%; margin-right: 0; }
+  .tl-page table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+</style>
+
+<main class="tl-page">
+  <h1>Pause Codes</h1>
+  <p>Manage pause and break reasons for agents in this tenant.</p>
+
+  <% if (errorMessage) { %>
+    <div class="tl-card" role="alert">
+      <% if (errorMessage === 'duplicate') { %>
+        This code already exists for your tenant.
+      <% } else { %>
+        Invalid input. Check the code, label, duration, and sort order.
+      <% } %>
+    </div>
+  <% } %>
+
+  <section class="tl-card">
+    <h2><%= editing ? 'Edit Pause Code' : 'Create Pause Code' %></h2>
+
+    <form class="pause-code-form" method="post"
+      action="<%= editing ? '/admin/pause-codes/' + editing.id + '/edit' : '/admin/pause-codes/create' %>">
+
+      <p>
+        <label for="code">Code</label>
+        <input id="code" name="code" maxlength="40" required
+          pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,39}"
+          value="<%= editing ? editing.code : '' %>"
+          placeholder="LUNCH">
+      </p>
+
+      <p>
+        <label for="label">Label</label>
+        <input id="label" name="label" maxlength="120" required
+          value="<%= editing ? editing.label : '' %>"
+          placeholder="Lunch Break">
+      </p>
+
+      <p>
+        <label for="description">Description</label>
+        <textarea id="description" name="description" maxlength="500"><%= editing ? (editing.description || '') : '' %></textarea>
+      </p>
+
+      <p>
+        <label for="duration">Maximum duration (seconds, optional)</label>
+        <input id="duration" type="number" name="max_duration_seconds"
+          min="1" max="86400"
+          value="<%= editing && editing.max_duration_seconds != null ? editing.max_duration_seconds : '' %>">
+      </p>
+
+      <p>
+        <label for="sort_order">Sort order</label>
+        <input id="sort_order" type="number" name="sort_order"
+          min="0" max="1000000" required
+          value="<%= editing ? editing.sort_order : 0 %>">
+      </p>
+
+      <p>
+        <label>
+          <input type="checkbox" name="is_paid"
+            <%= !editing || editing.is_paid ? 'checked' : '' %>>
+          Paid pause
+        </label>
+      </p>
+
+      <p>
+        <label>
+          <input type="checkbox" name="counts_toward_productivity"
+            <%= editing && editing.counts_toward_productivity ? 'checked' : '' %>>
+          Counts toward productivity
+        </label>
+      </p>
+
+      <button class="tl-btn" type="submit">
+        <%= editing ? 'Save Changes' : 'Create Pause Code' %>
+      </button>
+
+      <% if (editing) { %>
+        <a class="tl-btn" href="/admin/pause-codes">Cancel</a>
+      <% } %>
+    </form>
+  </section>
+
+  <section class="tl-card">
+    <h2>Existing Pause Codes</h2>
+
+    <% if (!codes.length) { %>
+      <p>No pause codes have been created yet.</p>
+    <% } else { %>
+      <div class="pause-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Label</th>
+            <th>Paid</th>
+            <th>Productivity</th>
+            <th>Max duration</th>
+            <th>Order</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% codes.forEach(function(code) { %>
+            <tr>
+              <td><%= code.code %></td>
+              <td><%= code.label %></td>
+              <td><%= code.is_paid ? 'Yes' : 'No' %></td>
+              <td><%= code.counts_toward_productivity ? 'Yes' : 'No' %></td>
+              <td><%= code.max_duration_seconds == null ? 'No limit' : code.max_duration_seconds + ' sec' %></td>
+              <td><%= code.sort_order %></td>
+              <td><%= code.is_active ? 'Active' : 'Inactive' %></td>
+              <td>
+                <a class="tl-btn" href="/admin/pause-codes?edit=<%= code.id %>">Edit</a>
+                <form method="post"
+                  action="/admin/pause-codes/<%= code.id %>/toggle"
+                  style="display:inline">
+                  <button class="tl-btn" type="submit">
+                    <%= code.is_active ? 'Deactivate' : 'Activate' %>
+                  </button>
+                </form>
+              </td>
+            </tr>
+          <% }); %>
+        </tbody>
+      </table>
+      </div>
+    <% } %>
+  </section>
+</main>
+
+<%- include('../partials/foot') %>

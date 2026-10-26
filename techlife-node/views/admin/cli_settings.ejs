@@ -1,0 +1,125 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Custom Caller ID</h1>
+<p class="tl-subtitle">
+    Set an approved caller ID name and number for each agent. Your telephony provider
+    must permit the caller ID you configure.
+</p>
+
+<div class="tl-card">
+    <div class="tl-grid">
+        <div>
+            <div class="tl-kpi-label">Custom Caller ID Feature</div>
+            <p class="tl-subtitle">
+                <%= settings.custom_caller_id_enabled ? 'Enabled' : 'Disabled' %>
+            </p>
+            <form method="post"
+                  action="/admin/cli-settings/toggle<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>">
+                <input type="hidden" name="enabled" value="<%= settings.custom_caller_id_enabled ? '0' : '1' %>">
+                <button class="tl-btn <%= settings.custom_caller_id_enabled ? '' : 'secondary' %>" type="submit">
+                    <%= settings.custom_caller_id_enabled ? 'Feature ON — click to disable' : 'Feature OFF — click to enable' %>
+                </button>
+            </form>
+        </div>
+        <div>
+            <div class="tl-kpi-label">Custom Caller ID Filters</div>
+            <label for="callerIdFilter">Filter by any field</label>
+            <input id="callerIdFilter" type="search" placeholder="Search name, email, extension or caller ID">
+        </div>
+    </div>
+</div>
+
+<div class="tl-card">
+    <h2>Tenant Default Caller ID</h2>
+    <form method="post"
+          action="/admin/cli-settings<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>">
+        <div class="tl-filters">
+            <div>
+                <label>Default caller ID number</label>
+                <input name="default_caller_id" maxlength="30"
+                       pattern="[+0-9*#]{1,30}"
+                       value="<%= settings.default_caller_id || '' %>"
+                       placeholder="e.g. +911234567890">
+            </div>
+        </div>
+        <button class="tl-btn" type="submit">Save Default Caller ID</button>
+    </form>
+</div>
+
+<div class="tl-card">
+    <h2>Agent Caller IDs</h2>
+    <% if (!agents.length) { %>
+        <p class="tl-subtitle">No agents found for this tenant.</p>
+    <% } else { %>
+        <div style="overflow-x:auto">
+            <table class="tl-table" id="callerIdTable">
+                <thead>
+                    <tr>
+                        <th>Username / Email</th>
+                        <th>Name</th>
+                        <th>Extension</th>
+                        <th>Custom Caller ID Name</th>
+                        <th>Custom Caller ID Number</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <% agents.forEach(function(agent) { %>
+                    <tr class="caller-id-row">
+                        <td>
+                            <%= agent.email || agent.username || '—' %>
+                            <input type="hidden" class="filter-value"
+                                   value="<%= [agent.email, agent.username, agent.full_name, agent.extension, agent.caller_id, agent.custom_caller_id_name].filter(Boolean).join(' ') %>">
+                        </td>
+                        <td><%= agent.full_name || agent.username || '—' %></td>
+                        <td><%= agent.extension || '—' %></td>
+                        <td colspan="2">
+                            <form method="post"
+                                  action="/admin/cli-settings/agents/<%= encodeURIComponent(agent.agent_id) %><%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>"
+                                  class="caller-id-edit-form">
+                                <div class="tl-filters">
+                                    <div>
+                                        <label>Caller ID name</label>
+                                        <input name="custom_caller_id_name" maxlength="80"
+                                               value="<%= agent.custom_caller_id_name || '' %>"
+                                               placeholder="e.g. TechLife Support">
+                                    </div>
+                                    <div>
+                                        <label>Caller ID number</label>
+                                        <input name="caller_id" maxlength="30"
+                                               pattern="[+0-9*#]{1,30}"
+                                               value="<%= agent.caller_id || '' %>"
+                                               placeholder="e.g. +911234567890">
+                                    </div>
+                                </div>
+                                <button class="tl-btn" type="submit">Save</button>
+                            </form>
+                        </td>
+                        <td></td>
+                    </tr>
+                <% }); %>
+                </tbody>
+            </table>
+        </div>
+    <% } %>
+    <p class="tl-subtitle">
+        Enabling this feature saves the setting only. Actual outbound caller ID presentation
+        also depends on the dialplan, Wazo configuration, and provider authorization.
+    </p>
+</div>
+
+<script>
+(function () {
+    const filter = document.getElementById('callerIdFilter');
+    if (!filter) return;
+    filter.addEventListener('input', function () {
+        const query = filter.value.trim().toLowerCase();
+        document.querySelectorAll('.caller-id-row').forEach(function (row) {
+            row.style.display = row.innerText.toLowerCase().includes(query) ? '' : 'none';
+        });
+    });
+})();
+</script>
+
+<%- include('../partials/foot') %>

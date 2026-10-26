@@ -3,8 +3,10 @@ const router = express.Router();
 const { requireRole } = require('../src/auth');
 const { pool } = require('../src/db');
 const { writeAuditLog } = require('../src/auditLog');
+const { loadTenantAppearance } = require('../src/tenantAppearance');
 
 router.use(requireRole(['superadmin']));
+router.use(loadTenantAppearance);
 
 router.get('/', async (req, res) => {
     const tenants = (await pool.query('SELECT id, name, slug, is_active, created_at FROM tenants ORDER BY created_at DESC')).rows;
@@ -16,6 +18,152 @@ router.get('/', async (req, res) => {
             (SELECT COUNT(*) FROM calls WHERE start_time > now() - interval '24 hours') AS calls_24h`
     )).rows[0];
     res.render('superadmin/index', { pageTitle: 'Superadmin — Platform Dashboard', tenants, totals });
+});
+
+
+// ---------------- Global Super Admin accounts ----------------
+router.get('/users', async (req, res) => {
+    const result = await pool.query(
+        `SELECT u.id, u.username, u.full_name, u.is_active, u.created_at,
+                t.slug AS tenant_slug
+           FROM users u
+           JOIN tenants t ON t.id = u.tenant_id
+          WHERE EXISTS (
+              SELECT 1
+                FROM user_roles ur
+                JOIN roles r ON r.id = ur.role_id
+               WHERE ur.user_id = u.id
+                 AND r.role_type::text = 'superadmin'
+          )
+          ORDER BY u.created_at DESC`
+    );
+
+    res.render('superadmin/users', {
+        pageTitle: 'Superadmin — Super Admin Users',
+        superAdmins: result.rows
+    });
+});
+
+router.post('/users/create', async (req, res) => {
+    const username = String(req.body.username || '').trim();
+    const fullName = String(req.body.full_name || '').trim();
+    const password = String(req.body.password || '');
+
+    if (!/^[A-Za-z0-9_.-]{3,50}$/.test(username)) {
+        return res.status(400).send(
+            'Username must be 3–50 characters and contain only letters, numbers, dots, underscores or hyphens.'
+        );
+    }
+    if (password.length < 12) {
+        return res.status(400).send('Password must be at least 12 characters.');
+    }
+    if (!fullName) {
+        return res.status(400).send('Full name is required.');
+    }
+
+    const bcrypt = require('bcryptjs');
+    const passwordHash = await bcrypt.hash(password, 12);
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const tenant = await client.query(
+            `SELECT id FROM tenants WHERE slug = 'acme' AND is_active = TRUE LIMIT 1`
+        );
+        if (!tenant.rows.length) {
+            throw new Error('Active internal account tenant "acme" was not found.');
+        }
+
+        // Reuse the existing global role; create it only if missing.
+        let role = await client.query(
+            `SELECT id FROM roles
+              WHERE tenant_id IS NULL
+                AND role_type::text = 'superadmin'
+              ORDER BY id LIMIT 1`
+        );
+
+        let roleId;
+        if (role.rows.length) {
+            roleId = role.rows[0].id;
+        } else {
+            role = await client.query(
+                `INSERT INTO roles (tenant_id, name, role_type, is_system)
+                 VALUES (NULL, 'Superadmin', 'superadmin', TRUE)
+                 RETURNING id`
+            );
+            roleId = role.rows[0].id;
+        }
+
+        const existing = await client.query(
+            `SELECT id FROM users WHERE tenant_id = $1 AND username = $2 FOR UPDATE`,
+            [tenant.rows[0].id, username]
+        );
+
+        let userId;
+        if (existing.rows.length) {
+            userId = existing.rows[0].id;
+            const alreadySuperadmin = await client.query(
+                `SELECT 1
+                   FROM user_roles ur
+                   JOIN roles r ON r.id = ur.role_id
+                  WHERE ur.user_id = $1
+                    AND r.role_type::text = 'superadmin'
+                  LIMIT 1`,
+                [userId]
+            );
+
+            if (!alreadySuperadmin.rows.length) {
+                return await client.query('ROLLBACK').then(() =>
+                    res.status(409).send(
+                        'That username already belongs to a non-Super Admin account. Choose another username.'
+                    )
+                );
+            }
+
+            await client.query(
+                `UPDATE users
+                    SET password_hash = $1, full_name = $2,
+                        is_active = TRUE, updated_at = NOW()
+                  WHERE id = $3`,
+                [passwordHash, fullName, userId]
+            );
+        } else {
+            const inserted = await client.query(
+                `INSERT INTO users
+                    (tenant_id, username, password_hash, full_name, is_active)
+                 VALUES ($1, $2, $3, $4, TRUE)
+                 RETURNING id`,
+                [tenant.rows[0].id, username, passwordHash, fullName]
+            );
+            userId = inserted.rows[0].id;
+        }
+
+        await client.query(
+            `INSERT INTO user_roles (user_id, role_id)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [userId, roleId]
+        );
+
+        await client.query('COMMIT');
+        await writeAuditLog(
+            req.session.user.tenantId,
+            req.session.user.id,
+            'SUPERADMIN_USER_CREATED',
+            'user',
+            userId,
+            null,
+            { username }
+        );
+        return res.redirect('/superadmin/users');
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        console.error('Super Admin user creation failed:', e.message);
+        return res.status(500).send('Could not create Super Admin account. Check the server log.');
+    } finally {
+        client.release();
+    }
 });
 
 const FEATURE_KEYS = ['voice','inbound','outbound','call_recording','webrtc','video_calling',

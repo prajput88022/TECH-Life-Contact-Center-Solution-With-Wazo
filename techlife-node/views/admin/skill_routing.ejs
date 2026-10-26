@@ -1,0 +1,105 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Skill Routing</h1>
+<p>Configure agent skills and queue membership for the current tenant.</p>
+
+<section class="tl-card">
+    <h2>Agent Skills</h2>
+    <p>Enter comma-separated skills, optionally followed by a proficiency from 1 to 5.
+       Example: <code>sales:4,english:3,support:2</code>. A skill without a level defaults to 1.</p>
+    <% if (!agents.length) { %>
+        <p>No agents exist in this tenant yet.</p>
+    <% } %>
+    <% agents.forEach(a => { %>
+        <form method="post" action="/admin/skill-routing/agents/<%= a.id %>/skills"
+              class="tl-card" style="margin:12px 0">
+            <div class="tl-filters">
+                <div>
+                    <strong><%= a.full_name || a.username %></strong>
+                    <div>Agent <%= a.agent_number || '—' %> · Extension <%= a.extension || '—' %></div>
+                    <small><%= a.is_active ? 'Active' : 'Inactive' %></small>
+                </div>
+                <div style="min-width:280px">
+                    <label>Skills</label>
+                    <input name="skills" maxlength="2000" value="<%= a.skills_text %>"
+                           placeholder="sales:3,support:2">
+                </div>
+            </div>
+            <button class="tl-btn" type="submit">Save Skills</button>
+        </form>
+    <% }) %>
+</section>
+
+<section class="tl-card">
+    <h2>Add Agent to Queue</h2>
+    <% if (!queues.length || !agents.length) { %>
+        <p>Create a queue and an agent before adding membership.</p>
+    <% } else { %>
+        <form method="post" action="/admin/skill-routing/queues/<%= queues[0].id %>/members/add"
+              id="addQueueMemberForm">
+            <div class="tl-filters">
+                <div>
+                    <label>Queue</label>
+                    <select name="queue_id" id="memberQueue" required>
+                        <% queues.forEach(q => { %>
+                            <option value="<%= q.id %>"><%= q.name %> (<%= q.strategy %>)</option>
+                        <% }) %>
+                    </select>
+                </div>
+                <div>
+                    <label>Agent</label>
+                    <select name="agent_id" required>
+                        <% agents.forEach(a => { %>
+                            <option value="<%= a.id %>">
+                                <%= a.full_name || a.username %> — <%= a.agent_number || 'no number' %>
+                                <%= a.is_active ? '' : '(inactive)' %>
+                            </option>
+                        <% }) %>
+                    </select>
+                </div>
+                <div>
+                    <label>Queue Penalty</label>
+                    <input type="number" name="penalty" min="0" max="1000" value="0" required>
+                </div>
+            </div>
+            <button class="tl-btn" type="submit">Add / Update Membership</button>
+            <small>Submitting an existing membership reactivates it and updates its penalty.</small>
+        </form>
+        <script>
+        document.getElementById('memberQueue').addEventListener('change', function () {
+            document.getElementById('addQueueMemberForm').action =
+                '/admin/skill-routing/queues/' + encodeURIComponent(this.value) + '/members/add';
+        });
+        </script>
+    <% } %>
+</section>
+
+<section class="tl-card">
+    <h2>Queue Memberships</h2>
+    <table>
+        <tr><th>Queue</th><th>Agent</th><th>Penalty</th><th>Status</th><th></th></tr>
+        <% memberships.forEach(m => { %>
+            <tr>
+                <td><%= m.queue_name %></td>
+                <td><%= m.full_name || m.username %> (<%= m.agent_number || '—' %>)</td>
+                <td><%= m.penalty %></td>
+                <td><%= m.is_active ? 'Active' : 'Inactive' %></td>
+                <td>
+                    <form method="post"
+                          action="/admin/skill-routing/queues/<%= m.queue_id %>/members/<%= m.agent_id %>/remove"
+                          onsubmit="return confirm('Remove this agent from the queue?');">
+                        <button class="tl-btn secondary" type="submit">Remove</button>
+                    </form>
+                </td>
+            </tr>
+        <% }) %>
+        <% if (!memberships.length) { %>
+            <tr><td colspan="5">No queue memberships configured.</td></tr>
+        <% } %>
+    </table>
+</section>
+
+<p><strong>Important:</strong> This page saves skills and memberships in TechLife's database. It does not yet change Wazo's live call distribution.</p>
+
+<%- include('../partials/foot') %>

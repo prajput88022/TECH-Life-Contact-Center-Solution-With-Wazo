@@ -1,0 +1,183 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Appearance</h1>
+<p class="tl-subtitle">
+    Customize the portal name and color theme for <strong><%= tenant.name %></strong>.
+    These settings apply to this tenant's Admin, Agent, Supervisor and MIS portals.
+</p>
+
+<% if (error) { %>
+    <div class="tl-card" role="alert"><strong>Error:</strong> <%= error %></div>
+<% } %>
+<% if (success) { %>
+    <div class="tl-card" role="status"><strong>Success:</strong> <%= success %></div>
+<% } %>
+
+<form method="post" action="/admin/appearance" class="tl-card" id="appearance-form">
+    <h2>Portal Branding</h2>
+    <div class="tl-filters">
+        <div>
+            <label for="portal-name">Portal Name</label>
+            <input id="portal-name" name="portal_name" maxlength="150" required
+                   value="<%= appearance.portal_name || 'TECH-Life Contact-Center Solution' %>">
+        </div>
+        <div>
+            <label for="theme">Color Theme</label>
+            <select id="theme" name="theme">
+                <% [
+                    ['blue', 'Blue (Default)'],
+                    ['purple', 'Purple'],
+                    ['green', 'Green'],
+                    ['yellow', 'Yellow'],
+                    ['light', 'Light'],
+                    ['dark', 'Dark']
+                ].forEach(option => { %>
+                    <option value="<%= option[0] %>" <%= (appearance.theme || 'blue') === option[0] ? 'selected' : '' %>>
+                        <%= option[1] %>
+                    </option>
+                <% }) %>
+            </select>
+        </div>
+        <div>
+            <label for="primary-color">Custom Accent Color (optional)</label>
+            <input id="primary-color" name="primary_color" type="color"
+                   value="<%= /^#[0-9a-fA-F]{6}$/.test(appearance.primary_color || '') ? appearance.primary_color : '#3b82f6' %>">
+            <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                <input id="clear-accent" name="use_theme_accent" value="1" type="checkbox" style="width:auto">
+                Use the selected theme's default accent
+            </label>
+            <small>Choose a custom accent or leave the default accent enabled.</small>
+        </div>
+    </div>
+
+    <div id="appearance-preview" style="
+    margin:18px 0;padding:20px;border:1px solid var(--bd);
+    border-radius:12px;background:var(--c1);color:var(--t0)">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+        <div id="preview-mark" style="
+            width:38px;height:38px;border-radius:9px;display:flex;
+            align-items:center;justify-content:center;color:#fff;font-weight:700;
+            background:var(--acc)">TL</div>
+        <div>
+            <h2 id="preview-name" style="font-size:18px">
+                <%= appearance.portal_name || 'TECH-Life Contact-Center Solution' %>
+            </h2>
+            <p id="preview-caption" style="font-size:12px;color:var(--t1)">
+                Appearance preview
+            </p>
+        </div>
+    </div>
+    <div id="preview-nav" style="
+        padding:10px 12px;border-radius:8px;margin-bottom:12px;
+        background:var(--c2);border:1px solid var(--bd)">
+        <span id="preview-nav-item" style="font-weight:600;color:var(--acc2)">
+            ● Dashboard
+        </span>
+        <span style="margin-left:16px;color:inherit">Reports</span>
+        <span style="margin-left:16px;color:inherit">Settings</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span id="preview-chip" style="
+            display:inline-block;padding:5px 10px;border-radius:999px;
+            background:var(--acc);color:#fff;font-size:12px">
+            Selected theme
+        </span>
+        <span id="preview-description" style="font-size:12px;color:var(--t1)">
+            Preview updates as you change the options above.
+        </span>
+    </div>
+</div>
+
+<div style="display:flex;justify-content:flex-end;gap:10px;margin:18px 0">
+    <button id="appearance-save-button" class="tl-btn" type="submit">
+        Save Appearance
+    </button>
+</div>
+</form>
+
+<script>
+(() => {
+    const themeInput = document.getElementById('theme');
+    const colorInput = document.getElementById('primary-color');
+    const clearInput = document.getElementById('clear-accent');
+    const nameInput = document.getElementById('portal-name');
+    const preview = document.getElementById('appearance-preview');
+    const mark = document.getElementById('preview-mark');
+    const previewName = document.getElementById('preview-name');
+    const caption = document.getElementById('preview-caption');
+    const nav = document.getElementById('preview-nav');
+    const navItem = document.getElementById('preview-nav-item');
+    const chip = document.getElementById('preview-chip');
+    const description = document.getElementById('preview-description');
+
+    // No stored custom accent means the theme default is selected.
+    clearInput.checked = <%= !(/^#[0-9a-fA-F]{6}$/.test(appearance.primary_color || '')) ? 'true' : 'false' %>;
+
+    const themes = {
+        blue: {
+            bg:'#050810', card:'#090d1a', panel:'#0d1225',
+            border:'#1e2d4a', text:'#f0f4ff', muted:'#8899bb',
+            accent:'#3b82f6', light:'#60a5fa'
+        },
+        purple: {
+            bg:'#050810', card:'#090d1a', panel:'#0d1225',
+            border:'#1e2d4a', text:'#f0f4ff', muted:'#8899bb',
+            accent:'#8b5cf6', light:'#c4b5fd'
+        },
+        green: {
+            bg:'#050810', card:'#090d1a', panel:'#0d1225',
+            border:'#1e2d4a', text:'#f0f4ff', muted:'#8899bb',
+            accent:'#10b981', light:'#6ee7b7'
+        },
+        yellow: {
+            bg:'#050810', card:'#090d1a', panel:'#0d1225',
+            border:'#1e2d4a', text:'#f0f4ff', muted:'#8899bb',
+            accent:'#a16207', light:'#facc15'
+        },
+        dark: {
+            bg:'#020407', card:'#060a10', panel:'#0a111b',
+            border:'#203449', text:'#f1f7fc', muted:'#91a9bd',
+            accent:'#06b6d4', light:'#67e8f9'
+        },
+        light: {
+            bg:'#f4f7fb', card:'#ffffff', panel:'#eaf0f8',
+            border:'#d7e0ed', text:'#152238', muted:'#52647d',
+            accent:'#2563eb', light:'#1d4ed8'
+        }
+    };
+
+    function updatePreview() {
+        const key = themeInput.value;
+        const t = themes[key] || themes.blue;
+        const accent = clearInput.checked ? t.accent : colorInput.value;
+
+        preview.style.background = t.card;
+        preview.style.color = t.text;
+        preview.style.borderColor = t.border;
+
+        mark.style.background = `linear-gradient(135deg, ${accent}, ${t.light})`;
+        previewName.style.color = t.text;
+        caption.style.color = t.muted;
+        nav.style.background = t.panel;
+        nav.style.borderColor = t.border;
+        nav.style.color = t.text;
+        navItem.style.color = t.light;
+        chip.style.background = accent;
+        description.style.color = t.muted;
+
+        previewName.textContent = nameInput.value.trim() ||
+            'TECH-Life Contact-Center Solution';
+        chip.textContent = key.charAt(0).toUpperCase() + key.slice(1) + ' theme';
+        colorInput.disabled = clearInput.checked;
+    }
+
+    themeInput.addEventListener('change', updatePreview);
+    colorInput.addEventListener('input', updatePreview);
+    clearInput.addEventListener('change', updatePreview);
+    nameInput.addEventListener('input', updatePreview);
+    updatePreview();
+})();
+</script>
+
+<%- include('../partials/foot') %>

@@ -9,9 +9,9 @@ router.get('/login', (req, res) => {
 router.post('/login', async (req, res) => {
     const { tenant_slug, username, password } = req.body;
     try {
-        const user = await attemptLogin(tenant_slug, username, password);
+        const user = await attemptLogin(tenant_slug || null, username, password);
         if (!user) {
-            return res.render('login', { error: 'Invalid tenant, username, or password.', form: req.body });
+            return res.render('login', { error: 'Invalid tenant, username, or password. Super Admin may leave tenant slug blank.', form: req.body });
         }
         req.session.user = user;
         const roles = user.roles;

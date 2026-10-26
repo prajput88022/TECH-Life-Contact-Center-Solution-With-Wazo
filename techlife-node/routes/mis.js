@@ -7,8 +7,10 @@ const queueReportService = require('../src/services/queueReportService');
 const campaignReportService = require('../src/services/campaignReportService');
 const didReportService = require('../src/services/didReportService');
 const ivrReportService = require('../src/services/ivrReportService');
+const { loadTenantAppearance } = require('../src/tenantAppearance');
 
 router.use(requireRole(['mis_agent', 'supervisor', 'admin', 'superadmin']));
+router.use(loadTenantAppearance);
 
 router.get('/', async (req, res) => {
     const t = req.session.user.tenantId;
@@ -98,6 +100,46 @@ router.get('/ivr-journey', async (req, res) => {
     res.render('mis/ivr_journey', { pageTitle: 'MIS — IVR Journey Viewer', recent, callId, journey });
 });
 
+
+// Resolve a recording ID only after tenant ownership and download permission checks.
+async function findLocalRecordingForDownload(req, res) {
+    const id = req.params.id;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        res.status(400).send('Invalid recording ID');
+        return null;
+    }
+
+    const result = await pool.query(
+        `SELECT id, file_path, storage_backend
+         FROM recordings
+         WHERE id = $1 AND tenant_id = $2 AND is_downloadable = TRUE`,
+        [id, req.session.user.tenantId]
+    );
+    const rec = result.rows[0];
+    if (!rec) {
+        res.status(404).send('Recording not found or download is disabled');
+        return null;
+    }
+
+    if (rec.storage_backend !== 'local' || !rec.file_path) {
+        res.status(501).send('Download is currently supported only for local recordings');
+        return null;
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const baseDir = '/var/lib/techlife/demo-recordings';
+    const base = path.resolve(baseDir) + path.sep;
+    const file = path.resolve(rec.file_path);
+
+    if (!file.startsWith(base) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        res.status(404).send('Recording file not found in the permitted recording directory');
+        return null;
+    }
+
+    return { file, id: rec.id };
+}
+
 // ---------------- Recordings ----------------
 router.get('/recordings', async (req, res) => {
     const t = req.session.user.tenantId;
@@ -142,6 +184,18 @@ router.get('/recordings', async (req, res) => {
 
 // Streams a recording file to the browser, with a tenant ownership
 // check so one tenant can never fetch another's recording by id.
+router.get('/recordings/:id/download', async (req, res, next) => {
+    try {
+        const rec = await findLocalRecordingForDownload(req, res);
+        if (!rec) return;
+        res.download(rec.file, `recording-${rec.id}.wav`, (err) => {
+            if (err && !res.headersSent) next(err);
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 router.get('/recordings/:id/play', async (req, res) => {
     const t = req.session.user.tenantId;
     const result = await pool.query('SELECT file_path, storage_backend FROM recordings WHERE id = $1 AND tenant_id = $2', [req.params.id, t]);

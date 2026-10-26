@@ -19,7 +19,7 @@ async function createStandardRoles(client, tenantId) {
     for (const roleType of STANDARD_ROLES) {
         const label = roleType.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase());
         const res = await client.query(
-            `INSERT INTO roles (tenant_id, name, role_type, is_system) VALUES ($1,$2,$3,TRUE) RETURNING id`,
+            `INSERT INTO roles (tenant_id, name, role_type, is_system) VALUES ($1,$2,$3,TRUE) ON CONFLICT (tenant_id, name) DO UPDATE SET role_type = EXCLUDED.role_type, is_system = TRUE RETURNING id`,
             [tenantId, label, roleType]
         );
         roleIds[roleType] = res.rows[0].id;
@@ -51,7 +51,19 @@ async function provisionNewTenant(tenantId, adminCreds = null) {
         }
 
         await client.query('COMMIT');
-        return { roleIds, adminUserId };
+
+        // Wazo provisioning is deliberately outside the application DB transaction.
+        // A Wazo outage must not roll back an already-created application tenant.
+        let wazoProvisioning;
+        try {
+            const { provisionWazoTenant } = require('./wazoTenantProvisioningService');
+            wazoProvisioning = await provisionWazoTenant(tenantId);
+        } catch (error) {
+            wazoProvisioning = { ok: false, error: String(error.message || error) };
+            console.error('[tenant setup] Wazo provisioning failed:', wazoProvisioning.error);
+        }
+
+        return { roleIds, adminUserId, wazoProvisioning };
     } catch (e) {
         await client.query('ROLLBACK');
         throw e;

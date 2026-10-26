@@ -20,7 +20,7 @@
     /* Text tiers: primary / secondary / tertiary(labels) */
     --t0: #f0f4ff; --t1: #8899bb; --t2: #3a4f7a;
     /* Accent (blue) */
-    --acc: #3b82f6; --acc2: #60a5fa; --acc3: #1d4ed8;
+    --acc: #3b82f6; --acc2: #60a5fa; --acc3: #1d4ed8; --acc-rgb: 59,130,246;
     /* Status/semantic colors */
     --grn: #10b981; --red: #ef4444; --amb: #f59e0b; --pur: #8b5cf6; --cyn: #06b6d4; --pnk: #ec4899; --org: #f97316;
     /* Radii */
@@ -39,7 +39,47 @@
     --radius: var(--r12);
 }
 
-html, body { height: 100%; }
+
+/* ---------- Tenant appearance themes ---------- */
+html[data-tenant-theme="blue"] {
+    --c0: #050810; --c1: #090d1a; --c2: #0d1225; --c3: #121830; --c4: #1a2340;
+    --bd: #1e2d4a; --bdl: #2a3f6a;
+    --t0: #f0f4ff; --t1: #8899bb; --t2: #3a4f7a;
+    --acc: #3b82f6; --acc2: #60a5fa; --acc3: #1d4ed8; --acc-rgb: 59,130,246;
+}
+html[data-tenant-theme="purple"] {
+    --c0: #0b0712; --c1: #130d20; --c2: #1b1230; --c3: #281a40; --c4: #392452;
+    --bd: #493263; --bdl: #62458a;
+    --t0: #f7f0ff; --t1: #c0afd9; --t2: #8872a7;
+    --acc: #8b5cf6; --acc2: #c4b5fd; --acc3: #6d28d9; --acc-rgb: 139,92,246;
+}
+html[data-tenant-theme="green"] {
+    --c0: #04100d; --c1: #071914; --c2: #0b241c; --c3: #103328; --c4: #174536;
+    --bd: #205543; --bdl: #2e745a;
+    --t0: #edfff7; --t1: #9acbb7; --t2: #5d9b80;
+    --acc: #10b981; --acc2: #6ee7b7; --acc3: #047857; --acc-rgb: 16,185,129;
+}
+html[data-tenant-theme="yellow"] {
+    --c0: #100e05; --c1: #1b1708; --c2: #29210b; --c3: #3a2e0e; --c4: #4b3b12;
+    --bd: #68501a; --bdl: #8a6a20;
+    --t0: #fffbea; --t1: #dfca8b; --t2: #aa914c;
+    --acc: #a16207; --acc2: #facc15; --acc3: #854d0e; --acc-rgb: 161,98,7;
+}
+html[data-tenant-theme="dark"] {
+    --c0: #020407; --c1: #060a10; --c2: #0a111b; --c3: #101b29; --c4: #18283a;
+    --bd: #203449; --bdl: #31516b;
+    --t0: #f1f7fc; --t1: #91a9bd; --t2: #59758c;
+    --acc: #06b6d4; --acc2: #67e8f9; --acc3: #0e7490; --acc-rgb: 6,182,212;
+}
+html[data-tenant-theme="light"] {
+    --c0: #f4f7fb; --c1: #ffffff; --c2: #ffffff; --c3: #eaf0f8; --c4: #dce5f1;
+    --bd: #d7e0ed; --bdl: #b7c7dd;
+    --t0: #152238; --t1: #52647d; --t2: #7a8ca5;
+    --acc: #2563eb; --acc2: #1d4ed8; --acc3: #1e40af; --acc-rgb: 37,99,235;
+    --shadow-sm: 0 1px 2px rgba(15,23,42,.08);
+    --shadow-md: 0 10px 30px rgba(15,23,42,.12);
+}
+\nhtml, body { height: 100%; }
 body {
     font-family: var(--fu);
     background: var(--c0);
@@ -70,7 +110,20 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
     background: linear-gradient(135deg, var(--acc), var(--acc3));
     color: #fff; font-weight: 700; font-size: 12px; font-family: var(--fm);
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 0 20px rgba(59,130,246,.35);
+    box-shadow: 0 0 20px rgba(var(--acc-rgb),.35);
+}
+
+.tl-brand-mark.tl-brand-image {
+    overflow: hidden;
+    background: var(--c3);
+    box-shadow: none;
+}
+.tl-brand-mark.tl-brand-image img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    padding: 2px;
 }
 .tl-brand-text { font-weight: 800; font-size: 13px; color: var(--t0); line-height: 1.2; }
 .tl-brand-text span { display: block; font-weight: 400; font-size: 9px; color: var(--t2); margin-top: 2px; font-family: var(--fm); letter-spacing: .05em; text-transform: uppercase; }
@@ -78,7 +131,7 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
 /* Account/tenant badge -- matches the reference's .sbac pattern */
 .tl-tenant-switcher {
     margin: 8px 10px; padding: 8px 10px; border-radius: var(--r8);
-    background: rgba(59,130,246,.07); border: 1px solid var(--bd);
+    background: rgba(var(--acc-rgb),.07); border: 1px solid var(--bd);
 }
 .tl-tenant-switcher-label { font-size: 9px; font-weight: 700; color: var(--t2); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 3px; }
 .tl-tenant-switcher select {
@@ -100,7 +153,7 @@ input, select, button, textarea { font-family: var(--fu); font-size: 13px; box-s
     transition: background .12s ease, color .12s ease;
 }
 .tl-nav-link:hover { background: rgba(255,255,255,.05); color: var(--t0); }
-.tl-nav-link.active { background: rgba(59,130,246,.15); color: var(--acc2); font-weight: 600; }
+.tl-nav-link.active { background: rgba(var(--acc-rgb),.15); color: var(--acc2); font-weight: 600; }
 .tl-nav-link.active .tl-nav-icon { color: var(--acc2); opacity: 1; }
 .tl-nav-icon { font-size: 17px !important; width: 17px; flex-shrink: 0; opacity: .8; }
 
@@ -169,7 +222,7 @@ td code, .tl-mono { font-family: var(--fm); color: var(--t0); }
 .status-available { background: rgba(16,185,129,.15); color: #34d399; border: 1px solid rgba(16,185,129,.25); }
 .status-break, .status-lunch, .status-tea, .status-training, .status-meeting, .status-personal_break { background: rgba(245,158,11,.15); color: #fbbf24; border: 1px solid rgba(245,158,11,.25); }
 .status-offline, .status-logout { background: rgba(148,163,184,.1); color: var(--t1); border: 1px solid rgba(148,163,184,.15); }
-.status-after_call_work { background: rgba(59,130,246,.15); color: #60a5fa; border: 1px solid rgba(59,130,246,.25); }
+.status-after_call_work { background: rgba(var(--acc-rgb),.15); color: var(--acc2); border: 1px solid rgba(var(--acc-rgb),.25); }
 .status-on_call { background: rgba(6,182,212,.15); color: #22d3ee; border: 1px solid rgba(6,182,212,.25); }
 
 /* ---------- Forms ---------- */
@@ -225,12 +278,12 @@ form.tl-card { display: block; }
     border: 1px solid var(--bd); border-radius: var(--r16);
     padding: 2rem; box-shadow: 0 25px 50px rgba(0,0,0,.5);
 }
-.tl-login-box .tl-brand-mark { width: 44px; height: 44px; border-radius: var(--r12); margin: 0 auto 16px; font-size: 15px; box-shadow: 0 0 30px rgba(59,130,246,.4); }
+.tl-login-box .tl-brand-mark { width: 44px; height: 44px; border-radius: var(--r12); margin: 0 auto 16px; font-size: 15px; box-shadow: 0 0 30px rgba(var(--acc-rgb),.4); }
 .tl-login-box h1 { text-align: center; font-size: 19px; margin-bottom: 2px; }
 .tl-login-box .tl-subtitle { text-align: center; margin-bottom: 26px; }
 .tl-login-box label { margin-top: 14px; }
 .tl-login-box input { width: 100%; padding: 11px 13px; margin: 5px 0 4px; height: 40px; }
-.tl-login-box .tl-btn { width: 100%; padding: 11px; margin-top: 20px; font-size: 13.5px; height: 42px; box-shadow: 0 4px 15px rgba(59,130,246,.35); }
+.tl-login-box .tl-btn { width: 100%; padding: 11px; margin-top: 20px; font-size: 13.5px; height: 42px; box-shadow: 0 4px 15px rgba(var(--acc-rgb),.35); }
 .tl-role-hint {
     margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--bd);
     font-size: 11px; color: var(--t2); text-align: center; line-height: 1.6;
@@ -248,7 +301,7 @@ form.tl-card { display: block; }
     transition: all .12s ease; font-family: var(--fu);
 }
 .tl-agent-status-buttons button:hover { background: var(--c3); color: var(--t0); border-color: var(--bdl); }
-.tl-agent-status-buttons button.active { background: rgba(59,130,246,.15); color: var(--acc2); border-color: var(--acc); font-weight: 700; }
+.tl-agent-status-buttons button.active { background: rgba(var(--acc-rgb),.15); color: var(--acc2); border-color: var(--acc); font-weight: 700; }
 
 /* =====================================================================
    SOFTPHONE PANEL -- studied from the Kazoo agent reference's call
@@ -282,7 +335,7 @@ form.tl-card { display: block; }
     font-family: var(--fu);
 }
 .tl-cb:hover { background: var(--c4); color: var(--acc2); }
-.tl-cb.active { background: rgba(59,130,246,.2); border-color: var(--acc); color: var(--acc2); }
+.tl-cb.active { background: rgba(var(--acc-rgb),.2); border-color: var(--acc); color: var(--acc2); }
 
 @media (max-width: 900px) {
     .tl-sidebar { width: 64px; }

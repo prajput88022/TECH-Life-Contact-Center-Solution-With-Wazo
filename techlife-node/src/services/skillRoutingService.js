@@ -1,0 +1,217 @@
+'use strict';
+
+const DEFAULT_PROFICIENCY = 1;
+
+function normalizeSkills(value) {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      value = [value];
+    }
+  }
+
+  if (!Array.isArray(value)) return new Map();
+
+  const result = new Map();
+
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const name = item.trim().toLowerCase();
+      if (name) result.set(name, DEFAULT_PROFICIENCY);
+      continue;
+    }
+
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const name = String(item.name || item.skill || '')
+        .trim()
+        .toLowerCase();
+
+      const rawLevel = item.level ?? item.proficiency ?? DEFAULT_PROFICIENCY;
+      const level = Number(rawLevel);
+
+      if (name && Number.isFinite(level) && level >= 1 && level <= 5) {
+        result.set(name, level);
+      }
+    }
+  }
+
+  return result;
+}
+
+function qualifyAgent(agent, requirements) {
+  if (!agent || agent.is_active === false || agent.isActive === false) {
+    return { qualified: false, reason: 'inactive' };
+  }
+
+  const skills = normalizeSkills(agent.skills_json ?? agent.skills);
+  let total = 0;
+
+  for (const requirement of requirements) {
+    const name = String(
+      typeof requirement === 'string'
+        ? requirement
+        : requirement?.name || requirement?.skill || ''
+    ).trim().toLowerCase();
+
+    const minimum = typeof requirement === 'string'
+      ? DEFAULT_PROFICIENCY
+      : Number(requirement?.min_proficiency ?? requirement?.minLevel ?? 1);
+
+    if (!name || !Number.isFinite(minimum) || minimum < 1 || minimum > 5) {
+      return { qualified: false, reason: 'invalid_requirement' };
+    }
+
+    const actual = skills.get(name);
+
+    if (actual === undefined || actual < minimum) {
+      return {
+        qualified: false,
+        reason: 'missing_or_insufficient_skill',
+        skill: name
+      };
+    }
+
+    total += actual;
+  }
+
+  return { qualified: true, skillScore: total };
+}
+
+/**
+ * Select an eligible agent from queue members.
+ *
+ * Required input:
+ *   members: [{ id, tenant_id, is_active, skills_json, penalty }]
+ *   tenantId: current tenant UUID
+ *   requiredSkills: ['sales'] or [{ name: 'sales', min_proficiency: 3 }]
+ *
+ * Returns the selected agent or null. This function does not place calls.
+ */
+function selectSkillAgent({
+  members,
+  tenantId,
+  requiredSkills = [],
+  strategy = 'skillbased'
+}) {
+  if (!Array.isArray(members)) {
+    throw new TypeError('members must be an array');
+  }
+
+  if (!tenantId) {
+    throw new TypeError('tenantId is required');
+  }
+
+  if (!Array.isArray(requiredSkills) || requiredSkills.length === 0) {
+    return { agent: null, reason: 'no_required_skills_configured' };
+  }
+
+  const qualified = members
+    .filter((agent) => agent.tenant_id === tenantId)
+    .filter((agent) => agent.is_active === true)
+    .filter((agent) => agent.membership_active !== false)
+    .map((agent) => ({
+      agent,
+      result: qualifyAgent(agent, requiredSkills),
+      penalty: Number.isFinite(Number(agent.penalty))
+        ? Number(agent.penalty)
+        : 0
+    }))
+    .filter((item) => item.result.qualified);
+
+  if (!qualified.length) {
+    return { agent: null, reason: 'no_qualified_agent' };
+  }
+
+  // Highest matching proficiency first, then lowest queue penalty,
+  // then stable ID order to keep selection deterministic.
+  qualified.sort((a, b) =>
+    b.result.skillScore - a.result.skillScore ||
+    a.penalty - b.penalty ||
+    String(a.agent.id).localeCompare(String(b.agent.id))
+  );
+
+  return {
+    agent: qualified[0].agent,
+    reason: 'matched',
+    skillScore: qualified[0].result.skillScore
+  };
+}
+
+/**
+ * Load queue membership and agent skills within one tenant.
+ * The caller must supply the tenant-scoped queue ID.
+ */
+async function selectSkillAgentForQueue(pool, {
+  tenantId,
+  queueId,
+  requiredSkills
+}) {
+  if (!tenantId || !queueId) {
+    throw new TypeError('tenantId and queueId are required');
+  }
+
+  const queueResult = await pool.query(
+    `SELECT id, tenant_id, strategy, is_active, required_skills_json
+       FROM queues
+      WHERE id = $1 AND tenant_id = $2`,
+    [queueId, tenantId]
+  );
+
+  const queue = queueResult.rows[0];
+
+  if (!queue) return { agent: null, reason: 'queue_not_found' };
+  if (!queue.is_active) return { agent: null, reason: 'queue_inactive' };
+  if (queue.strategy !== 'skillbased') {
+    return { agent: null, reason: 'queue_not_skillbased' };
+  }
+
+  let configuredSkills = queue.required_skills_json;
+
+  if (typeof configuredSkills === 'string') {
+    try {
+      configuredSkills = JSON.parse(configuredSkills);
+    } catch {
+      return { agent: null, reason: 'invalid_queue_skill_configuration' };
+    }
+  }
+
+  if (!Array.isArray(configuredSkills) || configuredSkills.length === 0) {
+    return { agent: null, reason: 'no_required_skills_configured' };
+  }
+
+  const membersResult = await pool.query(
+    `SELECT a.id, a.tenant_id, a.agent_number, a.extension,
+            a.skills_json, a.is_active,
+            qa.is_active AS membership_active,
+            COALESCE(qa.penalty, 0) AS penalty
+       FROM queue_agents qa
+       JOIN queues q
+         ON q.id = qa.queue_id
+        AND q.tenant_id = $1
+       JOIN agents a
+         ON a.id = qa.agent_id
+        AND a.tenant_id = q.tenant_id
+      WHERE qa.queue_id = $2
+        AND qa.is_active = TRUE
+        AND a.is_active = TRUE
+      ORDER BY a.id`,
+    [tenantId, queueId]
+  );
+
+  // Use the requirements saved on this tenant-owned queue.
+  // Accept both PostgreSQL's decoded JSONB array and a JSON string.
+
+  return selectSkillAgent({
+    members: membersResult.rows,
+    tenantId,
+    requiredSkills: configuredSkills
+  });
+}
+
+module.exports = {
+  normalizeSkills,
+  qualifyAgent,
+  selectSkillAgent,
+  selectSkillAgentForQueue
+};

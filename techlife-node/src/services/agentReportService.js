@@ -1,4 +1,5 @@
 const { pool } = require('../db');
+const { agentAccessPredicate } = require('../supervisorScope');
 
 function occupancy(r) {
     const busy = (Number(r.talk_seconds) || 0) + (Number(r.hold_seconds) || 0) + (Number(r.acw_seconds) || 0);
@@ -112,7 +113,8 @@ async function performance(tenantId, agentId, from, to) {
     };
 }
 
-async function liveStatuses(tenantId) {
+async function liveStatuses(tenantId, supervisorUserId = null) {
+    const scopeClause = supervisorUserId ? `AND ${agentAccessPredicate('a', '$1', '$2')}` : '';
     const res = await pool.query(
         `SELECT a.id AS agent_id, u.full_name, ase.status, ase.started_at, q.name AS queue_name, a.skills_json
          FROM agents a
@@ -123,8 +125,9 @@ async function liveStatuses(tenantId) {
          ) ase ON TRUE
          LEFT JOIN queues q ON q.id = ase.queue_id
          WHERE a.tenant_id = $1 AND a.is_active = TRUE
+         ${scopeClause}
          ORDER BY u.full_name`,
-        [tenantId]
+        supervisorUserId ? [tenantId, supervisorUserId] : [tenantId]
     );
     return res.rows;
 }

@@ -1,0 +1,160 @@
+'use strict';
+
+const { pool } = require('./db');
+const { wazoFetch } = require('./wazoFetch');
+const config = require('../config/config');
+
+async function getToken() {
+  const r = await wazoFetch(
+    `${config.wazo.authUrl.replace(/\/$/, '')}/token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Basic ' + Buffer.from(
+          `${config.wazo.authUsername}:${config.wazo.authPassword}`
+        ).toString('base64'),
+      },
+      body: JSON.stringify({ backend: 'wazo_user', expiration: 300 }),
+    }
+  );
+  const p = await r.json().catch(() => ({}));
+  if (!r.ok || !p?.data?.token) {
+    throw new Error(`Wazo authentication failed (HTTP ${r.status})`);
+  }
+  return p.data.token;
+}
+
+async function api(method, path, token, tenantUuid, body) {
+  const r = await wazoFetch(
+    `${config.wazo.confdUrl.replace(/\/$/, '')}${path}`,
+    {
+      method,
+      headers: {
+        'X-Auth-Token': token,
+        'Wazo-Tenant': tenantUuid,
+        'Content-Type': 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }
+  );
+  const raw = await r.text().catch(() => '');
+  let p = {};
+  try { p = raw ? JSON.parse(raw) : {}; } catch (_) {}
+  if (!r.ok) {
+    throw new Error(
+      `Wazo ${method} ${path} failed (HTTP ${r.status}): ` +
+      String(p?.message || p?.error || raw || 'no response body').slice(0, 300)
+    );
+  }
+  return p?.data?.data || p?.data || p;
+}
+
+async function provisionPrefixOutboundRoute(prefixId, appTenantId) {
+  const result = await pool.query(
+    `SELECT p.id AS prefix_id, p.prefix_digits, p.strip_digits,
+            p.prepend_digits, p.route_name, p.wazo_outcall_id,
+            p.trunk_id, tr.name AS trunk_name,
+            tr.is_active AS trunk_active,
+            tr.provisioning_status AS trunk_status,
+            tr.wazo_trunk_id, t.wazo_tenant_uuid
+       FROM prefixes p
+       JOIN trunks tr ON tr.id = p.trunk_id AND tr.tenant_id = p.tenant_id
+       JOIN tenants t ON t.id = p.tenant_id
+      WHERE p.id = $1 AND p.tenant_id = $2`,
+    [prefixId, appTenantId]
+  );
+
+  if (!result.rows.length) throw new Error('Prefix/trunk not found in this tenant');
+  const p = result.rows[0];
+
+  if (p.trunk_active !== true || p.trunk_status !== 'provisioned') {
+    throw new Error('Selected trunk must be active and provisioned');
+  }
+  if (!p.wazo_tenant_uuid || !p.wazo_trunk_id) {
+    throw new Error('Wazo tenant UUID or trunk ID is missing');
+  }
+
+  const agents = await pool.query(
+    `SELECT extension, wazo_extension_id
+       FROM agents
+      WHERE tenant_id = $1 AND wazo_extension_id IS NOT NULL
+      ORDER BY extension`,
+    [appTenantId]
+  );
+  const extensionIds = [...new Set(
+    agents.rows.map(a => Number(a.wazo_extension_id))
+      .filter(id => Number.isSafeInteger(id) && id > 0)
+  )];
+  if (!extensionIds.length) {
+    throw new Error('No agent has a valid Wazo extension ID');
+  }
+
+  const token = await getToken();
+  let outcallId = p.wazo_outcall_id ? Number(p.wazo_outcall_id) : null;
+
+  if (outcallId) {
+    // Confirm the stored route belongs to the selected Wazo tenant.
+    await api('GET', `/outcalls/${outcallId}`, token, p.wazo_tenant_uuid);
+  } else {
+    const routeName =
+      `techlife-${String(p.route_name || 'route')}-${String(p.prefix_id).slice(0, 8)}`
+        .replace(/[^a-zA-Z0-9_-]/g, '-')
+        .slice(0, 80);
+
+    const created = await api(
+      'POST', '/outcalls', token, p.wazo_tenant_uuid,
+      {
+        name: routeName,
+        description: `TechLife prefix ${p.prefix_digits}`,
+        enabled: true,
+      }
+    );
+
+    outcallId = Number(created?.id);
+    if (!Number.isSafeInteger(outcallId) || outcallId < 1) {
+      throw new Error('Wazo created a route but returned no usable route ID');
+    }
+
+    // Persist immediately so a retry reuses the same route.
+    await pool.query(
+      `UPDATE prefixes SET wazo_outcall_id = $1
+        WHERE id = $2 AND tenant_id = $3`,
+      [outcallId, prefixId, appTenantId]
+    );
+  }
+
+  // Wazo association endpoint expects an array of trunk IDs.
+  await api(
+    'PUT', `/outcalls/${outcallId}/trunks`, token, p.wazo_tenant_uuid,
+    { trunks: [{ id: Number(p.wazo_trunk_id) }] }
+  );
+
+  for (const extensionId of extensionIds) {
+    const association = {
+      prefix: String(p.prefix_digits),
+      strip_digits: Number(p.strip_digits || 0),
+    };
+    if (p.prepend_digits) {
+      association.external_prefix = String(p.prepend_digits);
+    }
+
+    await api(
+      'PUT',
+      `/outcalls/${outcallId}/extensions/${extensionId}`,
+      token,
+      p.wazo_tenant_uuid,
+      association
+    );
+  }
+
+  return {
+    ok: true,
+    prefix_id: p.prefix_id,
+    outcall_id: outcallId,
+    trunk_id: Number(p.wazo_trunk_id),
+    extension_ids: extensionIds,
+  };
+}
+
+module.exports = { provisionPrefixOutboundRoute };

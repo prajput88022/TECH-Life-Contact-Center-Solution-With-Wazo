@@ -1,0 +1,444 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Agent Workspace</h1>
+<p class="tl-subtitle">Calls today: <strong><%= callsToday.n %></strong> &middot; Talk time: <strong><%= new Date(callsToday.talk*1000).toISOString().substr(11,8) %></strong></p>
+
+<h2>My Status</h2>
+<div class="tl-agent-status-buttons" id="statusButtons">
+<% statuses.forEach(s => { %>
+    <button data-status="<%= s %>" onclick="setStatus('<%= s %>')"><%= s.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) %></button>
+<% }) %>
+</div>
+<p>Agent status: <span id="currentStatus" class="tl-status-pill status-offline">loading…</span></p>
+
+<h2>WebRTC Phone <span id="sipRegStatus" class="tl-status-pill status-offline" style="margin-left:8px">registering…</span></h2>
+<div class="tl-card" style="max-width:340px">
+    <div class="tl-call-status" id="callStatusCard" style="display:none">
+        <div class="tl-call-status-state" id="callStatusState">In Call</div>
+        <div class="tl-call-status-who" id="callStatusWho">—</div>
+        <div class="tl-call-status-num" id="callStatusNum"></div>
+    </div>
+
+    <input type="text" id="dialInput" class="tl-dialpad-display" style="width:100%" placeholder="Enter number">
+    <div class="tl-dialpad-grid">
+        <% ['1','2','3','4','5','6','7','8','9','*','0','#'].forEach(k => { %>
+        <button class="tl-dp-key" onclick="dtmfOrDial('<%= k %>')"><%= k %></button>
+        <% }) %>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="tl-btn" style="flex:1" id="callBtn" onclick="placeCall()">Call</button>
+        <button class="tl-btn bad" style="flex:1;display:none" id="hangupBtn" onclick="hangupCall()">Hang Up</button>
+    </div>
+    <div class="tl-call-controls" id="inCallControls">
+        <button class="tl-cb" id="muteBtn" onclick="toggleMute()">Mute</button>
+        <button class="tl-cb" id="holdBtn" onclick="toggleHold()">Hold</button>
+    </div>
+    <div class="tl-call-controls" id="transferControls">
+        <button class="tl-cb" onclick="showTransferBox('blind')">Blind Transfer</button>
+        <button class="tl-cb" onclick="showTransferBox('attended')">Attended Transfer</button>
+        <button class="tl-cb" style="grid-column:1/-1" onclick="addToConference()">+ Add to Conference</button>
+    </div>
+    <div id="transferBox" style="display:none;margin-top:10px;padding:10px;background:var(--c3);border:1px solid var(--bd);border-radius:var(--r8)">
+        <label id="transferBoxLabel">Transfer to</label>
+        <input type="text" id="transferTarget" placeholder="Extension or number" style="width:100%;margin:6px 0">
+        <div style="display:flex;gap:8px">
+            <button class="tl-btn" style="flex:1" id="transferGoBtn" onclick="doTransfer()">Transfer</button>
+            <button class="tl-btn secondary" style="flex:1" onclick="cancelTransfer()">Cancel</button>
+        </div>
+        <p id="attendedTransferState" class="tl-subtitle" style="margin-top:6px;margin-bottom:0;display:none"></p>
+    </div>
+    <p id="callState" class="tl-subtitle" style="margin-top:10px;margin-bottom:0">Idle</p>
+</div>
+<audio id="remoteAudio" autoplay></audio>
+
+<!-- CRM screen-pop panel: only shown/used when the tenant has an active
+     integration with popup_mode = 'iframe_panel'. Otherwise a screen-pop
+     opens a new tab/window instead, and this stays empty. -->
+<div id="crmPanelWrap" style="display:none;margin-top:20px">
+    <h2>Customer Record</h2>
+    <iframe id="crmPanel" style="width:100%;height:600px;border:1px solid var(--tl-border);border-radius:8px" title="CRM"></iframe>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sip.js@0.21.2/lib/platform/web/sip.min.js"></script>
+<script>
+const AGENT_ID = <%- JSON.stringify(agentId) %>;
+let userAgent = null;
+let registerer = null;
+let currentSession = null;
+let isMuted = false;
+let isHeld = false;
+let crmConfig = null;
+
+// ---------------- Agent status ----------------
+async function loadStatus() {
+    const res = await fetch(`/api/v1/agents/${AGENT_ID}/status`).then(r => r.json());
+    const el = document.getElementById('currentStatus');
+    el.textContent = res.status || 'offline';
+    el.className = 'tl-status-pill status-' + (res.status || 'offline');
+    document.querySelectorAll('#statusButtons button').forEach(b => b.classList.toggle('active', b.dataset.status === res.status));
+}
+async function setStatus(status) {
+    await fetch(`/api/v1/agents/${AGENT_ID}/status`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ status })
+    });
+    loadStatus();
+}
+loadStatus();
+
+// ---------------- CRM Screen-Pop / CTI ----------------
+async function loadCrmConfig() {
+    try {
+        const res = await fetch('/api/v1/crm/config');
+        if (res.ok) crmConfig = await res.json();
+    } catch (e) { console.warn('CRM config unavailable', e); }
+}
+loadCrmConfig();
+
+function buildCrmUrl(template, callData) {
+    return template
+        .replace('{customer_number}', encodeURIComponent(callData.customer_number || ''))
+        .replace('{call_id}', encodeURIComponent(callData.call_id || ''))
+        .replace('{agent_extension}', encodeURIComponent(callData.agent_extension || ''))
+        .replace('{direction}', encodeURIComponent(callData.direction || ''))
+        .replace('{queue_name}', encodeURIComponent(callData.queue_name || ''))
+        .replace('{campaign_name}', encodeURIComponent(callData.campaign_name || ''))
+        .replace('{disposition_code}', encodeURIComponent(callData.disposition_code || ''));
+}
+
+function fireCrmScreenPop(callData) {
+    if (!crmConfig || !crmConfig.popup_enabled || !crmConfig.url_template) return;
+    const url = buildCrmUrl(crmConfig.url_template, callData);
+
+    switch (crmConfig.popup_mode) {
+        case 'new_tab':
+            window.open(url, '_blank');
+            break;
+        case 'popup_window':
+            window.open(url, 'crm_popup', 'width=900,height=700,noopener');
+            break;
+        case 'iframe_panel':
+            document.getElementById('crmPanelWrap').style.display = 'block';
+            document.getElementById('crmPanel').src = url;
+            break;
+        case 'postmessage':
+            // For when this agent screen is itself embedded inside the
+            // CRM's own frame -- let the CRM (parent) handle the pop.
+            if (window.parent) {
+                window.parent.postMessage({ type: 'techlife_screen_pop', url, callData }, '*');
+            }
+            break;
+    }
+}
+
+// ---------------- SIP.js WebRTC registration ----------------
+function setRegStatus(text, statusClass) {
+    const el = document.getElementById('sipRegStatus');
+    el.textContent = text;
+    el.className = 'tl-status-pill ' + statusClass;
+}
+
+async function initSip() {
+    setRegStatus('fetching credentials…', 'status-break');
+    let creds;
+    try {
+        const res = await fetch(`/api/v1/agents/${AGENT_ID}/sip-credentials`);
+        if (!res.ok) {
+            const err = await res.json();
+            setRegStatus(err.error === 'not_provisioned' ? 'line not provisioned' : 'error', 'status-offline');
+            return;
+        }
+        creds = await res.json();
+    } catch (e) {
+        setRegStatus('cannot reach server', 'status-offline');
+        return;
+    }
+
+    const { UserAgent, Registerer } = SIP;
+    const uri = UserAgent.makeURI(`sip:${creds.sip_username}@${creds.sip_domain}`);
+    userAgent = new UserAgent({
+        uri,
+        transportOptions: { server: creds.ws_uri },
+        authorizationUsername: creds.sip_username,
+        authorizationPassword: creds.sip_password,
+        displayName: <%- JSON.stringify(fullName) %>,
+    });
+
+    userAgent.delegate = {
+        onInvite: (invitation) => {
+            currentSession = invitation;
+            wireSessionEvents(invitation);
+            document.getElementById('callState').textContent = 'Incoming call — answering…';
+
+            // Trigger a 'ringing'-mode CRM screen-pop before we even
+            // accept, so the agent sees customer context immediately.
+            const callerNumber = invitation.remoteIdentity && invitation.remoteIdentity.uri
+                ? invitation.remoteIdentity.uri.user : null;
+            if (crmConfig && crmConfig.trigger_event === 'ringing') {
+                fireCrmScreenPop({ customer_number: callerNumber, direction: 'inbound', agent_extension: creds.extension });
+            }
+
+            invitation.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+            showInCallUI();
+        },
+    };
+
+    try {
+        await userAgent.start();
+        registerer = new Registerer(userAgent);
+        await registerer.register();
+        setRegStatus(`registered as ${creds.extension}`, 'status-available');
+    } catch (e) {
+        console.error(e);
+        setRegStatus('registration failed', 'status-offline');
+    }
+}
+
+function wireSessionEvents(session) {
+    const { SessionState } = SIP;
+    session.stateChange.addListener((state) => {
+        if (state === SessionState.Established) {
+            document.getElementById('callState').textContent = 'In call';
+            attachRemoteAudio(session);
+            showInCallUI();
+
+            const remoteNumber = session.remoteIdentity && session.remoteIdentity.uri ? session.remoteIdentity.uri.user : null;
+            document.getElementById('callStatusCard').style.display = 'block';
+            document.getElementById('callStatusState').textContent = 'In Call';
+            document.getElementById('callStatusWho').textContent = remoteNumber || 'Unknown';
+            document.getElementById('callStatusNum').textContent = remoteNumber || '';
+
+            // 'answered'-mode CRM screen-pop fires once the call actually connects.
+            if (crmConfig && crmConfig.trigger_event === 'answered') {
+                fireCrmScreenPop({ customer_number: remoteNumber, direction: 'unknown' });
+            }
+        } else if (state === SessionState.Terminated) {
+            document.getElementById('callState').textContent = 'Idle';
+            document.getElementById('callStatusCard').style.display = 'none';
+            currentSession = null;
+            showIdleUI();
+        }
+    });
+}
+
+function attachRemoteAudio(session) {
+    const remoteStream = new MediaStream();
+    const pc = session.sessionDescriptionHandler.peerConnection;
+    pc.getReceivers().forEach((receiver) => { if (receiver.track) remoteStream.addTrack(receiver.track); });
+    document.getElementById('remoteAudio').srcObject = remoteStream;
+}
+
+function showInCallUI() {
+    document.getElementById('callBtn').style.display = 'none';
+    document.getElementById('hangupBtn').style.display = 'block';
+}
+function showIdleUI() {
+    document.getElementById('callBtn').style.display = 'block';
+    document.getElementById('hangupBtn').style.display = 'none';
+    document.getElementById('callStatusCard').style.display = 'none';
+    isMuted = false; isHeld = false;
+    document.getElementById('muteBtn').classList.remove('active');
+    document.getElementById('holdBtn').classList.remove('active');
+}
+
+function dtmfOrDial(key) {
+    if (currentSession && currentSession.state === SIP.SessionState.Established) {
+        currentSession.sessionDescriptionHandler.sendDtmf(key);
+    } else {
+        document.getElementById('dialInput').value += key;
+    }
+}
+
+async function placeCall() {
+    if (!userAgent) { alert('Phone is not registered yet.'); return; }
+    const number = document.getElementById('dialInput').value.trim();
+    if (!number) return;
+    const cfgDomain = userAgent.configuration.uri.host;
+    const target = SIP.UserAgent.makeURI(`sip:${number}@${cfgDomain}`);
+    const inviter = new SIP.Inviter(userAgent, target, { sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+    currentSession = inviter;
+    wireSessionEvents(inviter);
+    document.getElementById('callState').textContent = 'Calling ' + number + '…';
+    showInCallUI();
+    try { await inviter.invite(); } catch (e) {
+        console.error(e);
+        document.getElementById('callState').textContent = 'Call failed';
+        showIdleUI();
+    }
+}
+
+function hangupCall() {
+    if (!currentSession) return;
+    const { SessionState } = SIP;
+    if (currentSession.state === SessionState.Established) currentSession.bye();
+    else if (currentSession.state === SessionState.Establishing) currentSession.cancel();
+    else currentSession.reject && currentSession.reject();
+    showIdleUI();
+}
+
+// ---------------- Transfer (blind + attended) ----------------
+// Uses SIP.js's documented Session.refer() -- sends a real SIP REFER.
+// Blind transfer: refer() with just a target URI.
+// Attended transfer: dial the transfer target as a second session, and
+// once it's answered, refer() the ORIGINAL session's call to that
+// second SESSION (not just its URI) -- SIP.js sends this as a REFER
+// with a Replaces header, which is the standard mechanism a PBX (Wazo/
+// Asterisk) uses to complete an attended transfer.
+let transferMode = null;
+let secondSession = null;
+
+function showTransferBox(mode) {
+    if (!currentSession || currentSession.state !== SIP.SessionState.Established) {
+        alert('You need an active call to transfer.');
+        return;
+    }
+    transferMode = mode;
+    document.getElementById('transferBox').style.display = 'block';
+    document.getElementById('transferBoxLabel').textContent = mode === 'blind' ? 'Blind transfer to' : 'Attended transfer to';
+    document.getElementById('transferGoBtn').textContent = mode === 'blind' ? 'Transfer' : 'Call Target';
+}
+
+function cancelTransfer() {
+    if (secondSession) {
+        try { secondSession.bye ? secondSession.bye() : secondSession.cancel(); } catch (e) { /* already ended */ }
+        secondSession = null;
+    }
+    document.getElementById('transferBox').style.display = 'none';
+    document.getElementById('attendedTransferState').style.display = 'none';
+    document.getElementById('transferTarget').value = '';
+    document.getElementById('transferGoBtn').textContent = transferMode === 'blind' ? 'Transfer' : 'Call Target';
+}
+
+async function doTransfer() {
+    const target = document.getElementById('transferTarget').value.trim();
+    if (!target) return;
+    const domain = userAgent.configuration.uri.host;
+    const targetUri = SIP.UserAgent.makeURI(`sip:${target}@${domain}`);
+
+    if (transferMode === 'blind') {
+        try {
+            await currentSession.refer(targetUri);
+            document.getElementById('callState').textContent = 'Transferred — call will end shortly';
+        } catch (e) {
+            alert('Blind transfer failed: ' + e.message);
+        }
+        cancelTransfer();
+        return;
+    }
+
+    // Attended: first click dials the target; second click (button now
+    // reads "Complete Transfer") merges the two.
+    if (!secondSession) {
+        const inviter = new SIP.Inviter(userAgent, targetUri, {
+            sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+        });
+        secondSession = inviter;
+        secondSession.stateChange.addListener((state) => {
+            if (state === SIP.SessionState.Established) {
+                document.getElementById('attendedTransferState').style.display = 'block';
+                document.getElementById('attendedTransferState').textContent = 'Connected to transfer target — click Complete Transfer to connect them with the caller.';
+                document.getElementById('transferGoBtn').textContent = 'Complete Transfer';
+            } else if (state === SIP.SessionState.Terminated) {
+                secondSession = null;
+                cancelTransfer();
+            }
+        });
+        document.getElementById('attendedTransferState').style.display = 'block';
+        document.getElementById('attendedTransferState').textContent = 'Calling transfer target…';
+        try { await inviter.invite(); } catch (e) { alert('Could not reach transfer target: ' + e.message); secondSession = null; }
+        return;
+    }
+
+    // Second click: complete the attended transfer.
+    try {
+        await currentSession.refer(secondSession);
+        document.getElementById('callState').textContent = 'Attended transfer complete — call will end shortly';
+    } catch (e) {
+        alert('Completing transfer failed: ' + e.message);
+    }
+    cancelTransfer();
+}
+
+// ---------------- Conference (client-side audio mix) ----------------
+// NOTE: this is a best-effort BROWSER-SIDE mix using the Web Audio API
+// -- it works for a basic 3-way call, but for production call quality
+// at scale, a server-side conference bridge (Asterisk ConfBridge, which
+// Wazo can expose via its meeting/conference APIs) is the correct
+// approach. This client-side version has not been tested against real
+// audio hardware/network conditions from this sandbox.
+let audioCtx = null;
+async function addToConference() {
+    const target = prompt('Extension or number to add to the conference:');
+    if (!target || !currentSession || currentSession.state !== SIP.SessionState.Established) return;
+
+    const domain = userAgent.configuration.uri.host;
+    const targetUri = SIP.UserAgent.makeURI(`sip:${target}@${domain}`);
+    const inviter = new SIP.Inviter(userAgent, targetUri, {
+        sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+    });
+
+    inviter.stateChange.addListener((state) => {
+        if (state !== SIP.SessionState.Established) return;
+        mixConference(currentSession, inviter);
+    });
+    document.getElementById('callState').textContent = 'Adding to conference…';
+    try { await inviter.invite(); } catch (e) { alert('Could not add to conference: ' + e.message); }
+}
+
+function remoteStreamOf(session) {
+    const stream = new MediaStream();
+    session.sessionDescriptionHandler.peerConnection.getReceivers().forEach((r) => { if (r.track) stream.addTrack(r.track); });
+    return stream;
+}
+
+async function mixConference(sessionA, sessionB) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    const remoteA = remoteStreamOf(sessionA);
+    const remoteB = remoteStreamOf(sessionB);
+    const srcMic = audioCtx.createMediaStreamSource(micStream);
+    const srcA = audioCtx.createMediaStreamSource(remoteA);
+    const srcB = audioCtx.createMediaStreamSource(remoteB);
+
+    // What THIS agent hears: mic is not looped back to self, just A + B.
+    const localMix = audioCtx.createMediaStreamDestination();
+    srcA.connect(localMix); srcB.connect(localMix);
+    document.getElementById('remoteAudio').srcObject = localMix.stream;
+
+    // What A hears: mic + B (not A's own voice).
+    const mixToA = audioCtx.createMediaStreamDestination();
+    srcMic.connect(mixToA); srcB.connect(mixToA);
+    const senderA = sessionA.sessionDescriptionHandler.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'audio');
+    if (senderA) senderA.replaceTrack(mixToA.stream.getAudioTracks()[0]);
+
+    // What B hears: mic + A (not B's own voice).
+    const mixToB = audioCtx.createMediaStreamDestination();
+    srcMic.connect(mixToB); srcA.connect(mixToB);
+    const senderB = sessionB.sessionDescriptionHandler.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'audio');
+    if (senderB) senderB.replaceTrack(mixToB.stream.getAudioTracks()[0]);
+
+    secondSession = sessionB;
+    document.getElementById('callState').textContent = '3-way conference active (beta)';
+}
+
+function toggleMute() {
+    if (!currentSession) return;
+    const pc = currentSession.sessionDescriptionHandler.peerConnection;
+    isMuted = !isMuted;
+    pc.getSenders().forEach((sender) => { if (sender.track) sender.track.enabled = !isMuted; });
+    document.getElementById('muteBtn').classList.toggle('active', isMuted);
+}
+
+async function toggleHold() {
+    if (!currentSession) return;
+    isHeld = !isHeld;
+    try {
+        await currentSession.invite({ sessionDescriptionHandlerOptions: { hold: isHeld } });
+        document.getElementById('holdBtn').classList.toggle('active', isHeld);
+        document.getElementById('callState').textContent = isHeld ? 'On hold' : 'In call';
+    } catch (e) { console.error('hold toggle failed', e); }
+}
+
+initSip();
+</script>
+<%- include('../partials/foot') %>

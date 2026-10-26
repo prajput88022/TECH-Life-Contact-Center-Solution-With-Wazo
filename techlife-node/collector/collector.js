@@ -19,23 +19,50 @@ const config = require('../config/config');
 const { wazoFetch } = require('../src/wazoFetch');
 const entityResolver = require('./entityResolver');
 const eventProcessor = require('./eventProcessor');
+const { startPrefixReconciler } = require('../src/wazoOutboundRoutingService');
 
 function log(msg) {
     console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
+const TOKEN_LIFETIME_SECONDS = 3600;
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+let cachedToken = null;
+let cachedTokenExpiresAt = 0;
+
 async function getWazoToken() {
+    if (cachedToken && Date.now() < cachedTokenExpiresAt - TOKEN_REFRESH_MARGIN_MS) {
+        return cachedToken;
+    }
+
     const resp = await wazoFetch(`${config.wazo.authUrl.replace(/\/$/, '')}/token`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Authorization: 'Basic ' + Buffer.from(`${config.wazo.authUsername}:${config.wazo.authPassword}`).toString('base64'),
         },
-        body: JSON.stringify({ backend: 'wazo_user', expiration: 3600 }),
+        body: JSON.stringify({ backend: 'wazo_user', expiration: TOKEN_LIFETIME_SECONDS }),
     });
+
     const data = await resp.json().catch(() => ({}));
-    if (!data?.data?.token) throw new Error('wazo-auth did not return a token: ' + JSON.stringify(data));
-    return data.data.token;
+    if (!resp.ok) {
+        const error = new Error(`wazo-auth token request failed (HTTP ${resp.status}): ${JSON.stringify(data)}`);
+        error.status = resp.status;
+        throw error;
+    }
+    if (!data?.data?.token) {
+        throw new Error('wazo-auth did not return a token');
+    }
+
+    cachedToken = data.data.token;
+    cachedTokenExpiresAt = Date.now() + TOKEN_LIFETIME_SECONDS * 1000;
+    log('Obtained a new Wazo token; it will be reused for reconnects.');
+    return cachedToken;
+}
+
+function invalidateWazoToken() {
+    cachedToken = null;
+    cachedTokenExpiresAt = 0;
 }
 
 /** Translate one raw Wazo bus message into our canonical envelope, or null to ignore it. */
@@ -131,21 +158,42 @@ async function connectAndListen() {
             }
         });
         ws.on('close', () => resolve());
+        ws.on('unexpected-response', (_request, response) => {
+            const status = response.statusCode;
+            const error = new Error(
+                `WebSocket handshake failed (HTTP ${status})`
+            );
+            error.status = status;
+            response.resume();
+            reject(error);
+        });
         ws.on('error', (e) => reject(e));
     });
 }
 
 async function main() {
     log('TECH-Life Wazo Event Collector starting...');
+    startPrefixReconciler(60000);
+    log('Outbound prefix reconciler started (60-second interval).');
+    let retryDelayMs = 5000;
+    const maxRetryDelayMs = 5 * 60 * 1000;
+
     // eslint-disable-next-line no-constant-condition
     while (true) {
         try {
             await connectAndListen();
-            log('Connection closed, reconnecting in 5s');
+            retryDelayMs = 5000;
+            log('WebSocket closed; reconnecting with the cached token when valid.');
         } catch (e) {
-            log(`Collector error: ${e.message} -- reconnecting in 5s`);
+            if (e.status === 401 || e.status === 403) {
+                invalidateWazoToken();
+            }
+            log(`Collector error: ${e.message}`);
+            log(`Retrying in ${Math.round(retryDelayMs / 1000)} seconds.`);
         }
-        await new Promise((r) => setTimeout(r, 5000));
+
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+        retryDelayMs = Math.min(retryDelayMs * 2, maxRetryDelayMs);
     }
 }
 

@@ -1,0 +1,137 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Disposition Management</h1>
+<p>Manage tenant-specific outcomes for voice, IVR, chat and other channels. Parent selection determines the hierarchy level.</p>
+
+<% if (errorMessage) { %>
+  <p class="tl-card"><strong>Error:</strong> <%= errorMessage %></p>
+<% } %>
+
+<section class="tl-card">
+  <h2>Create Disposition</h2>
+  <form method="post" action="/admin/dispositions/create">
+    <div class="tl-filters">
+      <div>
+        <label for="disp-code">Code</label>
+        <input id="disp-code" name="code" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,39}" required>
+      </div>
+      <div>
+        <label for="disp-label">Label</label>
+        <input id="disp-label" name="label" maxlength="160" required>
+      </div>
+      <div>
+        <label for="disp-channel">Channel</label>
+        <select id="disp-channel" name="channel">
+          <option value="">All / unspecified</option>
+          <% channels.forEach(c => { %><option value="<%= c %>"><%= c %></option><% }) %>
+        </select>
+      </div>
+      <div>
+        <label for="disp-parent">Parent (optional)</label>
+        <select id="disp-parent" name="parent_id">
+          <option value="">None — Level 1</option>
+          <% parents.filter(p => p.hierarchy_level < 3).forEach(p => { %>
+            <option value="<%= p.id %>">Level <%= p.hierarchy_level %> — <%= p.code %> / <%= p.label %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label for="disp-sort">Sort order</label>
+        <input id="disp-sort" type="number" name="sort_order" min="0" max="1000000" value="0">
+      </div>
+      <div>
+        <label><input type="checkbox" name="is_conversion"> Counts as conversion</label>
+      </div>
+    </div>
+    <button class="tl-btn" type="submit">Create Disposition</button>
+  </form>
+</section>
+
+<h2>Tenant Dispositions</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Hierarchy</th><th>Code</th><th>Label</th><th>Channel</th>
+      <th>Conversion</th><th>Status</th><th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% dispositions.forEach(d => { %>
+      <tr>
+        <td>
+          <% for (let i = 1; i < d.hierarchy_level; i++) { %>&mdash; <% } %>
+          Level <%= d.hierarchy_level %>
+          <% if (d.parent_code) { %><br><small>Parent: <%= d.parent_code %></small><% } %>
+        </td>
+        <td><strong><%= d.code %></strong></td>
+        <td><%= d.label %></td>
+        <td><%= d.channel || 'All / unspecified' %></td>
+        <td><%= d.is_conversion ? 'Yes' : 'No' %></td>
+        <td><%= d.is_active ? 'Active' : 'Inactive' %></td>
+        <td>
+          <a href="/admin/dispositions?edit=<%= d.id %>">Edit</a>
+          <form method="post" action="/admin/dispositions/<%= d.id %>/toggle" style="display:inline">
+            <button class="tl-btn secondary" type="submit"><%= d.is_active ? 'Deactivate' : 'Activate' %></button>
+          </form>
+        </td>
+      </tr>
+      <% if (editId === d.id) { %>
+        <tr>
+          <td colspan="7">
+            <form method="post" action="/admin/dispositions/<%= d.id %>/edit" class="tl-card">
+              <h3>Edit <%= d.code %></h3>
+              <div class="tl-filters">
+                <div>
+                  <label>Code</label>
+                  <input name="code" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,39}" value="<%= d.code %>" required>
+                </div>
+                <div>
+                  <label>Label</label>
+                  <input name="label" maxlength="160" value="<%= d.label %>" required>
+                </div>
+                <div>
+                  <label>Channel</label>
+                  <select name="channel">
+                    <option value="">All / unspecified</option>
+                    <% channels.forEach(c => { %>
+                      <option value="<%= c %>" <%= d.channel === c ? 'selected' : '' %>><%= c %></option>
+                    <% }) %>
+                  </select>
+                </div>
+                <div>
+                  <label>Parent</label>
+                  <select name="parent_id">
+                    <option value="">None — Level 1</option>
+                    <% parents.filter(p => p.hierarchy_level < 3 && p.id !== d.id).forEach(p => { %>
+                      <option value="<%= p.id %>" <%= d.parent_id === p.id ? 'selected' : '' %>>
+                        Level <%= p.hierarchy_level %> — <%= p.code %> / <%= p.label %>
+                      </option>
+                    <% }) %>
+                  </select>
+                  <small>The database rejects cycles and trees deeper than level 3.</small>
+                </div>
+                <div>
+                  <label>Sort order</label>
+                  <input type="number" name="sort_order" min="0" max="1000000" value="<%= d.sort_order %>">
+                </div>
+                <div>
+                  <label><input type="checkbox" name="is_conversion" <%= d.is_conversion ? 'checked' : '' %>> Counts as conversion</label>
+                </div>
+              </div>
+              <button class="tl-btn" type="submit">Save Changes</button>
+              <a class="tl-btn secondary" href="/admin/dispositions">Cancel</a>
+            </form>
+          </td>
+        </tr>
+      <% } %>
+    <% }) %>
+    <% if (!dispositions.length) { %>
+      <tr><td colspan="7">No dispositions exist for this tenant yet.</td></tr>
+    <% } %>
+  </tbody>
+</table>
+
+<p><strong>Hierarchy rule:</strong> Root dispositions are level 1; children are level 2; grandchildren are level 3. A level-3 disposition cannot have children.</p>
+
+<%- include('../partials/foot') %>

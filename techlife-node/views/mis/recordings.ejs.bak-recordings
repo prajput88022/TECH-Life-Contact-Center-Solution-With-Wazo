@@ -1,0 +1,48 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Recordings</h1>
+<p class="tl-subtitle">Search recordings by date, agent, queue, or campaign. Play/download requires the underlying audio file to exist on disk at the path stored in the database.</p>
+
+<form method="get" class="tl-filters">
+    <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
+    <div><label>Agent</label>
+        <select name="agent_id"><option value="">All Agents</option>
+            <% agents.forEach(a => { %><option value="<%= a.id %>" <%= a.id === agentId ? 'selected' : '' %>><%= a.full_name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>Queue</label>
+        <select name="queue_id"><option value="">All Queues</option>
+            <% queues.forEach(q => { %><option value="<%= q.id %>" <%= q.id === queueId ? 'selected' : '' %>><%= q.name %></option><% }) %>
+        </select>
+    </div>
+    <div><label>Campaign</label>
+        <select name="campaign_id"><option value="">All Campaigns</option>
+            <% campaigns.forEach(c => { %><option value="<%= c.id %>" <%= c.id === campaignId ? 'selected' : '' %>><%= c.name %></option><% }) %>
+        </select>
+    </div>
+    <div><button class="tl-btn" type="submit">Search</button></div>
+</form>
+
+<table>
+<tr><th>Call Time</th><th>Agent</th><th>Queue</th><th>Campaign</th><th>Number</th><th>Direction</th><th>Duration</th><th>Disposition</th><th></th></tr>
+<% recordings.forEach(r => { %>
+<tr>
+    <td><%= r.start_time %></td>
+    <td><%= r.agent_name || '—' %></td>
+    <td><%= r.queue_name || '—' %></td>
+    <td><%= r.campaign_name || '—' %></td>
+    <td><%= r.direction === 'inbound' ? r.from_number : r.to_number %></td>
+    <td><%= r.direction %></td>
+    <td><%= r.duration_seconds ? new Date(r.duration_seconds*1000).toISOString().substr(11,8) : '—' %></td>
+    <td><%= r.disposition_label || '—' %></td>
+    <td>
+        <% if (r.is_downloadable) { %>
+        <audio controls preload="none" style="height:28px;max-width:180px"><source src="/mis/recordings/<%= r.id %>/play"></audio>
+        <% } else { %>Download disabled<% } %>
+    </td>
+</tr>
+<% }) %>
+<% if (recordings.length === 0) { %><tr><td colspan="9">No recordings found for this filter.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

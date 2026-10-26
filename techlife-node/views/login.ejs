@@ -11,8 +11,8 @@
     <p class="tl-subtitle">Contact-Center Solution</p>
     <% if (typeof error !== 'undefined' && error) { %><div class="tl-error"><%= error %></div><% } %>
     <form method="post" action="/login">
-        <label>Tenant slug</label>
-        <input type="text" name="tenant_slug" placeholder="e.g. acme" required value="<%= typeof form !== 'undefined' ? form.tenant_slug || '' : '' %>">
+        <label>Tenant slug <span>(leave blank for Super Admin)</span></label>
+        <input type="text" name="tenant_slug" placeholder="e.g. acme (Super Admin may leave blank)" value="<%= typeof form !== 'undefined' ? form.tenant_slug || '' : '' %>">
         <label>Username</label>
         <input type="text" name="username" required value="<%= typeof form !== 'undefined' ? form.username || '' : '' %>">
         <label>Password</label>
@@ -20,9 +20,7 @@
         <button class="tl-btn" type="submit">Sign in</button>
     </form>
     <div class="tl-role-hint">
-        One login for every role. Enter your <strong>tenant slug</strong> (given by your
-        administrator) plus your own username and password &mdash; Superadmin, Admin, Supervisor,
-        Agent, and MIS Agent are all recognized automatically and taken to their own dashboard.
+        One login for every role. Tenant users enter the tenant slug provided by their administrator. Super Admin can leave the tenant slug blank. Your assigned role determines the dashboard you can access.
     </div>
 </div>
 </body></html>

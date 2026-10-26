@@ -23,22 +23,22 @@ module.exports = {
     },
 
     wazo: {
-        host: process.env.WAZO_HOST || 'wazo.example.local',
-        websocketdUrl: process.env.WAZO_WS_URL || 'wss://wazo.example.local/api/websocketd/',
-        calldUrl: process.env.WAZO_CALLD_URL || 'https://wazo.example.local:9500/1.0',
-        confdUrl: process.env.WAZO_CONFD_URL || 'https://wazo.example.local:9486/1.1',
-        agentdUrl: process.env.WAZO_AGENTD_URL || 'https://wazo.example.local:9493/1.0',
-        chatdUrl: process.env.WAZO_CHATD_URL || 'https://wazo.example.local:9304/1.0',
-        authUrl: process.env.WAZO_AUTH_URL || 'https://wazo.example.local:9497/0.1',
+        host: process.env.WAZO_HOST || 'prashant.k.rajput',
+        websocketdUrl: process.env.WAZO_WS_URL || 'wss://prashant.k.rajput/api/websocketd/',
+        calldUrl: process.env.WAZO_CALLD_URL || 'https://prashant.k.rajput:9500/1.0',
+        confdUrl: process.env.WAZO_CONFD_URL || 'https://prashant.k.rajput:9486/1.1',
+        agentdUrl: process.env.WAZO_AGENTD_URL || 'https://prashant.k.rajput:9493/1.0',
+        chatdUrl: process.env.WAZO_CHATD_URL || 'https://prashant.k.rajput:9304/1.0',
+        authUrl: process.env.WAZO_AUTH_URL || 'https://prashant.k.rajput:9497/0.1',
         authUsername: process.env.WAZO_AUTH_USER || 'techlife-collector',
         authPassword: process.env.WAZO_AUTH_PASS || 'change-me',
         ingestSecret: process.env.WAZO_INGEST_SECRET || 'change-me-too',
 
-        sipWsUri: process.env.WAZO_SIP_WS_URI || 'wss://wazo.example.local:443/api/asterisk/ws',
-        sipDomain: process.env.WAZO_SIP_DOMAIN || 'wazo.example.local',
+        sipWsUri: process.env.WAZO_SIP_WS_URI || 'wss://prashant.k.rajput:443/api/asterisk/ws',
+        sipDomain: process.env.WAZO_SIP_DOMAIN || 'prashant.k.rajput',
         defaultContext: process.env.WAZO_DEFAULT_CONTEXT || 'default',
         agentExtensionRangeStart: parseInt(process.env.WAZO_AGENT_EXT_START || '1000', 10),
-        agentExtensionRangeEnd: parseInt(process.env.WAZO_AGENT_EXT_END || '1999', 10),
+        agentExtensionRangeEnd: parseInt(process.env.WAZO_AGENT_EXT_END || '99999', 10),
         roboOriginateUserUuid: process.env.WAZO_ROBO_ORIGINATE_UUID || null,
         // Wazo Platform installs commonly use a self-signed certificate
         // on the internal API ports (calld/confd/agentd/auth), which

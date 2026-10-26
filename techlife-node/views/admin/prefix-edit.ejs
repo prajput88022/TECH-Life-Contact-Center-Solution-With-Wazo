@@ -1,0 +1,124 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<main class="container">
+  <h1>Edit Outbound Prefix</h1>
+  <p>Changes are saved while the prefix remains inactive. Activate it separately after reviewing the routing.</p>
+
+  <section class="card">
+    <form method="POST"
+      action="/admin/prefixes/<%= prefix.id %>/edit<%= asTenant ? '?as_tenant=' + encodeURIComponent(asTenant) : '' %>"
+      class="prefix-professional-layout">
+
+      <label>Route name
+        <input name="route_name" maxlength="120" value="<%= prefix.route_name || '' %>">
+      </label>
+
+      <label>Dialled prefix
+        <input name="prefix_digits" required maxlength="32"
+          pattern="[0-9*#+]+" value="<%= prefix.prefix_digits %>">
+      </label>
+
+      <label>Scope
+        <select name="scope_type" id="edit-prefix-scope" required>
+          <option value="tenant" <%= !prefix.agent_id && !prefix.user_group_id && !prefix.campaign_id ? 'selected' : '' %>>Tenant-wide</option>
+          <option value="agent" <%= prefix.agent_id ? 'selected' : '' %>>Specific agent</option>
+          <option value="group" <%= prefix.user_group_id ? 'selected' : '' %>>User group</option>
+          <option value="campaign" <%= prefix.campaign_id ? 'selected' : '' %>>Campaign</option>
+        </select>
+      </label>
+
+      <label>Agent
+        <select name="agent_id">
+          <option value="">Select agent</option>
+          <% agents.forEach(function(a) { %>
+            <option value="<%= a.id %>" <%= prefix.agent_id === a.id ? 'selected' : '' %>>
+              <%= a.full_name || 'Agent' %> — <%= a.extension || 'no extension' %>
+            </option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>User group
+        <select name="user_group_id">
+          <option value="">Select group</option>
+          <% userGroups.forEach(function(g) { %>
+            <option value="<%= g.id %>" <%= prefix.user_group_id === g.id ? 'selected' : '' %>><%= g.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>Campaign
+        <select name="campaign_id">
+          <option value="">Select campaign</option>
+          <% campaigns.forEach(function(c) { %>
+            <option value="<%= c.id %>" <%= prefix.campaign_id === c.id ? 'selected' : '' %>><%= c.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>Primary trunk
+        <select name="primary_trunk_id" required>
+          <option value="">Select primary trunk</option>
+          <% trunks.filter(t => t.is_active && t.provisioning_status === 'provisioned').forEach(function(t) { %>
+            <option value="<%= t.id %>" <%= orderedTrunkIds[0] === t.id ? 'selected' : '' %>>
+              <%= t.name %> — <%= t.sip_server %>
+            </option>
+          <% }) %>
+        </select>
+      </label>
+
+      <% for (let slot = 1; slot <= 3; slot++) {
+           const selectedId = orderedTrunkIds[slot] || '';
+      %>
+        <label>Backup trunk <%= slot %>
+          <select name="backup_trunk_<%= slot %>">
+            <option value="">None</option>
+            <% trunks.filter(t => t.is_active && t.provisioning_status === 'provisioned').forEach(function(t) { %>
+              <option value="<%= t.id %>" <%= selectedId === t.id ? 'selected' : '' %>>
+                <%= t.name %> — <%= t.sip_server %>
+              </option>
+            <% }) %>
+          </select>
+        </label>
+      <% } %>
+
+      <label>Digits to strip
+        <input name="strip_digits" type="number" min="0" max="32" required value="<%= prefix.strip_digits || 0 %>">
+      </label>
+
+      <label>Digits to prepend
+        <input name="prepend_digits" maxlength="32" pattern="[0-9*#+]*" value="<%= prefix.prepend_digits || '' %>">
+      </label>
+
+      <label>Priority
+        <input name="priority" type="number" min="0" max="100000" required value="<%= prefix.priority || 0 %>">
+      </label>
+
+      <button type="submit">Save changes</button>
+      <a href="/admin/prefixes<%= asTenant ? '?as_tenant=' + encodeURIComponent(asTenant) : '' %>">Cancel</a>
+    </form>
+  </section>
+</main>
+
+<script>
+(() => {
+  const scope = document.getElementById('edit-prefix-scope');
+  const targets = {
+    agent: document.querySelector('[name="agent_id"]'),
+    group: document.querySelector('[name="user_group_id"]'),
+    campaign: document.querySelector('[name="campaign_id"]')
+  };
+  function updateScopeFields() {
+    for (const [type, field] of Object.entries(targets)) {
+      field.required = scope.value === type;
+      if (scope.value !== type) field.value = '';
+    }
+  }
+  scope.addEventListener('change', updateScopeFields);
+  // Do not clear the currently selected target on initial render.
+  for (const [type, field] of Object.entries(targets)) {
+    field.required = scope.value === type;
+  }
+})();
+</script>

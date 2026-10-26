@@ -1,10 +1,11 @@
 <%- include('../partials/head') %>
 <%- include('../partials/nav') %>
 <h1>Queues</h1>
+
 <form method="post" action="/admin/queues/create" class="tl-card">
     <div class="tl-filters">
-        <div><label>Name</label><input name="name" required></div>
-        <div><label>Queue Number</label><input name="queue_number" required></div>
+        <div><label>Name</label><input name="name" maxlength="120" required></div>
+        <div><label>Queue Number</label><input name="queue_number" maxlength="40" required></div>
         <div><label>Strategy</label>
             <select name="strategy">
                 <option value="ringall">Ring All</option>
@@ -15,37 +16,73 @@
                 <option value="skillbased">Skill Based</option>
             </select>
         </div>
-        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds"></div>
-        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" value="20"></div>
-        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" value="0"></div>
+        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" min="1" max="86400"></div>
+        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" min="1" max="86400" value="20"></div>
+        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" min="0" max="86400" value="0"></div>
+        <div>
+            <label>Required Skills</label>
+            <input name="required_skills" placeholder="sales:3,support:2">
+            <small>For Skill Based queues, enter comma-separated skill names with optional minimum level (1–5).</small>
+        </div>
+        <div><label>No-match fallback setting</label>
+            <select name="skill_fallback_action">
+                <option value="leave">Leave in current queue / no action</option>
+                <option value="next_queue">Next queue (not yet wired)</option>
+                <option value="callback">Callback (not yet wired)</option>
+                <option value="voicemail">Voicemail (not yet wired)</option>
+            </select>
+        </div>
     </div>
     <button class="tl-btn" type="submit">Create Queue</button>
 </form>
+
 <h2>All Queues</h2>
 <table>
-<tr><th>Name</th><th>Number</th><th>Strategy</th><th>SLA Target</th><th>Status</th><th></th></tr>
-<% queues.forEach(q => { %>
+<tr><th>Name</th><th>Number</th><th>Strategy</th><th>Required Skills</th><th>SLA Target</th><th>Status</th><th></th></tr>
+<% queues.forEach(q => {
+    let reqSkills = [];
+    try {
+        reqSkills = Array.isArray(q.required_skills_json)
+            ? q.required_skills_json
+            : JSON.parse(q.required_skills_json || '[]');
+    } catch (_) { reqSkills = []; }
+%>
 <tr>
-    <td><%= q.name %></td><td><%= q.queue_number %></td><td><%= q.strategy %></td>
-    <td><%= q.sla_seconds %>s</td><td><%= q.is_active ? 'Active' : 'Disabled' %></td>
-    <td><a href="?edit=<%= q.id %>">Edit</a> &middot;
+    <td><%= q.name %></td>
+    <td><%= q.queue_number %></td>
+    <td><%= q.strategy %></td>
+    <td><%= reqSkills.map(s => (s.name || s.skill) + ':' + (s.min_proficiency || 1)).join(', ') || '—' %></td>
+    <td><%= q.sla_seconds %>s</td>
+    <td><%= q.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <a href="?edit=<%= q.id %>">Edit</a> &middot;
         <form method="post" action="/admin/queues/<%= q.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this queue?');">
             <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
         </form>
     </td>
 </tr>
 <% }) %>
-<% if (queues.length === 0) { %><tr><td colspan="6">No queues yet.</td></tr><% } %>
+<% if (queues.length === 0) { %><tr><td colspan="7">No queues yet.</td></tr><% } %>
 </table>
 
 <% if (editId) {
     const q = queues.find(x => x.id === editId);
-    if (q) { %>
+    if (q) {
+        let reqSkills = [];
+        try {
+            reqSkills = Array.isArray(q.required_skills_json)
+                ? q.required_skills_json
+                : JSON.parse(q.required_skills_json || '[]');
+        } catch (_) { reqSkills = []; }
+        const skillInput = reqSkills.map(s =>
+            (s.name || s.skill) + ':' + (s.min_proficiency || 1)
+        ).join(',');
+%>
 <h2>Edit Queue — <%= q.name %></h2>
 <form method="post" action="/admin/queues/<%= q.id %>/edit" class="tl-card">
     <div class="tl-filters">
-        <div><label>Name</label><input name="name" value="<%= q.name %>" required></div>
-        <div><label>Queue Number</label><input name="queue_number" value="<%= q.queue_number %>" required></div>
+        <div><label>Name</label><input name="name" maxlength="120" value="<%= q.name %>" required></div>
+        <div><label>Queue Number</label><input name="queue_number" maxlength="40" value="<%= q.queue_number %>" required></div>
         <div><label>Strategy</label>
             <select name="strategy">
                 <% ['ringall','roundrobin','leastrecent','leastcalls','random','skillbased'].forEach(s => { %>
@@ -53,15 +90,36 @@
                 <% }) %>
             </select>
         </div>
-        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" value="<%= q.max_wait_seconds || '' %>"></div>
-        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" value="<%= q.sla_seconds %>"></div>
-        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" value="<%= q.wrapup_seconds %>"></div>
+        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" min="1" max="86400" value="<%= q.max_wait_seconds || '' %>"></div>
+        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" min="1" max="86400" value="<%= q.sla_seconds %>"></div>
+        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" min="0" max="86400" value="<%= q.wrapup_seconds %>"></div>
+        <div>
+            <label>Required Skills</label>
+            <input name="required_skills" value="<%= skillInput %>" placeholder="sales:3,support:2">
+            <small>Skill Based queues require at least one skill. Levels are 1–5.</small>
+        </div>
+        <div><label>No-match fallback setting</label>
+            <select name="skill_fallback_action">
+                <% [
+                    ['leave','Leave in current queue / no action'],
+                    ['next_queue','Next queue (not yet wired)'],
+                    ['callback','Callback (not yet wired)'],
+                    ['voicemail','Voicemail (not yet wired)']
+                ].forEach(item => { %>
+                <option value="<%= item[0] %>" <%= (q.skill_fallback_action || 'leave') === item[0] ? 'selected' : '' %>><%= item[1] %></option>
+                <% }) %>
+            </select>
+        </div>
         <div><label>Status</label>
-            <select name="is_active"><option value="1" <%= q.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !q.is_active ? 'selected' : '' %>>Disabled</option></select>
+            <select name="is_active">
+                <option value="1" <%= q.is_active ? 'selected' : '' %>>Active</option>
+                <option value="0" <%= !q.is_active ? 'selected' : '' %>>Disabled</option>
+            </select>
         </div>
     </div>
     <button class="tl-btn" type="submit">Save Changes</button>
     <a class="tl-btn secondary" href="/admin/queues">Cancel</a>
 </form>
 <% } } %>
+
 <%- include('../partials/foot') %>

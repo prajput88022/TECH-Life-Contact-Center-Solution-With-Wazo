@@ -1,0 +1,89 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<main class="tl-page">
+  <h1>User Groups</h1>
+  <p>Organize agents into tenant-specific groups.</p>
+
+  <% if (errorMessage) { %>
+    <div class="tl-card" role="alert">
+      <% if (errorMessage === 'duplicate') { %>
+        That group name already exists.
+      <% } else if (errorMessage === 'invalid_agents') { %>
+        One or more selected agents are invalid for this tenant.
+      <% } else { %>
+        Please check the group name and description.
+      <% } %>
+    </div>
+  <% } %>
+
+  <section class="tl-card">
+    <h2><%= editing ? 'Edit User Group' : 'Create User Group' %></h2>
+    <form method="post"
+          action="<%= editing ? '/admin/user-groups/' + editing.id + '/edit' : '/admin/user-groups/create' %>">
+      <label for="group-name">Group name</label>
+      <input id="group-name" name="name" maxlength="100" required
+             value="<%= editing ? editing.name : '' %>">
+
+      <label for="group-description">Description</label>
+      <textarea id="group-description" name="description" maxlength="250"><%= editing ? (editing.description || '') : '' %></textarea>
+
+      <button class="tl-btn" type="submit"><%= editing ? 'Save Changes' : 'Create Group' %></button>
+      <% if (editing) { %>
+        <a class="tl-btn" href="/admin/user-groups">Cancel</a>
+      <% } %>
+    </form>
+  </section>
+
+  <% if (editing) { %>
+    <section class="tl-card">
+      <h2>Agents in <%= editing.name %></h2>
+      <form method="post" action="/admin/user-groups/<%= editing.id %>/agents">
+        <% if (!agents.length) { %>
+          <p>No agents are available in this tenant.</p>
+        <% } %>
+        <% agents.forEach(function(agent) { %>
+          <label>
+            <input type="checkbox" name="agent_ids" value="<%= agent.id %>"
+              <%= selectedAgentIds.includes(agent.id) ? 'checked' : '' %>>
+            <%= agent.display_name %>
+          </label>
+        <% }); %>
+        <button class="tl-btn" type="submit">Save Agent Membership</button>
+      </form>
+    </section>
+  <% } %>
+
+  <section class="tl-card">
+    <h2>Existing Groups</h2>
+    <% if (!groups.length) { %>
+      <p>No user groups have been created yet.</p>
+    <% } else { %>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Description</th><th>Agents</th><th>Status</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% groups.forEach(function(group) { %>
+            <tr>
+              <td><%= group.name %></td>
+              <td><%= group.description || '—' %></td>
+              <td><%= group.agent_count %></td>
+              <td><%= group.is_active ? 'Active' : 'Inactive' %></td>
+              <td>
+                <a class="tl-btn" href="/admin/user-groups?edit=<%= group.id %>">Edit</a>
+                <form method="post" action="/admin/user-groups/<%= group.id %>/toggle" style="display:inline">
+                  <button class="tl-btn" type="submit"><%= group.is_active ? 'Deactivate' : 'Activate' %></button>
+                </form>
+              </td>
+            </tr>
+          <% }); %>
+        </tbody>
+      </table>
+    <% } %>
+  </section>
+</main>
+
+<%- include('../partials/foot') %>

@@ -39,6 +39,7 @@
     <td>
         <% if (r.is_downloadable) { %>
         <audio controls preload="none" style="height:28px;max-width:180px"><source src="/mis/recordings/<%= r.id %>/play"></audio>
+        <a class="tl-btn" href="/mis/recordings/<%= r.id %>/download">Download</a>
         <% } else { %>Download disabled<% } %>
     </td>
 </tr>

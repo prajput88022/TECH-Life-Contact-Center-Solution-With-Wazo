@@ -9,6 +9,7 @@ const navGroups = {
     admin: [
         { label: 'Overview', items: [
             { label: 'Dashboard', href: '/admin', icon: 'dashboard' },
+            { label: 'Appearance', href: '/admin/appearance', icon: 'palette' },
         ]},
         { label: 'Tenant Management', items: (typeof isReseller !== 'undefined' && isReseller) ? [
             { label: 'Sub-Tenants', href: '/admin/sub-tenants', icon: 'account_tree' },
@@ -18,10 +19,19 @@ const navGroups = {
         ]},
         { label: 'Call Center', items: [
             { label: 'Queues', href: '/admin/queues', icon: 'queue' },
+            { label: 'Skills', href: '/admin/skills', icon: 'checklist' },
+            { label: 'Dispositions', href: '/admin/dispositions', icon: 'checklist' },
+  { label: 'User Groups', href: '/admin/user-groups', icon: 'users' },
+  { label: 'Pause Codes', href: '/admin/pause-codes', icon: 'pause' },
+            { label: 'Skill Routing', href: '/admin/skill-routing', icon: 'route' },
             { label: 'Campaigns', href: '/admin/campaigns', icon: 'campaign' },
+            { label: 'Media Assets', href: '/admin/media-assets', icon: 'graphic_eq' },
+            { label: 'Recording Settings', href: '/admin/recording-settings', icon: 'settings' },
             { label: 'IVR Menus', href: '/admin/ivr', icon: 'dialpad' },
             { label: 'DIDs', href: '/admin/dids', icon: 'dialpad' },
             { label: 'SIP Trunks', href: '/admin/trunks', icon: 'cable' },
+            { label: 'Caller ID / CLI', href: '/admin/cli-settings', icon: 'phone' },
+            { label: 'Outbound Prefixes', href: '/admin/prefixes', icon: 'route' },
         ]},
         { label: 'Compliance & Integrations', items: [
             { label: 'Privacy & Masking', href: '/admin/privacy-settings', icon: 'shield' },
@@ -73,8 +83,22 @@ const effTenant = typeof effectiveTenant !== 'undefined' ? effectiveTenant : nul
 %>
 <aside class="tl-sidebar">
     <div class="tl-brand">
-        <div class="tl-brand-mark">TL</div>
-        <div class="tl-brand-text">TECH-Life<span>Contact-Center Solution</span></div>
+        <%
+        const brandAppearance = (typeof tenantAppearance !== 'undefined' && tenantAppearance)
+            ? tenantAppearance : {};
+        const brandName = typeof brandAppearance.portal_name === 'string' &&
+            brandAppearance.portal_name.trim()
+            ? brandAppearance.portal_name.trim() : 'TECH-Life Contact-Center Solution';
+        const brandLogo = typeof brandAppearance.logo_path === 'string' &&
+            /^\/uploads\/branding\/[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)$/i.test(brandAppearance.logo_path)
+            ? brandAppearance.logo_path : null;
+        %>
+        <% if (brandLogo) { %>
+            <div class="tl-brand-mark tl-brand-image"><img src="<%= brandLogo %>" alt=""></div>
+        <% } else { %>
+            <div class="tl-brand-mark">TL</div>
+        <% } %>
+        <div class="tl-brand-text"><%= brandName %><span>Contact-Center Solution</span></div>
     </div>
 
     <% if (effTenant && mTenants.length > 1) { %>

@@ -1,0 +1,285 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+
+<style id="prefix-professional-layout">
+  .prefix-professional-layout {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 24px;
+    align-items: start;
+    margin-top: 20px;
+  }
+
+  .prefix-professional-layout label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    color: var(--text, #e7e7f0);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .02em;
+  }
+
+  .prefix-professional-layout input,
+  .prefix-professional-layout select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding: 10px 12px;
+    border: 1px solid var(--border, #51416e);
+    border-radius: 8px;
+    background: var(--surface, #15111e);
+    color: var(--text, #f4f1fa);
+    font: inherit;
+    font-size: 14px;
+  }
+
+  .prefix-professional-layout input:focus,
+  .prefix-professional-layout select:focus {
+    outline: 2px solid #9b7bea;
+    outline-offset: 2px;
+  }
+
+  .prefix-professional-layout button {
+    grid-column: 1 / -1;
+    justify-self: start;
+    min-height: 42px;
+    padding: 10px 20px;
+    border: 0;
+    border-radius: 8px;
+    background: #7952c7;
+    color: #fff;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .prefix-professional-layout button:hover {
+    background: #8b67d6;
+  }
+
+  .prefix-professional-layout [hidden] {
+    display: none !important;
+  }
+
+  .prefix-professional-layout label:has(select[name="scope_type"]),
+  .prefix-professional-layout label:has(select[name="primary_trunk_id"]) {
+    grid-column: 1 / -1;
+  }
+
+  .prefix-professional-layout label:has(select[name^="backup_trunk_"]) {
+    grid-column: auto;
+  }
+
+  .card:has(.prefix-professional-layout) {
+    padding: clamp(18px, 3vw, 30px);
+    margin-bottom: 24px;
+    border-radius: 14px;
+  }
+
+  .table-responsive {
+    overflow-x: auto;
+    margin-top: 18px;
+  }
+
+  .table-responsive table {
+    width: 100%;
+    min-width: 780px;
+    border-collapse: collapse;
+  }
+
+  .table-responsive th,
+  .table-responsive td {
+    padding: 13px 15px;
+    text-align: left;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border, #30273c);
+  }
+
+  .table-responsive th {
+    color: var(--muted, #bcb2cc);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: nowrap;
+  }
+
+  .table-responsive td form {
+    margin: 0;
+  }
+
+  @media (max-width: 700px) {
+    .prefix-professional-layout {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .prefix-professional-layout label:has(select[name="scope_type"]),
+    .prefix-professional-layout label:has(select[name="primary_trunk_id"]),
+    .prefix-professional-layout button {
+      grid-column: 1;
+    }
+
+    .prefix-professional-layout button {
+      width: 100%;
+    }
+  }
+</style>
+\n<main class="container">
+  <h1>Outbound Prefixes</h1>
+  <p>Configure outbound prefixes. New prefixes remain inactive until explicitly reviewed and tested.</p>
+
+  <section class="card">
+    <h2>Add Prefix</h2>
+    <form class="prefix-professional-layout" method="POST" action="/admin/prefixes/create<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>">
+      <label>Route name
+        <input name="route_name" maxlength="120" placeholder="e.g. Domestic calls">
+      </label>
+
+      <label>Dialled prefix
+        <input name="prefix_digits" required maxlength="32" pattern="[0-9*#+]+" placeholder="e.g. 0">
+      </label>
+
+      <label>Scope
+        <select name="scope_type" id="prefix-scope" required>
+          <option value="tenant">Tenant-wide</option>
+          <option value="agent">Specific agent</option>
+          <option value="group">User group</option>
+          <option value="campaign">Campaign (activation blocked for now)</option>
+        </select>
+      </label>
+
+      <label class="prefix-scope-target" data-scope="agent">Agent
+        <select name="agent_id">
+          <option value="">Select agent</option>
+          <% agents.forEach(function(agent) { %>
+            <option value="<%= agent.id %>"><%= agent.full_name || 'Agent' %> — <%= agent.extension || 'no extension' %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label class="prefix-scope-target" data-scope="group">User group
+        <select name="user_group_id">
+          <option value="">Select group</option>
+          <% userGroups.forEach(function(group) { %>
+            <option value="<%= group.id %>"><%= group.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label class="prefix-scope-target" data-scope="campaign">Campaign
+        <select name="campaign_id">
+          <option value="">Select campaign</option>
+          <% campaigns.forEach(function(campaign) { %>
+            <option value="<%= campaign.id %>"><%= campaign.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>Primary trunk
+        <select name="primary_trunk_id" required>
+          <option value="">Select primary trunk</option>
+          <% trunks.filter(t => t.is_active && t.provisioning_status === 'provisioned').forEach(function(trunk) { %>
+            <option value="<%= trunk.id %>"><%= trunk.name %> — <%= trunk.sip_server %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <% for (let slot = 1; slot <= 3; slot++) { %>
+        <label>Backup trunk <%= slot %> (optional)
+          <select name="backup_trunk_<%= slot %>">
+            <option value="">None</option>
+            <% trunks.filter(t => t.is_active && t.provisioning_status === 'provisioned').forEach(function(trunk) { %>
+              <option value="<%= trunk.id %>"><%= trunk.name %> — <%= trunk.sip_server %></option>
+            <% }) %>
+          </select>
+        </label>
+      <% } %>
+
+      <label>Digits to strip
+        <input name="strip_digits" type="number" min="0" value="0" required>
+      </label>
+
+      <label>Digits to prepend
+        <input name="prepend_digits" maxlength="32" pattern="[0-9*#+]*" placeholder="Optional">
+      </label>
+
+      <label>Priority (higher number first)
+        <input name="priority" type="number" min="0" max="100000" value="0" required>
+      </label>
+
+      <button type="submit">Create inactive prefix</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Configured Prefixes</h2>
+    <% if (!prefixes.length) { %>
+      <p>No prefixes configured.</p>
+    <% } else { %>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th><th>Prefix</th><th>Scope</th><th>Trunks (priority order)</th>
+              <th>Strip</th><th>Prepend</th><th>Priority</th><th>Status</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% prefixes.forEach(function(prefix) { %>
+              <tr>
+                <td><%= prefix.route_name || '—' %></td>
+                <td><code><%= prefix.prefix_digits %></code></td>
+                <td><%= prefix.agent_id ? 'Agent' : prefix.user_group_id ? 'User group' : prefix.campaign_id ? 'Campaign (blocked)' : 'Tenant' %></td>
+                <td><%= prefix.trunk_names || prefix.trunk_name || 'Not selected' %></td>
+                <td><%= prefix.strip_digits || 0 %></td>
+                <td><%= prefix.prepend_digits || '—' %></td>
+                <td><%= prefix.priority || 0 %></td>
+                <td><%= prefix.is_active ? 'Active' : 'Inactive' %></td>
+                <td>
+                  <!-- PREFIX_EDIT_LINK_V1 -->
+                  <% if (!prefix.is_active && prefix.provisioning_status !== 'legacy') { %>
+                    <a href="/admin/prefixes/<%= prefix.id %>/edit<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>">Edit</a>
+                  <% } %>
+                  <% if (prefix.is_active) { %>
+                    <form method="POST" action="/admin/prefixes/<%= prefix.id %>/deactivate<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>" onsubmit="return confirm('Deactivate this prefix?')">
+                      <button type="submit">Deactivate</button>
+                    </form>
+                  <% } else { %>
+                    <form method="POST" action="/admin/prefixes/<%= prefix.id %>/activate<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + encodeURIComponent(effectiveTenant.id) : '' %>" onsubmit="return confirm('Activate this prefix and configure its Wazo outbound route?')">
+                      <button type="submit">Activate</button>
+                    </form>
+                  <% } %>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
+  </section>
+</main>
+
+<script>
+(function () {
+  const scope = document.getElementById('prefix-scope');
+  const targets = document.querySelectorAll('.prefix-scope-target');
+  function updateScope() {
+    targets.forEach(function (label) {
+      const visible = label.dataset.scope === scope.value;
+      label.hidden = !visible;
+      const select = label.querySelector('select');
+      select.disabled = !visible;
+      select.required = visible;
+      if (!visible) select.value = '';
+    });
+  }
+  scope.addEventListener('change', updateScope);
+  updateScope();
+})();
+</script>
+
+<%- include('../partials/foot') %>

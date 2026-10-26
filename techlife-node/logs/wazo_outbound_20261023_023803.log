@@ -1,0 +1,8 @@
+◇ injected env (27) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+OUTBOUND ROUTE PROVISIONING FAILED:
+Error: Wazo PUT /outcalls/1/extensions/2 failed (HTTP 404): ["Resource Not Found - Extension was not found ('id': 2)"]
+
+    at api (/usr/src/Tech_dialer/techlife-node/src/wazoOutboundRoutingService.js:58:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async provisionPrefixOutboundRoute (/usr/src/Tech_dialer/techlife-node/src/wazoOutboundRoutingService.js:194:5)
+    at async /tmp/techlife_create_outbound_route.js:8:20

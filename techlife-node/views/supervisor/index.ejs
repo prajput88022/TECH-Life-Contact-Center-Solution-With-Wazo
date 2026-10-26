@@ -32,6 +32,47 @@
 <h2>Queues</h2>
 <table id="queueTable"><tr><th>Queue</th><th>Calls Waiting</th><th>Longest Wait</th></tr></table>
 
+<h2 id="callbacks">Callbacks</h2>
+<p class="tl-subtitle">Scheduled callbacks for your assigned agents.</p>
+<table>
+    <tr><th>Phone</th><th>Agent</th><th>Due</th><th>Status</th><th>Notes</th><th>Action</th></tr>
+    <% (callbacks || []).forEach(cb => { %>
+    <tr>
+        <td><%= cb.phone_number %></td><td><%= cb.agent_name %></td>
+        <td><%= new Date(cb.due_at).toLocaleString() %></td><td><%= cb.status %></td><td><%= cb.notes || '' %></td>
+        <td>
+            <form method="post" action="/supervisor/callbacks/<%= cb.id %>/status" style="display:inline">
+                <input type="hidden" name="status" value="completed">
+                <button class="tl-btn secondary" type="submit">Complete</button>
+            </form>
+            <form method="post" action="/supervisor/callbacks/<%= cb.id %>/status" style="display:inline">
+                <input type="hidden" name="status" value="cancelled">
+                <button class="tl-btn secondary" type="submit">Cancel</button>
+            </form>
+        </td>
+    </tr>
+    <% }); %>
+    <% if (!(callbacks || []).length) { %><tr><td colspan="6">No active callbacks in your assigned scope.</td></tr><% } %>
+</table>
+
+<h2 id="dnc">Do Not Call (DNC)</h2>
+<p class="tl-subtitle">Adding a number here blocks it from future outbound dialing according to the DNC preflight rules.</p>
+<form method="post" action="/supervisor/dnc" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Phone number</label><input name="phone_number" required maxlength="30" placeholder="Enter phone number"></div>
+        <div><label>Scope</label><select name="campaign_id"><option value="">Tenant-wide DNC</option><% campaigns.forEach(c => { %><option value="<%= c.id %>"><%= c.name %> only</option><% }); %></select></div>
+        <div><label>Reason</label><input name="reason" maxlength="100" placeholder="Optional reason"></div>
+    </div>
+    <button class="tl-btn" type="submit">Add to DNC</button>
+</form>
+<table>
+    <tr><th>Phone</th><th>Scope</th><th>Reason</th><th>Added</th></tr>
+    <% (dncEntries || []).forEach(d => { %>
+    <tr><td><%= d.phone_number %></td><td><%= d.campaign_id ? (d.campaign_name || 'Campaign') : 'Tenant-wide' %></td><td><%= d.reason || '' %></td><td><%= new Date(d.created_at).toLocaleString() %></td></tr>
+    <% }); %>
+    <% if (!(dncEntries || []).length) { %><tr><td colspan="4">No DNC entries found.</td></tr><% } %>
+</table>
+
 <script>
 let allAgents = [];
 

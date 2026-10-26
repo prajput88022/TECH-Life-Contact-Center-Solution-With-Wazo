@@ -1,0 +1,54 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Recordings Management</h1>
+<p class="tl-subtitle">Review call recordings for your tenant. Downloads are available only when enabled for the recording.</p>
+
+<form method="get" class="tl-filters">
+    <div>
+        <label>From</label>
+        <input type="datetime-local" name="from" value="<%= String(from).replace(' ','T').slice(0,16) %>">
+    </div>
+    <div>
+        <label>To</label>
+        <input type="datetime-local" name="to" value="<%= String(to).replace(' ','T').slice(0,16) %>">
+    </div>
+    <div><button class="tl-btn" type="submit">Search</button></div>
+</form>
+
+<table>
+    <tr>
+        <th>Call Time</th><th>Agent</th><th>Queue</th><th>Number</th>
+        <th>Direction</th><th>Duration</th><th>Size</th><th>Actions</th>
+    </tr>
+    <% recordings.forEach(r => { %>
+    <tr>
+        <td><%= r.start_time %></td>
+        <td><%= r.agent_name || '—' %></td>
+        <td><%= r.queue_name || '—' %></td>
+        <td><%= r.direction === 'inbound' ? (r.from_number || '—') : (r.to_number || '—') %></td>
+        <td><%= r.direction || '—' %></td>
+        <td><%= r.duration_seconds ? new Date(r.duration_seconds * 1000).toISOString().substr(11,8) : '—' %></td>
+        <td><%= r.file_size_bytes ? (Number(r.file_size_bytes) / 1048576).toFixed(2) + ' MB' : '—' %></td>
+        <td>
+            <% if (r.storage_backend === 'local') { %>
+                <audio controls preload="none" style="height:28px;max-width:180px">
+                    <source src="/admin/recordings/<%= r.id %>/play" type="audio/wav">
+                </audio>
+                <% if (r.is_downloadable) { %>
+                    <a class="tl-btn" href="/admin/recordings/<%= r.id %>/download">Download</a>
+                <% } else { %>
+                    <span>Download disabled</span>
+                <% } %>
+            <% } else { %>
+                <span>External storage</span>
+            <% } %>
+        </td>
+    </tr>
+    <% }) %>
+    <% if (!recordings.length) { %>
+        <tr><td colspan="8">No recordings found for this date range.</td></tr>
+    <% } %>
+</table>
+
+<%- include('../partials/foot') %>

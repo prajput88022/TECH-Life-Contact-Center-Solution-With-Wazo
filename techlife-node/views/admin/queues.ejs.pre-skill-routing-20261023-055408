@@ -1,0 +1,67 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Queues</h1>
+<form method="post" action="/admin/queues/create" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" required></div>
+        <div><label>Queue Number</label><input name="queue_number" required></div>
+        <div><label>Strategy</label>
+            <select name="strategy">
+                <option value="ringall">Ring All</option>
+                <option value="roundrobin">Round Robin</option>
+                <option value="leastrecent">Least Recent</option>
+                <option value="leastcalls">Least Calls</option>
+                <option value="random">Random</option>
+                <option value="skillbased">Skill Based</option>
+            </select>
+        </div>
+        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds"></div>
+        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" value="20"></div>
+        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" value="0"></div>
+    </div>
+    <button class="tl-btn" type="submit">Create Queue</button>
+</form>
+<h2>All Queues</h2>
+<table>
+<tr><th>Name</th><th>Number</th><th>Strategy</th><th>SLA Target</th><th>Status</th><th></th></tr>
+<% queues.forEach(q => { %>
+<tr>
+    <td><%= q.name %></td><td><%= q.queue_number %></td><td><%= q.strategy %></td>
+    <td><%= q.sla_seconds %>s</td><td><%= q.is_active ? 'Active' : 'Disabled' %></td>
+    <td><a href="?edit=<%= q.id %>">Edit</a> &middot;
+        <form method="post" action="/admin/queues/<%= q.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this queue?');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (queues.length === 0) { %><tr><td colspan="6">No queues yet.</td></tr><% } %>
+</table>
+
+<% if (editId) {
+    const q = queues.find(x => x.id === editId);
+    if (q) { %>
+<h2>Edit Queue — <%= q.name %></h2>
+<form method="post" action="/admin/queues/<%= q.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" value="<%= q.name %>" required></div>
+        <div><label>Queue Number</label><input name="queue_number" value="<%= q.queue_number %>" required></div>
+        <div><label>Strategy</label>
+            <select name="strategy">
+                <% ['ringall','roundrobin','leastrecent','leastcalls','random','skillbased'].forEach(s => { %>
+                <option value="<%= s %>" <%= q.strategy === s ? 'selected' : '' %>><%= s %></option>
+                <% }) %>
+            </select>
+        </div>
+        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" value="<%= q.max_wait_seconds || '' %>"></div>
+        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" value="<%= q.sla_seconds %>"></div>
+        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" value="<%= q.wrapup_seconds %>"></div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= q.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !q.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+    <a class="tl-btn secondary" href="/admin/queues">Cancel</a>
+</form>
+<% } } %>
+<%- include('../partials/foot') %>

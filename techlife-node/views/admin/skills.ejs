@@ -1,0 +1,76 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Skills Management</h1>
+<p>Create a catalogue of skills for this tenant. Use these names when configuring agent proficiency and queue requirements.</p>
+
+<section class="tl-card">
+    <h2>Create Skill</h2>
+    <form method="post" action="/admin/skills/create">
+        <div class="tl-filters">
+            <div>
+                <label for="new-skill-name">Skill name</label>
+                <input id="new-skill-name" name="name" maxlength="60"
+                       placeholder="sales" pattern="[a-zA-Z0-9][a-zA-Z0-9 _-]{0,59}"
+                       required>
+                <small>Letters, numbers, spaces, underscores and hyphens.</small>
+            </div>
+            <div>
+                <label for="new-skill-description">Description (optional)</label>
+                <input id="new-skill-description" name="description" maxlength="250"
+                       placeholder="Sales and customer conversion">
+            </div>
+        </div>
+        <button class="tl-btn" type="submit">Create Skill</button>
+    </form>
+</section>
+
+<h2>Skills Catalogue</h2>
+<table>
+    <tr><th>Name</th><th>Description</th><th>Status</th><th>Actions</th></tr>
+    <% skills.forEach(s => { %>
+        <tr>
+            <td><strong><%= s.name %></strong></td>
+            <td><%= s.description || '—' %></td>
+            <td><%= s.is_active ? 'Active' : 'Inactive' %></td>
+            <td>
+                <a href="/admin/skills?edit=<%= s.id %>">Edit</a>
+                <form method="post" action="/admin/skills/<%= s.id %>/toggle"
+                      style="display:inline">
+                    <button class="tl-btn secondary" type="submit">
+                        <%= s.is_active ? 'Deactivate' : 'Activate' %>
+                    </button>
+                </form>
+            </td>
+        </tr>
+        <% if (editId === s.id) { %>
+            <tr>
+                <td colspan="4">
+                    <form method="post" action="/admin/skills/<%= s.id %>/edit" class="tl-card">
+                        <h3>Edit <%= s.name %></h3>
+                        <div class="tl-filters">
+                            <div>
+                                <label>Skill name</label>
+                                <input name="name" maxlength="60" value="<%= s.name %>" required>
+                            </div>
+                            <div>
+                                <label>Description</label>
+                                <input name="description" maxlength="250"
+                                       value="<%= s.description || '' %>">
+                            </div>
+                        </div>
+                        <button class="tl-btn" type="submit">Save Changes</button>
+                        <a class="tl-btn secondary" href="/admin/skills">Cancel</a>
+                    </form>
+                </td>
+            </tr>
+        <% } %>
+    <% }) %>
+    <% if (!skills.length) { %>
+        <tr><td colspan="4">No skills created for this tenant yet.</td></tr>
+    <% } %>
+</table>
+
+<p><strong>Note:</strong> This catalogue is the first step. The current agent and queue forms still use their existing text inputs until we connect them to this catalogue.</p>
+
+<%- include('../partials/foot') %>

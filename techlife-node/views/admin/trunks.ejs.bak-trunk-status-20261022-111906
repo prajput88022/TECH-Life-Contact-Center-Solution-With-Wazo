@@ -1,0 +1,61 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>SIP Trunks</h1>
+<p class="tl-subtitle">Trunks belong to whichever tenant you're currently managing (see the tenant switcher in the sidebar if you're a reseller) — they're never visible to any other tenant.</p>
+
+<form method="post" action="/admin/trunks/create<%= typeof effectiveTenant !== 'undefined' && effectiveTenant.id !== currentUser.tenantId ? '?as_tenant=' + effectiveTenant.id : '' %>" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" required placeholder="Primary SIP Trunk"></div>
+        <div><label>SIP Server</label><input name="sip_server" required placeholder="sip.provider.com:5060"></div>
+        <div><label>Transport</label>
+            <select name="transport"><option value="udp">UDP</option><option value="tcp">TCP</option><option value="tls">TLS</option></select>
+        </div>
+        <div><label>Codec</label><input name="codec" placeholder="ulaw,alaw,g729"></div>
+        <div><label>Max Calls</label><input type="number" name="max_calls" placeholder="unlimited"></div>
+    </div>
+    <button class="tl-btn" type="submit">Add Trunk</button>
+</form>
+
+<h2>All Trunks</h2>
+<table>
+<tr><th>Name</th><th>SIP Server</th><th>Transport</th><th>Max Calls</th><th>Status</th><th></th></tr>
+<% trunks.forEach(tr => { %>
+<tr>
+    <td><%= tr.name %></td><td><%= tr.sip_server || '—' %></td><td><%= tr.transport %></td>
+    <td><%= tr.max_calls || 'Unlimited' %></td>
+    <td><%= tr.is_active ? 'Active' : 'Disabled' %></td>
+    <td>
+        <a href="?edit=<%= tr.id %>">Edit</a> &middot;
+        <form method="post" action="/admin/trunks/<%= tr.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this trunk?');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+        </form>
+    </td>
+</tr>
+<% }) %>
+<% if (trunks.length === 0) { %><tr><td colspan="6">No trunks configured yet.</td></tr><% } %>
+</table>
+
+<% if (typeof editId !== 'undefined' && editId) {
+    const tr = trunks.find(x => x.id === editId);
+    if (tr) { %>
+<h2>Edit Trunk — <%= tr.name %></h2>
+<form method="post" action="/admin/trunks/<%= tr.id %>/edit" class="tl-card">
+    <div class="tl-filters">
+        <div><label>Name</label><input name="name" value="<%= tr.name %>" required></div>
+        <div><label>SIP Server</label><input name="sip_server" value="<%= tr.sip_server || '' %>" required></div>
+        <div><label>Transport</label>
+            <select name="transport">
+                <% ['udp','tcp','tls'].forEach(tp => { %><option value="<%= tp %>" <%= tr.transport === tp ? 'selected' : '' %>><%= tp.toUpperCase() %></option><% }) %>
+            </select>
+        </div>
+        <div><label>Codec</label><input name="codec" value="<%= tr.codec || '' %>"></div>
+        <div><label>Max Calls</label><input type="number" name="max_calls" value="<%= tr.max_calls || '' %>"></div>
+        <div><label>Status</label>
+            <select name="is_active"><option value="1" <%= tr.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !tr.is_active ? 'selected' : '' %>>Disabled</option></select>
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Save Changes</button>
+    <a class="tl-btn secondary" href="/admin/trunks">Cancel</a>
+</form>
+<% } } %>
+<%- include('../partials/foot') %>

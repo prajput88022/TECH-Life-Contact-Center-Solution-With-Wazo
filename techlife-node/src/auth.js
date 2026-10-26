@@ -7,14 +7,42 @@ const { pool, setTenantScope } = require('./db');
 const { writeAuditLog } = require('./auditLog');
 
 async function attemptLogin(tenantSlug, username, password) {
-    const userRes = await pool.query(
-        `SELECT u.id, u.tenant_id, u.username, u.full_name, u.password_hash, u.is_active
-         FROM users u
-         JOIN tenants t ON t.id = u.tenant_id
-         WHERE t.slug = $1 AND u.username = $2 AND t.is_active = TRUE
-         LIMIT 1`,
-        [tenantSlug, username]
-    );
+    let userRes;
+
+    if (tenantSlug && String(tenantSlug).trim()) {
+        // Existing tenant-specific login for Admins, agents, supervisors and MIS users.
+        userRes = await pool.query(
+            `SELECT u.id, u.tenant_id, u.username, u.full_name,
+                    u.password_hash, u.is_active, t.slug AS tenant_slug
+             FROM users u
+             JOIN tenants t ON t.id = u.tenant_id
+             WHERE t.slug = $1 AND u.username = $2 AND t.is_active = TRUE
+             LIMIT 1`,
+            [String(tenantSlug).trim(), username]
+        );
+    } else {
+        // Tenant-free login is permitted only for an account already assigned
+        // the superadmin role. The account must still belong to an active tenant.
+        userRes = await pool.query(
+            `SELECT u.id, u.tenant_id, u.username, u.full_name,
+                    u.password_hash, u.is_active, t.slug AS tenant_slug
+             FROM users u
+             JOIN tenants t ON t.id = u.tenant_id
+             WHERE u.username = $1
+               AND u.is_active = TRUE
+               AND t.is_active = TRUE
+               AND EXISTS (
+                   SELECT 1
+                   FROM user_roles ur
+                   JOIN roles r ON r.id = ur.role_id
+                   WHERE ur.user_id = u.id
+                     AND r.role_type::text = 'superadmin'
+               )
+             LIMIT 1`,
+            [username]
+        );
+    }
+
     const user = userRes.rows[0];
     if (!user || !user.is_active) return null;
 
@@ -22,12 +50,24 @@ async function attemptLogin(tenantSlug, username, password) {
     if (!valid) return null;
 
     const roleRes = await pool.query(
-        `SELECT r.role_type FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
+        `SELECT r.role_type
+         FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1`,
         [user.id]
     );
     const roles = roleRes.rows.map((r) => r.role_type);
 
-    const agentRes = await pool.query('SELECT id FROM agents WHERE user_id = $1 LIMIT 1', [user.id]);
+    // Never allow a tenant-free login for a non-superadmin, even if a query
+    // above is changed later.
+    if (!(tenantSlug && String(tenantSlug).trim()) && !roles.includes('superadmin')) {
+        return null;
+    }
+
+    const agentRes = await pool.query(
+        'SELECT id FROM agents WHERE user_id = $1 LIMIT 1',
+        [user.id]
+    );
     const agentId = agentRes.rows[0] ? agentRes.rows[0].id : null;
 
     await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
@@ -36,7 +76,7 @@ async function attemptLogin(tenantSlug, username, password) {
     return {
         id: user.id,
         tenantId: user.tenant_id,
-        tenantSlug,
+        tenantSlug: user.tenant_slug,
         username: user.username,
         fullName: user.full_name,
         roles,
