@@ -1,0 +1,97 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>List Management</h1>
+<p class="tl-subtitle">Manage reusable customer lists for inbound service and outbound campaigns.</p>
+
+<% if (error === 'duplicate_name') { %>
+<div class="tl-card">A list with that name already exists in this tenant.</div>
+<% } %>
+
+<div class="tl-card">
+    <h2>Create a list</h2>
+    <form method="post" action="/admin/lists/create">
+        <div class="tl-filters">
+            <div>
+                <label for="listName">List name</label>
+                <input id="listName" name="name" maxlength="120" required>
+            </div>
+            <div>
+                <label for="listType">List type</label>
+                <select id="listType" name="list_type" required>
+                    <option value="inbound">Inbound</option>
+                    <option value="outbound">Outbound campaign</option>
+                </select>
+            </div>
+            <div id="campaignWrap" style="display:none">
+                <label for="campaignId">Outbound campaign</label>
+                <select id="campaignId" name="campaign_id">
+                    <option value="">Select campaign</option>
+                    <% campaigns.forEach(c => { %>
+                    <option value="<%= c.id %>"><%= c.name %><%= c.is_active ? '' : ' (inactive)' %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div>
+                <label for="listDescription">Description</label>
+                <input id="listDescription" name="description" maxlength="500">
+            </div>
+        </div>
+        <button class="tl-btn" type="submit">Create list</button>
+    </form>
+</div>
+
+<h2>Existing lists</h2>
+<div class="tl-card">
+    <table>
+        <thead>
+            <tr>
+                <th>List</th><th>Type</th><th>Campaign</th>
+                <th>Contacts</th><th>Status</th><th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+        <% lists.forEach(l => { %>
+            <tr>
+                <td>
+                    <a href="/admin/lists/<%= l.id %>"><strong><%= l.name %></strong></a>
+                    <% if (l.is_default) { %><div class="tl-subtitle">Default inbound list</div><% } %>
+                    <% if (l.description) { %><div class="tl-subtitle"><%= l.description %></div><% } %>
+                </td>
+                <td><%= l.list_type === 'inbound' ? 'Inbound' : 'Outbound' %></td>
+                <td><%= l.campaign_name || '—' %></td>
+                <td><%= l.member_count %></td>
+                <td><%= l.is_active ? 'Active' : 'Inactive' %></td>
+                <td>
+                    <a href="/admin/lists/<%= l.id %>">Open</a>
+                    <% if (!l.is_default) { %>
+                    <form method="post" action="/admin/lists/<%= l.id %>/toggle" style="display:inline">
+                        <button class="tl-btn" type="submit"><%= l.is_active ? 'Deactivate' : 'Activate' %></button>
+                    </form>
+                    <% } %>
+                </td>
+            </tr>
+        <% }) %>
+        <% if (!lists.length) { %>
+            <tr><td colspan="6">No lists have been created.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+</div>
+
+<script>
+(() => {
+    const type = document.getElementById('listType');
+    const wrap = document.getElementById('campaignWrap');
+    const campaign = document.getElementById('campaignId');
+    function updateCampaignField() {
+        const outbound = type.value === 'outbound';
+        wrap.style.display = outbound ? '' : 'none';
+        campaign.required = outbound;
+    }
+    type.addEventListener('change', updateCampaignField);
+    updateCampaignField();
+})();
+</script>
+
+<%- include('../partials/foot') %>

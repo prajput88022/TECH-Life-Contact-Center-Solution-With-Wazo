@@ -74,7 +74,8 @@ async function verifyDedicatedPatternExtension(
   expectedContext,
   tenantUuid,
   expectedOutcallId,
-  token
+  token,
+  { requireOutcallAssociation = false } = {}
 ) {
   const id = Number(extensionId);
 
@@ -141,13 +142,21 @@ async function verifyDedicatedPatternExtension(
     }
   }
 
+  const allowedOutcallId = Number(expectedOutcallId);
+  const validExpectedOutcallId =
+    Number.isSafeInteger(allowedOutcallId) && allowedOutcallId > 0;
+
+  if (requireOutcallAssociation && resource.outcall === null) {
+    throw new Error(
+      `Wazo extension ${id} is not associated with the required outcall.`
+    );
+  }
+
   if (resource.outcall !== null) {
     const existingOutcallId = Number(resource.outcall?.id);
-    const allowedOutcallId = Number(expectedOutcallId);
 
     if (
-      !Number.isSafeInteger(allowedOutcallId) ||
-      allowedOutcallId < 1 ||
+      !validExpectedOutcallId ||
       existingOutcallId !== allowedOutcallId
     ) {
       throw new Error(
@@ -231,7 +240,23 @@ async function provisionPrefixOutboundRoute(prefixId, appTenantId, options = {})
 
   let trunks = assigned.rows;
 
-  if (!trunks.length && prefix.legacy_trunk_id) {
+  // Use the legacy trunk_id only for prefixes that have never had
+  // explicit prefix_trunks records. An all-inactive assignment set must
+  // not silently fall back to a deactivated legacy trunk.
+  const assignmentHistory = await pool.query(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM prefix_trunks
+        WHERE tenant_id = $1
+          AND prefix_id = $2
+     ) AS has_explicit_assignments`,
+    [appTenantId, prefixId]
+  );
+
+  const hasExplicitAssignments =
+    assignmentHistory.rows[0].has_explicit_assignments === true;
+
+  if (!hasExplicitAssignments && !trunks.length && prefix.legacy_trunk_id) {
     const legacy = await pool.query(
       `SELECT id AS app_trunk_id,
               name AS trunk_name,
@@ -247,7 +272,11 @@ async function provisionPrefixOutboundRoute(prefixId, appTenantId, options = {})
   }
 
   if (!trunks.length) {
-    throw new Error('No active trunk assignments are configured for this prefix.');
+    throw new Error(
+      hasExplicitAssignments
+        ? 'No active explicit trunk assignments remain for this prefix. Assign and provision a healthy trunk before reprovisioning.'
+        : 'No active trunk assignments are configured for this prefix.'
+    );
   }
 
   const seenTrunks = new Set();
@@ -597,9 +626,12 @@ async function setPrefixOutboundRouteEnabled(prefixId, appTenantId, enabled) {
   }
 
   const result = await pool.query(
-    `SELECT p.id, p.tenant_id, p.wazo_outcall_id,
-            p.wazo_pattern_extension_id,
-            t.wazo_tenant_uuid
+    `SELECT p.id, p.tenant_id, p.prefix_digits,
+            p.trunk_id AS legacy_trunk_id,
+            p.wazo_outcall_id, p.wazo_pattern_extension_id,
+            p.agent_id, p.user_group_id, p.campaign_id,
+            t.wazo_tenant_uuid, t.wazo_outcall_context_id,
+            t.wazo_outcall_context_name, t.wazo_outcall_context_status
        FROM prefixes p
        JOIN tenants t ON t.id = p.tenant_id
       WHERE p.id = $1 AND p.tenant_id = $2`,
@@ -650,8 +682,115 @@ async function setPrefixOutboundRouteEnabled(prefixId, appTenantId, enabled) {
     throw new Error('Wazo outcall tenant mismatch; refusing to change it.');
   }
 
-  if (enabled && !prefix.wazo_pattern_extension_id) {
-    throw new Error('Cannot activate a prefix without its dedicated pattern extension.');
+  if (enabled) {
+    if (prefix.agent_id || prefix.user_group_id || prefix.campaign_id) {
+      throw new Error(
+        'Cannot activate scoped routing until scope-specific Wazo routing is implemented.'
+      );
+    }
+
+    if (
+      prefix.wazo_outcall_context_status !== 'provisioned' ||
+      !Number.isSafeInteger(Number(prefix.wazo_outcall_context_id)) ||
+      Number(prefix.wazo_outcall_context_id) < 1 ||
+      !prefix.wazo_outcall_context_name
+    ) {
+      throw new Error('Tenant outbound context is not fully provisioned.');
+    }
+
+    if (!/^\d{1,20}$/.test(String(prefix.prefix_digits || ''))) {
+      throw new Error('Prefix must contain 1 to 20 digits only.');
+    }
+
+    // Verify at least one usable assigned trunk before enabling.
+    const assigned = await pool.query(
+      `SELECT tr.id, tr.name, tr.is_active,
+              tr.provisioning_status, tr.wazo_trunk_id
+         FROM prefix_trunks pt
+         JOIN trunks tr
+           ON tr.id = pt.trunk_id
+          AND tr.tenant_id = pt.tenant_id
+        WHERE pt.tenant_id = $1
+          AND pt.prefix_id = $2
+          AND pt.is_active = TRUE
+        ORDER BY pt.priority ASC, pt.created_at ASC, tr.id ASC`,
+      [appTenantId, prefixId]
+    );
+
+    let trunks = assigned.rows;
+
+    // Preserve legacy compatibility only when no explicit assignments exist.
+    if (!trunks.length) {
+      const history = await pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM prefix_trunks
+            WHERE tenant_id = $1 AND prefix_id = $2
+         ) AS has_explicit_assignments`,
+        [appTenantId, prefixId]
+      );
+
+      if (!history.rows[0].has_explicit_assignments && prefix.legacy_trunk_id) {
+        const legacy = await pool.query(
+          `SELECT id, name, is_active, provisioning_status, wazo_trunk_id
+             FROM trunks
+            WHERE id = $1 AND tenant_id = $2`,
+          [prefix.legacy_trunk_id, appTenantId]
+        );
+        trunks = legacy.rows;
+      }
+    }
+
+    if (!trunks.length) {
+      throw new Error('Cannot activate prefix: no active trunk assignments remain.');
+    }
+
+    const seen = new Set();
+    for (const trunk of trunks) {
+      const id = Number(trunk.wazo_trunk_id);
+      if (
+        trunk.is_active !== true ||
+        trunk.provisioning_status !== 'provisioned' ||
+        !Number.isSafeInteger(id) ||
+        id < 1
+      ) {
+        throw new Error(
+          `Cannot activate prefix: trunk "${trunk.name}" is not active and provisioned.`
+        );
+      }
+      if (seen.has(id)) {
+        throw new Error('Cannot activate prefix: duplicate Wazo trunk IDs are assigned.');
+      }
+      seen.add(id);
+    }
+
+    if (!prefix.wazo_pattern_extension_id) {
+      throw new Error('Cannot activate a prefix without its dedicated pattern extension.');
+    }
+
+    await verifyDedicatedPatternExtension(
+      prefix.wazo_pattern_extension_id,
+      `_${String(prefix.prefix_digits)}.`,
+      prefix.wazo_outcall_context_name,
+      prefix.wazo_tenant_uuid,
+      outcallId,
+      token,
+      { requireOutcallAssociation: true }
+    );
+
+    const associatedTrunks = Array.isArray(outcall.trunks)
+      ? outcall.trunks.map(item => Number(item?.id)).sort((a, b) => a - b)
+      : [];
+
+    const expectedTrunks = [...seen].sort((a, b) => a - b);
+
+    if (
+      associatedTrunks.length !== expectedTrunks.length ||
+      associatedTrunks.some((id, index) => id !== expectedTrunks[index])
+    ) {
+      throw new Error(
+        'Cannot activate prefix: Wazo outcall trunk associations do not match the current assignments. Reprovision the route first.'
+      );
+    }
   }
 
   await api(
@@ -666,6 +805,102 @@ async function setPrefixOutboundRouteEnabled(prefixId, appTenantId, enabled) {
   );
 
   return { ok: true, outcall_id: outcallId, enabled };
+}
+
+async function deactivatePrefixesDependingOnTrunk(appTenantId, trunkId) {
+  const trunkResult = await pool.query(
+    `SELECT id
+       FROM trunks
+      WHERE id = $1 AND tenant_id = $2`,
+    [trunkId, appTenantId]
+  );
+
+  if (!trunkResult.rowCount) {
+    throw new Error('Trunk not found in this tenant.');
+  }
+
+  const dependent = await pool.query(
+    `SELECT DISTINCT p.id, p.wazo_outcall_id,
+            p.agent_id, p.user_group_id, p.campaign_id
+       FROM prefixes p
+      WHERE p.tenant_id = $1
+        AND (
+          p.trunk_id = $2
+          OR EXISTS (
+            SELECT 1
+              FROM prefix_trunks pt
+             WHERE pt.tenant_id = p.tenant_id
+               AND pt.prefix_id = p.id
+               AND pt.trunk_id = $2
+               AND pt.is_active = TRUE
+          )
+        )
+      ORDER BY p.id`,
+    [appTenantId, trunkId]
+  );
+
+  for (const prefix of dependent.rows) {
+    // Disable Wazo first. Do not change assignment state if this fails.
+    if (prefix.wazo_outcall_id) {
+      await setPrefixOutboundRouteEnabled(prefix.id, appTenantId, false);
+    }
+
+    // Remove this trunk from the active routing set.
+    await pool.query(
+      `UPDATE prefix_trunks
+          SET is_active = FALSE
+        WHERE tenant_id = $1
+          AND prefix_id = $2
+          AND trunk_id = $3
+          AND is_active = TRUE`,
+      [appTenantId, prefix.id, trunkId]
+    );
+
+    const tenantWide =
+      !prefix.agent_id && !prefix.user_group_id && !prefix.campaign_id;
+
+    const remaining = await pool.query(
+      `SELECT tr.id
+         FROM prefix_trunks pt
+         JOIN trunks tr
+           ON tr.id = pt.trunk_id
+          AND tr.tenant_id = pt.tenant_id
+        WHERE pt.tenant_id = $1
+          AND pt.prefix_id = $2
+          AND pt.is_active = TRUE
+          AND tr.id <> $3
+          AND tr.is_active = TRUE
+          AND tr.provisioning_status = 'provisioned'
+          AND tr.wazo_trunk_id IS NOT NULL
+        ORDER BY pt.priority ASC, pt.created_at ASC, tr.id ASC`,
+      [appTenantId, prefix.id, trunkId]
+    );
+
+    const canReconcile = tenantWide && remaining.rowCount > 0;
+
+    const reason = canReconcile
+      ? 'Trunk deactivated; healthy backup assignment remains. Route queued for disabled reprovisioning and requires verification before activation.'
+      : !tenantWide
+        ? 'Trunk deactivated; agent/group/campaign-scoped routing is unsupported. Prefix remains inactive.'
+        : 'Trunk deactivated; no healthy backup assignment remains. Assign and provision another trunk before reprovisioning this prefix.';
+
+    await pool.query(
+      `UPDATE prefixes
+          SET is_active = FALSE,
+              provisioning_status = $3,
+              provisioning_error = $4
+        WHERE id = $1
+          AND tenant_id = $2`,
+      [
+        prefix.id,
+        appTenantId,
+        canReconcile ? 'pending' : 'failed',
+        reason
+      ]
+    );
+  }
+
+  return { ok: true, affected_prefixes: dependent.rowCount };
 }
 
 async function reconcilePendingPrefixRoutes() {
@@ -759,6 +994,7 @@ function startPrefixReconciler(intervalMs = 60000) {
 module.exports = {
   provisionPrefixOutboundRoute,
   setPrefixOutboundRouteEnabled,
+  deactivatePrefixesDependingOnTrunk,
   reconcilePendingPrefixRoutes,
   startPrefixReconciler,
 };

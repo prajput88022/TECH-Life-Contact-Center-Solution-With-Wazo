@@ -56,8 +56,21 @@ router.get('/', async (req, res) => {
             WHERE d.tenant_id=$1
             ORDER BY d.created_at DESC LIMIT 100`, [t]).then(r => r.rows)
     ]);
+    const sipProfileRes = await pool.query(
+        `SELECT id, provisioning_status
+           FROM agents
+          WHERE tenant_id = $1 AND user_id = $2
+          LIMIT 1`,
+        [t, u.id]
+    );
+    const sipProfile = sipProfileRes.rows[0] || null;
+
     res.render('supervisor/index', {
-        pageTitle: 'Supervisor — Live Dashboard', queues, campaigns, callbacks, dncEntries
+        pageTitle: 'Supervisor — Live Dashboard',
+        queues, campaigns, callbacks, dncEntries,
+        sipAgentId: sipProfile ? sipProfile.id : null,
+        sipProvisioningStatus: sipProfile ? sipProfile.provisioning_status : 'not_configured',
+        supervisorDisplayName: u.fullName || u.username
     });
 });
 

@@ -56,6 +56,14 @@ function sipUri(server) {
   return `sip:${value.replace(/^sips?:/i, '')}`;
 }
 
+function normalizeSipServer(value) {
+  return String(value || '').trim()
+    .replace(/^sips?:\/\//i, '')
+    .replace(/^sips?:/i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
 function codecs(value) {
   const aliases = {
     ulaw: 'ulaw', alaw: 'alaw', g729: 'g729',
@@ -113,6 +121,80 @@ async function provisionTrunk(tenantId, trunkId) {
     // as provisioning errors instead of leaving the trunk stuck pending.
     const token = await getToken();
     const allowed = codecs(tr.codec);
+
+    // Discover this tenant's inbound context from Wazo.
+    // Do not assume that the application's internal context is the incall context.
+    const contextsResponse = await api(
+      confd, '/contexts?limit=100&offset=0',
+      token, wazoTenant, 'GET'
+    );
+
+    const contextItems = Array.isArray(contextsResponse)
+      ? contextsResponse
+      : Array.isArray(contextsResponse?.items)
+        ? contextsResponse.items
+        : Array.isArray(contextsResponse?.data?.items)
+          ? contextsResponse.data.items
+          : [];
+
+    const incallContext = contextItems.find(context =>
+      String(context?.type || '').toLowerCase() === 'incall' &&
+      (
+        !context?.tenant_uuid ||
+        String(context.tenant_uuid) === String(wazoTenant)
+      )
+    );
+
+    if (!incallContext?.name) {
+      throw new Error(
+        'Could not discover this Wazo tenant’s incall context. ' +
+        'Trunk provisioning stopped safely.'
+      );
+    }
+
+    if (
+      incallContext.tenant_uuid &&
+      String(incallContext.tenant_uuid) !== String(wazoTenant)
+    ) {
+      throw new Error('Wazo incall context belongs to another tenant');
+    }
+
+    // An inbound IP match must have one active owner across application tenants.
+    if (tr.inbound_enabled === true) {
+      if (authMode !== 'ip') {
+        throw new Error(
+          'Inbound identification is currently supported only for IP-auth trunks'
+        );
+      }
+
+      const otherInboundTrunks = await pool.query(
+        `SELECT tr.id, tr.tenant_id, tr.name, tr.sip_server
+           FROM trunks tr
+          WHERE tr.inbound_enabled = TRUE
+            AND COALESCE(tr.auth_mode, 'ip') = 'ip'
+            AND EXISTS (
+                SELECT 1 FROM tenants tenant
+                 WHERE tenant.id = tr.tenant_id
+                   AND tenant.is_active = TRUE
+            )
+            AND NOT (tr.id = $1 AND tr.tenant_id = $2)`,
+        [trunkId, tenantId]
+      );
+
+      const wantedMatch = normalizeSipServer(tr.sip_server);
+      const collision = otherInboundTrunks.rows.find(candidate =>
+        normalizeSipServer(candidate.sip_server) === wantedMatch
+      );
+
+      if (collision) {
+        throw new Error(
+          `Inbound SIP server already belongs to another enabled trunk ` +
+          `(trunk ${collision.id}, tenant ${collision.tenant_id}). ` +
+          'Duplicate cross-tenant IP identification was blocked.'
+        );
+      }
+    }
+
     // Resolve the selected transport to a real Wazo transport UUID.
     const transportResponse = await api(
       confd, '/sip/transports?limit=100&offset=0',
@@ -148,16 +230,18 @@ async function provisionTrunk(tenantId, trunkId) {
       transport: { uuid: selectedTransport.uuid },
       label: String(tr.name).slice(0, 128),
       aor_section_options: [['contact', endpointUri]],
-      identify_section_options: authMode === 'ip'
-        ? [['match', String(tr.sip_server).trim().replace(/^sips?:/i, '')]]
-        : [],
+      identify_section_options:
+        authMode === 'ip' &&
+        tr.inbound_enabled === true
+          ? [['match', normalizeSipServer(tr.sip_server)]]
+          : [],
       outbound_auth_section_options: authMode === 'credentials'
         ? [['username', String(tr.sip_username)], ['password', sipPassword]]
         : [],
       endpoint_section_options: [
-        ['context', tr.wazo_context_name],
+        ['context', incallContext.name],
         ['disallow', 'all'],
-        ...allowed.map(c => ['allow', c]),
+        ['allow', allowed.join(',')],
         ...(authMode === 'credentials' ? [['outbound_auth', String(tr.name).slice(0, 128)]] : []),
       ],
     };
@@ -182,10 +266,10 @@ async function provisionTrunk(tenantId, trunkId) {
     let wazoTrunkId = tr.wazo_trunk_id;
     if (wazoTrunkId) {
       await api(confd, `/trunks/${wazoTrunkId}`, token, wazoTenant,
-        'PUT', { context: tr.wazo_context_name });
+        'PUT', { context: incallContext.name });
     } else {
       const created = await api(confd, '/trunks', token, wazoTenant,
-        'POST', { context: tr.wazo_context_name });
+        'POST', { context: incallContext.name });
       wazoTrunkId = created?.id;
       if (!wazoTrunkId) throw new Error('Wazo did not return a trunk ID');
 
@@ -208,6 +292,18 @@ async function provisionTrunk(tenantId, trunkId) {
       [trunkId, tenantId]
     );
 
+    // A newly provisioned trunk may unblock inactive tenant-wide prefixes.
+    // The prefix worker keeps routes disabled and records per-prefix failures.
+    try {
+      const prefixRouting = require('./wazoOutboundRoutingService');
+      await prefixRouting.reconcilePendingPrefixRoutes();
+    } catch (reconcileError) {
+      console.error(
+        `[trunk-provisioning] Prefix reconciliation after trunk ${trunkId} ` +
+        `could not complete: ${String(reconcileError?.message || reconcileError).slice(0, 500)}`
+      );
+    }
+
     return {
       ok: true,
       trunk_id: wazoTrunkId,
@@ -225,4 +321,100 @@ async function provisionTrunk(tenantId, trunkId) {
   }
 }
 
-module.exports = { provisionTrunk };
+// Reconcile active trunks that have not yet provisioned successfully.
+// Successfully provisioned trunks are deliberately left untouched.
+async function reconcilePendingTrunks(batchSize = 10) {
+  const limit = Math.max(1, Math.min(Number(batchSize) || 10, 50));
+
+  const candidates = await pool.query(
+    `SELECT id, tenant_id
+       FROM trunks
+      WHERE (is_active = TRUE OR inbound_enabled = TRUE)
+        AND provisioning_status IN ('pending', 'failed')
+      ORDER BY id ASC
+      LIMIT $1`,
+    [limit]
+  );
+
+  for (const row of candidates.rows) {
+    // Claim each candidate before calling Wazo so concurrent worker runs
+    // do not both start provisioning the same trunk.
+    const claimed = await pool.query(
+      `UPDATE trunks
+          SET provisioning_status = 'provisioning',
+              provisioning_error = NULL
+        WHERE id = $1
+          AND tenant_id = $2
+          AND (is_active = TRUE OR inbound_enabled = TRUE)
+          AND provisioning_status IN ('pending', 'failed')
+      RETURNING id`,
+      [row.id, row.tenant_id]
+    );
+
+    if (!claimed.rowCount) continue;
+
+    try {
+      const result = await provisionTrunk(row.tenant_id, row.id);
+
+      if (!result || result.ok !== true) {
+        console.error(
+          `[trunk-reconciler] Trunk ${row.id} provisioning failed: ` +
+          String(result?.error || 'Unknown provisioning error').slice(0, 500)
+        );
+      } else {
+        console.log(
+          `[trunk-reconciler] Trunk ${row.id} provisioned successfully.`
+        );
+      }
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 2000);
+
+      await pool.query(
+        `UPDATE trunks
+            SET provisioning_status = 'failed',
+                provisioning_error = $1
+          WHERE id = $2
+            AND tenant_id = $3
+            AND is_active = TRUE`,
+        [message, row.id, row.tenant_id]
+      );
+
+      console.error(
+        `[trunk-reconciler] Trunk ${row.id} failed: ${message}`
+      );
+    }
+  }
+}
+
+function startTrunkReconciler(intervalMs = 60000) {
+  let running = false;
+
+  const run = async () => {
+    if (running) return;
+    running = true;
+
+    try {
+      await reconcilePendingTrunks();
+    } catch (error) {
+      console.error(
+        '[trunk-reconciler] Worker error:',
+        error?.message || error
+      );
+    } finally {
+      running = false;
+    }
+  };
+
+  void run();
+
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  return () => clearInterval(timer);
+}
+
+module.exports = {
+  provisionTrunk,
+  reconcilePendingTrunks,
+  startTrunkReconciler,
+};

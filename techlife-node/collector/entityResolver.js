@@ -45,4 +45,43 @@ async function contactIdByPhone(tId, phone) {
     return ins.rows[0].id;
 }
 
-module.exports = { tenantId, agentId, queueId, didId, contactIdByPhone };
+
+async function tenantIdForWazoUser(wazoUserUuid) {
+    if (typeof wazoUserUuid !== 'string' || !wazoUserUuid) return null;
+
+    const result = await pool.query(
+        `SELECT DISTINCT tenant_id
+           FROM users
+          WHERE wazo_user_uuid = $1
+            AND tenant_id IS NOT NULL
+          LIMIT 2`,
+        [wazoUserUuid]
+    );
+
+    // Do not guess if the UUID is missing or ambiguous.
+    return result.rows.length === 1 ? result.rows[0].tenant_id : null;
+}
+
+async function agentIdByWazoUserUuid(tenantId, wazoUserUuid) {
+    if (!tenantId || typeof wazoUserUuid !== 'string' || !wazoUserUuid) {
+        return null;
+    }
+
+    const result = await pool.query(
+        `SELECT a.id
+           FROM agents a
+           JOIN users u
+             ON u.id = a.user_id
+            AND u.tenant_id = a.tenant_id
+          WHERE a.tenant_id = $1
+            AND u.wazo_user_uuid = $2
+          LIMIT 2`,
+        [tenantId, wazoUserUuid]
+    );
+
+    return result.rows.length === 1 ? result.rows[0].id : null;
+}
+
+module.exports = {
+    tenantIdForWazoUser,
+    agentIdByWazoUserUuid, tenantId, agentId, queueId, didId, contactIdByPhone };

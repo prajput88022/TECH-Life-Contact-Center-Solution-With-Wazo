@@ -1,89 +1,316 @@
 <%- include('../partials/head') %>
 <%- include('../partials/nav') %>
 
-<main class="tl-page">
-  <h1>User Groups</h1>
-  <p>Organize agents into tenant-specific groups.</p>
+<style>
+  .ug-page { max-width: 1400px; margin: 0 auto; padding: 22px; }
+  .ug-header { display:flex; justify-content:space-between; align-items:center;
+    gap:16px; flex-wrap:wrap; margin-bottom:20px; }
+  .ug-header h1 { margin:0 0 6px; }
+  .ug-muted { color:var(--tl-muted, #64748b); }
+  .ug-layout { display:grid; grid-template-columns:minmax(280px, .85fr) minmax(0, 1.6fr);
+    gap:20px; align-items:start; }
+  .ug-card { min-width:0; padding:20px; margin-bottom:20px;
+    background:var(--tl-card, #fff); border:1px solid var(--tl-border, #e2e8f0);
+    border-radius:12px; }
+  .ug-card h2 { margin:0 0 16px; font-size:1.12rem; }
+  .ug-field { display:flex; flex-direction:column; gap:6px; margin-bottom:15px; }
+  .ug-field input, .ug-field textarea, .ug-search {
+    box-sizing:border-box; width:100%; padding:10px 12px;
+    border:1px solid var(--tl-border, #cbd5e1); border-radius:7px;
+    background:var(--tl-input-bg, #fff); color:inherit; font:inherit;
+  }
+  .ug-field textarea { min-height:95px; resize:vertical; }
+  .ug-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .ug-btn { display:inline-block; border:1px solid var(--tl-border, #cbd5e1);
+    border-radius:7px; padding:8px 12px; font:inherit; cursor:pointer;
+    text-decoration:none; background:var(--tl-card, #fff); color:inherit; }
+  .ug-btn-primary { background:var(--tl-primary, #1d4ed8); color:#fff; border-color:transparent; }
+  .ug-btn-danger { color:var(--tl-bad, #b91c1c); }
+  .ug-alert { padding:12px 14px; border:1px solid #f59e0b; border-radius:8px;
+    margin-bottom:16px; }
+  .ug-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:12px; margin-bottom:20px; }
+  .ug-stat { padding:14px; border:1px solid var(--tl-border, #e2e8f0);
+    border-radius:10px; background:var(--tl-card, #fff); }
+  .ug-stat strong { display:block; font-size:1.45rem; margin-top:5px; }
+  .ug-table-wrap { overflow-x:auto; }
+  .ug-table { width:100%; border-collapse:collapse; }
+  .ug-table th, .ug-table td { padding:12px 10px; text-align:left;
+    border-bottom:1px solid var(--tl-border, #e2e8f0); vertical-align:middle; }
+  .ug-table th { font-size:.84rem; white-space:nowrap; }
+  .ug-table td { overflow-wrap:anywhere; }
+  .ug-status { display:inline-block; border-radius:999px; padding:4px 9px;
+    font-size:.8rem; font-weight:600; }
+  .ug-active { background:#dcfce7; color:#166534; }
+  .ug-inactive { background:#f1f5f9; color:#475569; }
+  .ug-member-list { max-height:340px; overflow:auto; border:1px solid var(--tl-border, #e2e8f0);
+    border-radius:8px; padding:8px; margin-bottom:14px; }
+  .ug-member { display:flex; align-items:center; gap:10px; padding:9px 6px;
+    border-bottom:1px solid var(--tl-border, #e2e8f0); }
+  .ug-member:last-child { border-bottom:0; }
+  .ug-member input { width:17px; height:17px; }
+  .ug-member-name { overflow-wrap:anywhere; }
+  .ug-toolbar { display:flex; gap:12px; justify-content:space-between;
+    align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  .ug-search { max-width:360px; }
+  .ug-count { font-size:.9rem; }
+  @media(max-width:850px) {
+    .ug-layout { grid-template-columns:1fr; }
+    .ug-stats { grid-template-columns:1fr; }
+    .ug-page { padding:12px; }
+  }
+</style>
+
+<main class="ug-page">
+  <div class="ug-header">
+    <div>
+      <h1>User Groups</h1>
+      <div class="ug-muted">Organize agents into tenant-specific groups.</div>
+    </div>
+    <div class="ug-actions">
+      <a class="ug-btn" href="/admin/user-groups">+ New Group</a>
+    </div>
+  </div>
 
   <% if (errorMessage) { %>
-    <div class="tl-card" role="alert">
+    <div class="ug-alert" role="alert">
       <% if (errorMessage === 'duplicate') { %>
-        That group name already exists.
+        That group name already exists in this tenant.
       <% } else if (errorMessage === 'invalid_agents') { %>
-        One or more selected agents are invalid for this tenant.
+        One or more selected agents are invalid for this tenant. No membership changes were saved.
+      <% } else if (errorMessage === 'invalid') { %>
+        Check the group name and description lengths and try again.
       <% } else { %>
-        Please check the group name and description.
+        The requested operation could not be completed.
       <% } %>
     </div>
   <% } %>
 
-  <section class="tl-card">
-    <h2><%= editing ? 'Edit User Group' : 'Create User Group' %></h2>
-    <form method="post"
+  <div class="ug-stats">
+    <div class="ug-stat">
+      <span class="ug-muted">Total groups</span>
+      <strong><%= groups.length %></strong>
+    </div>
+    <div class="ug-stat">
+      <span class="ug-muted">Active groups</span>
+      <strong><%= groups.filter(g => g.is_active).length %></strong>
+    </div>
+    <div class="ug-stat">
+      <span class="ug-muted">Agents across groups</span>
+      <strong><%= groups.reduce((sum, g) => sum + Number(g.agent_count || 0), 0) %></strong>
+    </div>
+  </div>
+
+  <div class="ug-layout">
+    <div>
+      <section class="ug-card" id="group-editor">
+        <h2><%= editing ? 'Edit User Group' : 'Create User Group' %></h2>
+        <p class="ug-muted">
+          <%= editing
+            ? 'Update this group’s details, then save your changes.'
+            : 'Create a group to organize agents for administration and routing scopes.' %>
+        </p>
+
+        <form method="post"
           action="<%= editing ? '/admin/user-groups/' + editing.id + '/edit' : '/admin/user-groups/create' %>">
-      <label for="group-name">Group name</label>
-      <input id="group-name" name="name" maxlength="100" required
-             value="<%= editing ? editing.name : '' %>">
+          <div class="ug-field">
+            <label for="group-name">Group name <span aria-hidden="true">*</span></label>
+            <input id="group-name" name="name" maxlength="120" required
+              autocomplete="off" value="<%= editing ? editing.name : '' %>"
+              placeholder="e.g. Sales Team">
+          </div>
 
-      <label for="group-description">Description</label>
-      <textarea id="group-description" name="description" maxlength="250"><%= editing ? (editing.description || '') : '' %></textarea>
+          <div class="ug-field">
+            <label for="group-description">Description</label>
+            <textarea id="group-description" name="description" maxlength="500"
+              placeholder="Purpose or notes for this group"><%= editing ? (editing.description || '') : '' %></textarea>
+            <small class="ug-muted">Maximum 500 characters.</small>
+          </div>
 
-      <button class="tl-btn" type="submit"><%= editing ? 'Save Changes' : 'Create Group' %></button>
+          <div class="ug-actions">
+            <button class="ug-btn ug-btn-primary" type="submit">
+              <%= editing ? 'Save Changes' : 'Create Group' %>
+            </button>
+            <% if (editing) { %>
+              <a class="ug-btn" href="/admin/user-groups">Cancel</a>
+            <% } %>
+          </div>
+        </form>
+      </section>
+
       <% if (editing) { %>
-        <a class="tl-btn" href="/admin/user-groups">Cancel</a>
+        <section class="ug-card" id="group-members">
+          <h2>Group Membership</h2>
+          <p class="ug-muted">
+            Select the agents who should belong to <strong><%= editing.name %></strong>.
+            Saving replaces this group’s current membership.
+          </p>
+
+          <div class="ug-actions" style="margin-bottom:12px">
+            <button class="ug-btn" type="button" id="ug-select-all">Select all</button>
+            <button class="ug-btn" type="button" id="ug-select-none">Select none</button>
+            <span class="ug-muted" id="ug-selected-count" aria-live="polite"></span>
+          </div>
+
+          <form method="post" action="/admin/user-groups/<%= editing.id %>/agents">
+            <% if (!agents.length) { %>
+              <p>No agents are available in this tenant.</p>
+            <% } else { %>
+              <div class="ug-member-list">
+                <% agents.forEach(function(agent) { %>
+                  <label class="ug-member">
+                    <input class="ug-agent-checkbox" type="checkbox" name="agent_ids"
+                      value="<%= agent.id %>"
+                      <%= selectedAgentIds.includes(agent.id) ? 'checked' : '' %>>
+                    <span class="ug-member-name"><%= agent.display_name %></span>
+                  </label>
+                <% }); %>
+              </div>
+            <% } %>
+            <button class="ug-btn ug-btn-primary" type="submit">Save Membership</button>
+          </form>
+        </section>
       <% } %>
-    </form>
-  </section>
+    </div>
 
-  <% if (editing) { %>
-    <section class="tl-card">
-      <h2>Agents in <%= editing.name %></h2>
-      <form method="post" action="/admin/user-groups/<%= editing.id %>/agents">
-        <% if (!agents.length) { %>
-          <p>No agents are available in this tenant.</p>
-        <% } %>
-        <% agents.forEach(function(agent) { %>
-          <label>
-            <input type="checkbox" name="agent_ids" value="<%= agent.id %>"
-              <%= selectedAgentIds.includes(agent.id) ? 'checked' : '' %>>
-            <%= agent.display_name %>
-          </label>
-        <% }); %>
-        <button class="tl-btn" type="submit">Save Agent Membership</button>
-      </form>
-    </section>
-  <% } %>
+    <section class="ug-card">
+      <div class="ug-toolbar">
+        <div>
+          <h2 style="margin-bottom:4px">Existing Groups</h2>
+          <div class="ug-muted ug-count"><%= groups.length %> group(s)</div>
+        </div>
+        <div class="ug-actions">
+          <input id="ug-search" class="ug-search" type="search"
+            placeholder="Search name, description…" aria-label="Search groups">
+          <select id="ug-status-filter" aria-label="Filter groups by status">
+            <option value="all">All statuses</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+          </select>
+        </div>
+      </div>
 
-  <section class="tl-card">
-    <h2>Existing Groups</h2>
-    <% if (!groups.length) { %>
-      <p>No user groups have been created yet.</p>
-    <% } else { %>
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th><th>Description</th><th>Agents</th><th>Status</th><th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% groups.forEach(function(group) { %>
+      <div class="ug-table-wrap">
+        <table class="ug-table" id="ug-groups-table">
+          <thead>
             <tr>
-              <td><%= group.name %></td>
-              <td><%= group.description || '—' %></td>
-              <td><%= group.agent_count %></td>
-              <td><%= group.is_active ? 'Active' : 'Inactive' %></td>
-              <td>
-                <a class="tl-btn" href="/admin/user-groups?edit=<%= group.id %>">Edit</a>
-                <form method="post" action="/admin/user-groups/<%= group.id %>/toggle" style="display:inline">
-                  <button class="tl-btn" type="submit"><%= group.is_active ? 'Deactivate' : 'Activate' %></button>
-                </form>
-              </td>
+              <th>Group Name</th>
+              <th>Description</th>
+              <th>Agents</th>
+              <th>Supervisors</th>
+              <th>Queues</th>
+              <th>Campaigns</th>
+              <th>Status</th>
+              <th>Actions</th>
             </tr>
-          <% }); %>
-        </tbody>
-      </table>
-    <% } %>
-  </section>
+          </thead>
+          <tbody>
+            <% if (!groups.length) { %>
+              <tr><td colspan="8" class="ug-muted">No user groups have been created yet.</td></tr>
+            <% } %>
+            <% groups.forEach(function(group) { %>
+              <tr class="ug-group-row">
+                <td>
+                  <strong><%= group.name %></strong>
+                  <div class="ug-muted" style="font-size:.8rem">
+                    Created <%= group.created_at ? new Date(group.created_at).toLocaleDateString() : '—' %>
+                  </div>
+                </td>
+                <td><%= group.description || '—' %></td>
+                <td><%= group.agent_count %></td>
+                <td><%= group.supervisor_count %></td>
+                <td><%= group.queue_count %></td>
+                <td><%= group.campaign_count %></td>
+                <td>
+                  <span class="ug-status <%= group.is_active ? 'ug-active' : 'ug-inactive' %>">
+                    <%= group.is_active ? 'Active' : 'Inactive' %>
+                  </span>
+                </td>
+                <td>
+                  <div class="ug-actions">
+                    <a class="ug-btn" href="/admin/user-groups?edit=<%= group.id %>#group-editor">Edit</a>
+                    <a class="ug-btn" href="/admin/user-groups?edit=<%= group.id %>#group-members">Members</a>
+                    <form method="post" action="/admin/user-groups/<%= group.id %>/toggle">
+                      <button class="ug-btn <%= group.is_active ? 'ug-btn-danger' : '' %>"
+                        type="submit">
+                        <%= group.is_active ? 'Deactivate' : 'Activate' %>
+                      </button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+        <p id="ug-no-search-results" class="ug-muted" hidden>No groups match your search.</p>
+      </div>
+    </section>
+  </div>
 </main>
+
+<script>
+(function () {
+  const search = document.getElementById('ug-search');
+  const statusFilter = document.getElementById('ug-status-filter');
+  const rows = Array.from(document.querySelectorAll('.ug-group-row'));
+  const noResults = document.getElementById('ug-no-search-results');
+
+  function applyFilters() {
+    const term = search ? search.value.trim().toLowerCase() : '';
+    const status = statusFilter ? statusFilter.value : 'all';
+    let visible = 0;
+
+    rows.forEach(function (row) {
+      const matchesText = row.textContent.toLowerCase().includes(term);
+      const badge = row.querySelector('.ug-status');
+      const isActive = !!(badge && badge.classList.contains('ug-active'));
+      const matchesStatus = status === 'all' ||
+        (status === 'active' && isActive) ||
+        (status === 'inactive' && !isActive);
+      const matches = matchesText && matchesStatus;
+
+      row.hidden = !matches;
+      if (matches) visible++;
+    });
+
+    if (noResults) noResults.hidden = visible !== 0;
+  }
+
+  if (search) search.addEventListener('input', applyFilters);
+  if (statusFilter) statusFilter.addEventListener('change', applyFilters);
+  applyFilters();
+
+  const checkboxes = Array.from(document.querySelectorAll('.ug-agent-checkbox'));
+  const count = document.getElementById('ug-selected-count');
+
+  function updateCount() {
+    if (count) {
+      count.textContent = checkboxes.filter(function (box) {
+        return box.checked;
+      }).length + ' selected';
+    }
+  }
+
+  const selectAll = document.getElementById('ug-select-all');
+  const selectNone = document.getElementById('ug-select-none');
+
+  if (selectAll) {
+    selectAll.addEventListener('click', function () {
+      checkboxes.forEach(function (box) { box.checked = true; });
+      updateCount();
+    });
+  }
+  if (selectNone) {
+    selectNone.addEventListener('click', function () {
+      checkboxes.forEach(function (box) { box.checked = false; });
+      updateCount();
+    });
+  }
+  checkboxes.forEach(function (box) {
+    box.addEventListener('change', updateCount);
+  });
+  updateCount();
+})();
+</script>
 
 <%- include('../partials/foot') %>

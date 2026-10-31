@@ -65,8 +65,8 @@ async function attemptLogin(tenantSlug, username, password) {
     }
 
     const agentRes = await pool.query(
-        'SELECT id FROM agents WHERE user_id = $1 LIMIT 1',
-        [user.id]
+        'SELECT id FROM agents WHERE tenant_id = $1 AND user_id = $2 LIMIT 1',
+        [user.tenant_id, user.id]
     );
     const agentId = agentRes.rows[0] ? agentRes.rows[0].id : null;
 

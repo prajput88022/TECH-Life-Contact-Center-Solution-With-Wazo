@@ -20,6 +20,11 @@ const { wazoFetch } = require('../src/wazoFetch');
 const entityResolver = require('./entityResolver');
 const eventProcessor = require('./eventProcessor');
 const { startPrefixReconciler } = require('../src/wazoOutboundRoutingService');
+const { startTrunkReconciler } = require('../src/wazoTrunkProvisioningService');
+const { startTenantContextReconciler } = require('../src/wazoTenantProvisioningService');
+const { startInboundDidReconciler } = require('../src/wazoInboundRoutingService');
+const { startQueueReconciler } = require('../src/wazoQueueProvisioningService');
+const { startEventPartitionMaintenance } = require('../src/eventPartitionMaintenanceService');
 
 function log(msg) {
     console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -66,70 +71,138 @@ function invalidateWazoToken() {
 }
 
 /** Translate one raw Wazo bus message into our canonical envelope, or null to ignore it. */
+async function resolveEventAgentId(tenantId, data = {}) {
+    if (data.user_uuid) {
+        const id = await entityResolver.agentIdByWazoUserUuid(
+            tenantId, data.user_uuid
+        );
+        if (id) return id;
+    }
+    return data.agent_id == null
+        ? null
+        : entityResolver.agentId(tenantId, data.agent_id);
+}
+
 async function mapWazoEvent(msg) {
     const name = msg.name;
     const data = msg.data || {};
     if (!name) return null;
 
-    const wazoTenantUuid = msg.origin_uuid || data.tenant_uuid;
-    if (!wazoTenantUuid) return null;
-    const tenantId = await entityResolver.tenantId(wazoTenantUuid);
+    // Prefer the tenant UUID carried by the event. origin_uuid identifies
+    // the publishing Wazo service in standard bus envelopes, not necessarily
+    // the tenant. Only use it as a fallback if our resolver recognizes it.
+    const tenantCandidates = [
+        msg.tenant_uuid,
+        data.tenant_uuid,
+        data.tenant?.uuid,
+    ].filter((value, index, values) =>
+        typeof value === 'string' && value.length > 0 &&
+        values.indexOf(value) === index
+    );
+
+    let tenantId = null;
+    for (const tenantUuid of tenantCandidates) {
+        tenantId = await entityResolver.tenantId(tenantUuid);
+        if (tenantId) break;
+    }
+
+    // Wazo call events commonly identify the user, not the tenant.
+    if (!tenantId && data.user_uuid) {
+        tenantId = await entityResolver.tenantIdForWazoUser(data.user_uuid);
+    }
     if (!tenantId) return null;
 
     const now = new Date().toISOString();
 
     switch (name) {
-        case 'agentd_agent_status_update': {
+        case 'agentd_agent_status_update':
+        case 'agent_status_update': {
             const typeMap = { logged_in: 'AGENT_LOGIN', logged_out: 'AGENT_LOGOUT', available: 'AGENT_AVAILABLE', paused: 'AGENT_BREAK_START' };
             const type = typeMap[data.status] || 'AGENT_STATUS_CHANGE';
             return {
                 tenant_id: tenantId, event_type: type, channel: 'voice', event_time: data.timestamp || now,
                 entity_ids: {
-                    agent_id: await entityResolver.agentId(tenantId, data.agent_id),
+                    agent_id: await resolveEventAgentId(tenantId, data),
                     queue_id: await entityResolver.queueId(tenantId, data.queue_id),
                 },
                 payload: { reason_code: data.pause_reason || null, status: data.status || null },
             };
         }
         case 'calld_call_created':
+        case 'call_created':
             return {
-                tenant_id: tenantId, event_type: 'CALL_STARTED', channel: 'voice', event_time: data.creation_time || now,
+                tenant_id: tenantId, event_type: 'CALL_STARTED', channel: 'voice', event_time: data.creation_time || data.timestamp || now,
                 entity_ids: {
                     wazo_call_id: data.call_id,
-                    agent_id: await entityResolver.agentId(tenantId, data.agent_id),
+                    agent_id: await resolveEventAgentId(tenantId, data),
                     queue_id: await entityResolver.queueId(tenantId, data.queue_id),
                     did_id: await entityResolver.didId(tenantId, data.dialed_extension),
                     contact_id: await entityResolver.contactIdByPhone(tenantId, data.peer_caller_id_number),
                 },
                 payload: {
                     direction: (data.direction || 'to-extension') === 'from-extension' ? 'outbound' : 'inbound',
-                    from_number: data.peer_caller_id_number || null,
+                    from_number: data.peer_caller_id_number || data.caller_id_number || null,
                     to_number: data.dialed_extension || null,
                 },
             };
+        case 'call_updated': {
+            const status = String(data.status || '').trim().toLowerCase();
+
+            if (['up', 'answered', 'connected', 'talking'].includes(status)) {
+                return {
+                    tenant_id: tenantId,
+                    event_type: 'CALL_ANSWERED',
+                    channel: 'voice',
+                    event_time: data.timestamp || data.answer_time || now,
+                    entity_ids: {
+                        wazo_call_id: data.call_id,
+                        agent_id: await resolveEventAgentId(tenantId, data)
+                    },
+                    payload: { wazo_status: data.status || null }
+                };
+            }
+
+            if (['ring', 'ringing', 'progress'].includes(status)) {
+                return {
+                    tenant_id: tenantId,
+                    event_type: 'CALL_RINGING',
+                    channel: 'voice',
+                    event_time: data.timestamp || now,
+                    entity_ids: { wazo_call_id: data.call_id },
+                    payload: { wazo_status: data.status || null }
+                };
+            }
+
+            return null;
+        }
         case 'calld_call_answered':
+        case 'call_answered':
             return {
                 tenant_id: tenantId, event_type: 'CALL_ANSWERED', channel: 'voice', event_time: data.timestamp || now,
-                entity_ids: { wazo_call_id: data.call_id, agent_id: await entityResolver.agentId(tenantId, data.agent_id) },
+                entity_ids: { wazo_call_id: data.call_id, agent_id: await resolveEventAgentId(tenantId, data) },
                 payload: {},
             };
         case 'calld_call_ended':
+        case 'call_ended':
             return {
                 tenant_id: tenantId, event_type: 'CALL_HANGUP', channel: 'voice', event_time: data.timestamp || now,
                 entity_ids: { wazo_call_id: data.call_id },
-                payload: { hangup_cause: data.hangup_cause || null, status: data.answered ? 'completed' : 'missed' },
+                payload: { hangup_cause: data.reason_code ?? data.hangup_cause ?? data.hangupcause ?? null, status: data.answered ? 'completed' : 'missed' },
             };
         case 'calld_call_hold':
+        case 'call_held':
         case 'calld_call_resume':
+        case 'call_resumed':
             return {
-                tenant_id: tenantId, event_type: name === 'calld_call_hold' ? 'CALL_HOLD' : 'CALL_RESUME',
+                tenant_id: tenantId,
+                event_type: ['calld_call_hold', 'call_held'].includes(name) ? 'CALL_HOLD' : 'CALL_RESUME',
                 channel: 'voice', event_time: data.timestamp || now,
                 entity_ids: { wazo_call_id: data.call_id }, payload: {},
             };
         case 'chatd_message_created':
             return {
                 tenant_id: tenantId, event_type: 'CHAT_MESSAGE', channel: 'chat', event_time: data.created_at || now,
-                entity_ids: { conversation_id: data.conversation_uuid, agent_id: await entityResolver.agentId(tenantId, data.agent_id) },
+                entity_ids: { conversation_id: data.conversation_uuid, agent_id: await resolveEventAgentId(tenantId, data) },
                 payload: { sender_type: data.sender_type || 'customer', body: data.content || '' },
             };
         default:
@@ -141,40 +214,162 @@ async function connectAndListen() {
     const token = await getWazoToken();
     log('Authenticated with wazo-auth, connecting to websocketd...');
 
-    const ws = new WebSocket(config.wazo.websocketdUrl, {
-        headers: { 'X-Auth-Token': token },
+    // Wazo websocketd authenticates using the token query parameter.
+    const wsUrl = new URL(config.wazo.websocketdUrl);
+    wsUrl.searchParams.set('token', token);
+    wsUrl.searchParams.set('version', '2');
+
+    const ws = new WebSocket(wsUrl.toString(), {
         rejectUnauthorized: config.wazo.tlsRejectUnauthorized,
     });
 
     return new Promise((resolve, reject) => {
-        ws.on('open', () => log('Connected. Listening for bus events...'));
+        const eventNames = [
+    'agent_status_update',
+    'call_created',
+    'call_updated',
+    'call_answered',
+    'call_ended',
+    'call_dtmf_created',
+    'call_held',
+    'call_resumed',
+];
+        const pendingSubscriptions = new Set(eventNames);
+        let startSent = false;
+        let settled = false;
+
+        ws.on('open', () => log('WebSocket transport connected; waiting for Wazo protocol init.'));
+
         ws.on('message', async (raw) => {
             try {
-                const msg = JSON.parse(raw.toString());
+                const frame = JSON.parse(raw.toString());
+
+                // Wazo websocketd control protocol.
+                if (frame.op === 'init') {
+                    if (frame.code !== 0) {
+                        throw new Error(`websocketd init failed (code ${frame.code})`);
+                    }
+                    for (const eventName of eventNames) {
+                        ws.send(JSON.stringify({
+                            op: 'subscribe',
+                            data: { event_name: eventName },
+                        }));
+                    }
+                    return;
+                }
+
+                if (frame.op === 'subscribe') {
+                    if (frame.code !== 0) {
+                        throw new Error(`websocketd subscription failed (code ${frame.code})`);
+                    }
+
+                    // Some Wazo versions may not echo the event name in the
+                    // acknowledgement. In that case, the subscription ack
+                    // count is not enough to identify individual events.
+                    // Send start after the ordered subscription commands have
+                    // been sent; websocketd processes frames in order.
+                    if (!startSent) {
+                        startSent = true;
+                        ws.send(JSON.stringify({ op: 'start' }));
+                    }
+                    return;
+                }
+
+                if (frame.op === 'start') {
+                    if (frame.code === 0) {
+                        log('Wazo event stream started.');
+                    } else {
+                        throw new Error(`websocketd start failed (code ${frame.code})`);
+                    }
+                    return;
+                }
+
+                if (frame.op !== 'event') return;
+
+                // Wazo sends the actual bus event inside frame.event.
+                // Wazo websocketd v2 wraps bus messages in frame.event.
+                // Keep fallbacks for deployments using an alternate envelope.
+                const msg = frame.event || frame.data?.event || frame.data;
+                if (!msg || typeof msg !== 'object') return;
+
                 const envelope = await mapWazoEvent(msg);
-                if (envelope) await eventProcessor.process(envelope);
+                if (!envelope) {
+                    if ([
+                        'agent_status_update', 'call_created', 'call_updated',
+                        'call_ended', 'call_held', 'call_resumed'
+                    ].includes(msg.name)) {
+                        log(`Ignored Wazo ${msg.name}: tenant could not be resolved or event was not mapped.`);
+                    }
+                    return;
+                }
+
+                // Log event types only. Never log phone numbers or raw payloads.
+                log(`Mapped Wazo event: ${envelope.event_type}`);
+                await eventProcessor.process(envelope);
             } catch (e) {
-                console.error('Error processing bus message:', e.message);
+                console.error('Error processing Wazo WebSocket message:', e.message);
             }
         });
-        ws.on('close', () => resolve());
-        ws.on('unexpected-response', (_request, response) => {
-            const status = response.statusCode;
-            const error = new Error(
-                `WebSocket handshake failed (HTTP ${status})`
-            );
-            error.status = status;
-            response.resume();
-            reject(error);
+
+        ws.on('close', (code, reason) => {
+            if (!settled) {
+                settled = true;
+                log(`WebSocket closed (code ${code}${reason?.length ? `, reason: ${reason.toString()}` : ''}).`);
+                resolve();
+            }
         });
-        ws.on('error', (e) => reject(e));
+
+        ws.on('unexpected-response', (_request, response) => {
+            const error = new Error(`WebSocket handshake failed (HTTP ${response.statusCode})`);
+            error.status = response.statusCode;
+            response.resume();
+            if (!settled) {
+                settled = true;
+                reject(error);
+            }
+        });
+
+        ws.on('error', (e) => {
+            if (!settled) {
+                settled = true;
+                reject(e);
+            }
+        });
     });
 }
 
 async function main() {
     log('TECH-Life Wazo Event Collector starting...');
+
+    startTenantContextReconciler(60000);
+    log('Tenant context reconciler started (60-second interval).');
+
+    startInboundDidReconciler(60000);
+    log('Inbound DID reconciler started (60-second interval).');
+
+    if (process.env.EVENT_PARTITION_MAINTENANCE_ENABLED === 'true') {
+        const apply = process.env.EVENT_PARTITION_MAINTENANCE_APPLY === 'true';
+        startEventPartitionMaintenance({
+            intervalMs: 6 * 60 * 60 * 1000,
+            monthsAhead: 15,
+            apply
+        });
+        log('Event partition maintenance started (6-hour interval; mode=' +
+            (apply ? 'APPLY' : 'DRY RUN') + ').');
+    }
+
+    if (process.env.WAZO_QUEUE_RECONCILER_ENABLED === 'true') {
+        const apply = process.env.WAZO_QUEUE_RECONCILE_APPLY === 'true';
+        startQueueReconciler(60000);
+        log('Wazo queue reconciler started (60-second interval; mode=' +
+            (apply ? 'APPLY' : 'DRY RUN') + ').');
+    }
+
     startPrefixReconciler(60000);
     log('Outbound prefix reconciler started (60-second interval).');
+
+    startTrunkReconciler(60000);
+    log('Trunk provisioning reconciler started (60-second interval).');
     let retryDelayMs = 5000;
     const maxRetryDelayMs = 5 * 60 * 1000;
 

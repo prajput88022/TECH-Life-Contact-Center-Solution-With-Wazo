@@ -1,0 +1,116 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>DNC Management</h1>
+<p class="tl-subtitle">Manage organisation-wide and campaign-specific Do Not Call entries.</p>
+
+<% if (saved) { %>
+<div class="tl-card" role="status">DNC change saved.</div>
+<% } %>
+<% if (error === 'duplicate') { %>
+<div class="tl-card">That phone number is already on the selected DNC list.</div>
+<% } %>
+
+<div class="tl-card">
+    <h2>Add a number to DNC</h2>
+    <form method="post" action="/admin/dnc/create">
+        <div class="tl-filters">
+            <div>
+                <label for="dncPhone">Phone number</label>
+                <input id="dncPhone" name="phone_number" maxlength="30"
+                       placeholder="+91 9876543210" required>
+            </div>
+            <div>
+                <label for="dncScope">Scope</label>
+                <select id="dncScope" name="scope">
+                    <option value="tenant">Organisation-wide</option>
+                    <option value="campaign">Selected campaign only</option>
+                </select>
+            </div>
+            <div id="dncCampaignWrap" style="display:none">
+                <label for="dncCampaign">Campaign</label>
+                <select id="dncCampaign" name="campaign_id">
+                    <option value="">Select campaign</option>
+                    <% campaigns.forEach(c => { %>
+                    <option value="<%= c.id %>"><%= c.name %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div>
+                <label for="dncReason">Reason</label>
+                <input id="dncReason" name="reason" maxlength="100"
+                       placeholder="Customer request">
+            </div>
+        </div>
+        <button class="tl-btn" type="submit">Add to DNC</button>
+    </form>
+</div>
+
+<div class="tl-card">
+    <h2>Search DNC entries</h2>
+    <form method="get" action="/admin/dnc">
+        <div class="tl-filters">
+            <div>
+                <label for="dncSearch">Phone, reason or campaign</label>
+                <input id="dncSearch" name="q" value="<%= q %>" maxlength="120">
+            </div>
+            <div><button class="tl-btn" type="submit">Search</button></div>
+            <% if (q) { %><div><a href="/admin/dnc">Clear</a></div><% } %>
+        </div>
+    </form>
+</div>
+
+<h2>DNC entries</h2>
+<div class="tl-card" style="overflow-x:auto">
+    <table>
+        <thead>
+            <tr><th>Phone</th><th>Scope</th><th>Reason</th><th>Added by</th><th>Added at</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+        <% entries.forEach(entry => { %>
+            <tr>
+                <td><strong><%= entry.phone_number %></strong></td>
+                <td>
+                    <% if (entry.campaign_id) { %>
+                        Campaign: <%= entry.campaign_name || 'Unknown campaign' %>
+                    <% } else { %>
+                        Organisation-wide
+                    <% } %>
+                </td>
+                <td><%= entry.reason || '—' %></td>
+                <td><%= entry.created_by_name || '—' %></td>
+                <td><%= new Date(entry.created_at).toLocaleString() %></td>
+                <td>
+                    <form method="post" action="/admin/dnc/<%= entry.id %>/delete"
+                          onsubmit="return confirm('Remove this DNC entry? Outbound eligibility may change.');">
+                        <button class="tl-btn" type="submit">Remove entry</button>
+                    </form>
+                </td>
+            </tr>
+        <% }) %>
+        <% if (!entries.length) { %>
+            <tr><td colspan="6">No DNC entries match this search.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+    <p class="tl-subtitle">Showing up to 500 entries. Removal is audited.</p>
+</div>
+
+<script>
+(() => {
+    const scope = document.getElementById('dncScope');
+    const wrap = document.getElementById('dncCampaignWrap');
+    const campaign = document.getElementById('dncCampaign');
+
+    function updateScope() {
+        const scoped = scope.value === 'campaign';
+        wrap.style.display = scoped ? '' : 'none';
+        campaign.required = scoped;
+    }
+
+    scope.addEventListener('change', updateScope);
+    updateScope();
+})();
+</script>
+
+<%- include('../partials/foot') %>

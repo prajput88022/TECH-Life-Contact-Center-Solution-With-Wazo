@@ -1,0 +1,109 @@
+<!-- TECHLIFE ADMIN AUDIT VIEW -->
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Audit Logs</h1>
+<p class="tl-subtitle">
+    Review administrative changes for the currently selected tenant.
+    Change records redact credential-like fields before display.
+</p>
+
+<form method="get" action="/admin/audit-logs" class="tl-card">
+    <div class="tl-filters">
+        <div>
+            <label for="from">From</label>
+            <input id="from" name="from" type="date" value="<%= from %>">
+        </div>
+        <div>
+            <label for="to">To</label>
+            <input id="to" name="to" type="date" value="<%= to %>">
+        </div>
+        <div>
+            <label for="action">Action</label>
+            <input id="action" name="action" maxlength="120"
+                   value="<%= action %>" placeholder="e.g. USER_UPDATED">
+        </div>
+        <div>
+            <label for="resourceType">Resource type</label>
+            <input id="resourceType" name="resourceType" maxlength="80"
+                   value="<%= resourceType %>" placeholder="user, queue, campaign">
+        </div>
+        <div>
+            <label for="resourceId">Resource ID</label>
+            <input id="resourceId" name="resourceId" maxlength="120"
+                   value="<%= resourceId %>">
+        </div>
+        <div>
+            <label for="actor">Actor / User ID</label>
+            <input id="actor" name="actor" maxlength="120"
+                   value="<%= actor %>" placeholder="Name or user ID">
+        </div>
+    </div>
+    <button class="tl-btn" type="submit">Apply filters</button>
+    <a class="tl-btn secondary" href="/admin/audit-logs">Reset</a>
+</form>
+
+<div class="tl-card" style="margin-top:16px">
+    <p class="tl-subtitle">
+        <strong><%= total %></strong> matching records.
+        Page <%= page %> of <%= pageCount %>. Showing up to <%= pageSize %> per page.
+    </p>
+
+    <div style="overflow-x:auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Actor</th>
+                    <th>Action</th>
+                    <th>Resource</th>
+                    <th>Resource ID</th>
+                    <th>IP address</th>
+                    <th>Changes</th>
+                </tr>
+            </thead>
+            <tbody>
+                <% records.forEach(log => { %>
+                    <tr>
+                        <td><%= new Date(log.created_at).toLocaleString() %></td>
+                        <td>
+                            <%= log.actor_name %>
+                            <% if (log.user_id) { %>
+                                <div><small><code><%= log.user_id %></code></small></div>
+                            <% } %>
+                        </td>
+                        <td><code><%= log.action %></code></td>
+                        <td><%= log.resource_type || '—' %></td>
+                        <td><code><%= log.resource_id || '—' %></code></td>
+                        <td><%= log.ip_address || '—' %></td>
+                        <td>
+                            <details>
+                                <summary>View details</summary>
+                                <p><strong>Before</strong></p>
+                                <pre style="white-space:pre-wrap;max-width:480px;overflow-wrap:anywhere"><%= log.previousDisplay %></pre>
+                                <p><strong>After</strong></p>
+                                <pre style="white-space:pre-wrap;max-width:480px;overflow-wrap:anywhere"><%= log.newDisplay %></pre>
+                            </details>
+                        </td>
+                    </tr>
+                <% }); %>
+                <% if (!records.length) { %>
+                    <tr><td colspan="7">No audit records match these filters.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
+        <% if (page > 1) { %>
+            <a class="tl-btn secondary"
+               href="/admin/audit-logs?<%= queryParams %>&amp;page=<%= page - 1 %>">Previous</a>
+        <% } %>
+        <% if (page < pageCount) { %>
+            <a class="tl-btn secondary"
+               href="/admin/audit-logs?<%= queryParams %>&amp;page=<%= page + 1 %>">Next</a>
+        <% } %>
+    </div>
+</div>
+
+<%- include('../partials/foot') %>

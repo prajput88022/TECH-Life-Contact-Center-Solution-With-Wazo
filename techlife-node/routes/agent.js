@@ -19,12 +19,20 @@ router.get('/', async (req, res) => {
          FROM calls WHERE tenant_id = $1 AND agent_id = $2 AND start_time::date = CURRENT_DATE`,
         [u.tenantId, u.agentId]
     )).rows[0];
+    const pauseCodes = (await pool.query(
+        `SELECT id, code, label, max_duration_seconds
+         FROM pause_codes
+         WHERE tenant_id = $1 AND is_active = TRUE
+         ORDER BY sort_order, code`,
+        [u.tenantId]
+    )).rows;
     res.render('agent/index', {
         pageTitle: 'Agent Workspace',
         callsToday,
         agentId: u.agentId,
         fullName: u.fullName,
-        statuses: ['available','break','lunch','tea','training','meeting','system_issue','personal_break','after_call_work','offline'],
+        pauseCodes,
+        statuses: ['available','break','lunch','tea','training','meeting','system_issue','personal_break','offline'],
     });
 });
 

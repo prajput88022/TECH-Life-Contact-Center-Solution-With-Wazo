@@ -66,10 +66,18 @@ async function getTenantAndDid(didId, appTenantId) {
     `SELECT d.id AS did_id, d.tenant_id, d.did_number, d.description,
             d.destination_type, d.default_queue_id, d.default_ivr_id,
             d.default_agent_id, d.default_extension, d.wazo_incall_id,
-            d.is_active, t.wazo_tenant_uuid, t.wazo_context_status,
-            t.wazo_context_name
+            d.inbound_group_id, d.is_active,
+            t.wazo_tenant_uuid, t.wazo_context_status, t.wazo_context_name,
+            g.destination_type AS group_destination_type,
+            g.default_queue_id AS group_queue_id,
+            g.default_ivr_id AS group_ivr_id,
+            g.default_agent_id AS group_agent_id,
+            g.default_extension AS group_extension,
+            g.is_active AS group_is_active
        FROM dids d
        JOIN tenants t ON t.id = d.tenant_id
+       LEFT JOIN inbound_groups g
+         ON g.id = d.inbound_group_id AND g.tenant_id = d.tenant_id
       WHERE d.id = $1 AND d.tenant_id = $2`,
     [didId, appTenantId]
   );
@@ -187,6 +195,31 @@ async function destinationFor(did, token) {
   throw new Error(`Unsupported DID destination type: ${did.destination_type}`);
 }
 
+async function destinationForAssignedGroup(did, token) {
+  if (!did.inbound_group_id) {
+    return destinationFor(did, token);
+  }
+
+  if (did.group_is_active !== true) {
+    throw new Error("Assigned inbound group is missing or inactive in this tenant");
+  }
+
+  const groupDid = {
+    ...did,
+    destination_type: did.group_destination_type,
+    default_queue_id: did.group_queue_id,
+    default_ivr_id: did.group_ivr_id,
+    default_agent_id: did.group_agent_id,
+    default_extension: did.group_extension
+  };
+
+  if (!groupDid.destination_type) {
+    throw new Error("Assigned inbound group has no destination type");
+  }
+
+  return destinationFor(groupDid, token);
+}
+
 async function provisionInboundDid(didId, appTenantId) {
   const did = await getTenantAndDid(didId, appTenantId);
   if (!did.is_active) {
@@ -206,7 +239,7 @@ async function provisionInboundDid(didId, appTenantId) {
     throw new Error('Tenant Wazo inbound context was not found');
   }
 
-  const destination = await destinationFor(did, token);
+  const destination = await destinationForAssignedGroup(did, token);
   const description = String(
     did.description || `TechLife DID ${did.did_number}`
   ).slice(0, 150);
@@ -290,4 +323,76 @@ async function provisionInboundDid(didId, appTenantId) {
   };
 }
 
-module.exports = { provisionInboundDid };
+
+async function reconcilePendingInboundDids(batchSize = 20) {
+  const limit = Math.max(1, Math.min(Number(batchSize) || 20, 100));
+
+  const candidates = await pool.query(
+    `SELECT d.id, d.tenant_id
+       FROM dids d
+       JOIN tenants t ON t.id = d.tenant_id
+      WHERE d.is_active = TRUE
+        AND t.is_active = TRUE
+        AND d.wazo_incall_id IS NULL
+      ORDER BY d.created_at ASC
+      LIMIT $1`,
+    [limit]
+  );
+
+  let processed = 0;
+
+  for (const row of candidates.rows) {
+    try {
+      const result = await provisionInboundDid(row.id, row.tenant_id);
+
+      if (result?.ok && !result.skipped) {
+        processed++;
+        console.log(
+          `[did-reconciler] DID ${row.id} provisioned ` +
+          `(Wazo incall ${result.wazo_incall_id}).`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[did-reconciler] DID ${row.id} failed: ` +
+        String(error.message || error).slice(0, 500)
+      );
+    }
+  }
+
+  return { processed, candidates: candidates.rowCount };
+}
+
+function startInboundDidReconciler(intervalMs = 60000) {
+  let running = false;
+
+  const run = async () => {
+    if (running) return;
+    running = true;
+
+    try {
+      await reconcilePendingInboundDids();
+    } catch (error) {
+      console.error(
+        '[did-reconciler] Worker error:',
+        error.message || error
+      );
+    } finally {
+      running = false;
+    }
+  };
+
+  void run();
+
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  return () => clearInterval(timer);
+}
+
+module.exports = {
+  provisionInboundDid,
+  reconcilePendingInboundDids,
+  startInboundDidReconciler,
+};
+

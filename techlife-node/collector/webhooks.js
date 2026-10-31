@@ -78,11 +78,11 @@ router.post('/cdr', checkSecret, async (req, res) => {
          ON CONFLICT (tenant_id, wazo_call_id) DO UPDATE SET
             wazo_cdr_id = EXCLUDED.wazo_cdr_id, start_time = EXCLUDED.start_time,
             answer_time = EXCLUDED.answer_time, end_time = EXCLUDED.end_time,
-            status = EXCLUDED.status, hangup_cause = EXCLUDED.hangup_cause`,
+            status = EXCLUDED.status, hangup_cause = COALESCE(NULLIF(EXCLUDED.hangup_cause, ''), calls.hangup_cause)`,
         [tenantId, cdr.call_id || cdr.linkedid || `cdr_${Date.now()}`, cdr.id || null,
          cdr.direction || 'internal', cdr.source_extension || null, cdr.destination_extension || null,
          cdr.answered ? 'completed' : 'missed', cdr.start || null, cdr.answer || null, cdr.end || null,
-         cdr.requested_context || null]
+         cdr.reason_code ?? cdr.hangup_cause ?? cdr.hangupcause ?? null]
     );
     res.json({ ok: true });
 });

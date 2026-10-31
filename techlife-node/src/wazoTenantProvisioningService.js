@@ -300,4 +300,100 @@ async function provisionWazoTenant(tenantId) {
     }
 }
 
-module.exports = { provisionWazoTenant };
+
+async function reconcilePendingTenantContexts(batchSize = 5) {
+    const limit = Math.max(1, Math.min(Number(batchSize) || 5, 20));
+
+    const condition = `
+        is_active = TRUE
+        AND (
+            wazo_tenant_uuid IS NULL
+            OR wazo_context_status IN ('pending', 'failed')
+            OR wazo_outcall_context_status IS NULL
+            OR wazo_outcall_context_status IN ('pending', 'failed')
+            OR (
+                (
+                    wazo_context_status = 'provisioning'
+                    OR wazo_outcall_context_status = 'provisioning'
+                )
+                AND updated_at < NOW() - INTERVAL '5 minutes'
+            )
+        )
+    `;
+
+    const candidates = await pool.query(
+        `SELECT id FROM tenants
+          WHERE ${condition}
+          ORDER BY created_at ASC
+          LIMIT $1`,
+        [limit]
+    );
+
+    let processed = 0;
+
+    for (const row of candidates.rows) {
+        // Atomically claim the tenant to prevent overlapping worker attempts.
+        const claimed = await pool.query(
+            `UPDATE tenants
+                SET wazo_context_status = 'provisioning',
+                    wazo_context_error = NULL,
+                    wazo_outcall_context_status = 'provisioning',
+                    wazo_outcall_context_error = NULL,
+                    updated_at = NOW()
+              WHERE id = $1 AND ${condition}
+              RETURNING id`,
+            [row.id]
+        );
+
+        if (!claimed.rowCount) continue;
+
+        try {
+            const result = await provisionWazoTenant(row.id);
+            processed++;
+            console.log(
+                `[tenant-reconciler] Tenant ${row.id} contexts provisioned: ` +
+                JSON.stringify(result.contexts || {})
+            );
+        } catch (error) {
+            console.error(
+                `[tenant-reconciler] Tenant ${row.id} failed: ` +
+                String(error.message || error).slice(0, 500)
+            );
+        }
+    }
+
+    return { processed, candidates: candidates.rowCount };
+}
+
+function startTenantContextReconciler(intervalMs = 60000) {
+    let running = false;
+
+    const run = async () => {
+        if (running) return;
+        running = true;
+
+        try {
+            await reconcilePendingTenantContexts();
+        } catch (error) {
+            console.error(
+                '[tenant-reconciler] Worker error:',
+                error.message || error
+            );
+        } finally {
+            running = false;
+        }
+    };
+
+    void run();
+
+    const timer = setInterval(run, intervalMs);
+    if (typeof timer.unref === 'function') timer.unref();
+
+    return () => clearInterval(timer);
+}
+
+module.exports = {
+    provisionWazoTenant,
+    reconcilePendingTenantContexts,
+    startTenantContextReconciler,
+};

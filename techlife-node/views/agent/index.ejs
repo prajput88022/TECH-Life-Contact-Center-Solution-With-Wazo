@@ -4,6 +4,18 @@
 <p class="tl-subtitle">Calls today: <strong><%= callsToday.n %></strong> &middot; Talk time: <strong><%= new Date(callsToday.talk*1000).toISOString().substr(11,8) %></strong></p>
 
 <h2>My Status</h2>
+<div style="margin:10px 0">
+    <label for="pauseReason">Pause reason</label>
+    <select id="pauseReason">
+        <option value="">Select an active Admin pause code</option>
+        <% (pauseCodes || []).forEach(code => { %>
+            <option value="<%= code.id %>"><%= code.label %> (<%= code.code %>)</option>
+        <% }) %>
+    </select>
+    <% if (!(pauseCodes || []).length) { %>
+        <p class="tl-subtitle">No active pause codes. Ask an administrator to create and activate one in Admin → Pause Codes.</p>
+    <% } %>
+</div>
 <div class="tl-agent-status-buttons" id="statusButtons">
 <% statuses.forEach(s => { %>
     <button data-status="<%= s %>" onclick="setStatus('<%= s %>')"><%= s.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) %></button>
@@ -101,6 +113,34 @@
 </div>
 
 
+<div id="customerProfileWrap" class="tl-card" style="display:none;margin-top:20px">
+    <h2>Customer Profile</h2>
+    <p id="customerProfileStatus" class="tl-subtitle" role="status">Looking up customer…</p>
+    <div class="tl-grid">
+        <div><strong>Customer ID</strong><div id="customerProfileId">—</div></div>
+        <div><strong>Name</strong><div id="customerProfileName">—</div></div>
+        <div><strong>Primary phone</strong><div id="customerProfilePhone">—</div></div>
+        <div><strong>Alternate phone</strong><div id="customerProfileAltPhone">—</div></div>
+        <div><strong>Email</strong><div id="customerProfileEmail">—</div></div>
+        <div><strong>Address</strong><div id="customerProfileAddress">—</div></div>
+    </div>
+    <div style="margin-top:12px">
+        <strong>Customer comments</strong>
+        <p id="customerProfileComments" style="white-space:pre-wrap">—</p>
+    </div>
+    <h3>Recent Conversations</h3>
+    <div style="overflow-x:auto">
+        <table>
+            <thead>
+                <tr><th>Date / Time</th><th>Direction</th><th>Campaign</th><th>Queue</th><th>Outcome</th><th>Talk (sec)</th></tr>
+            </thead>
+            <tbody id="customerHistoryBody">
+                <tr><td colspan="6">Looking up history…</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <!-- CRM screen-pop panel: only shown/used when the tenant has an active
      integration with popup_mode = 'iframe_panel'. Otherwise a screen-pop
      opens a new tab/window instead, and this stays empty. -->
@@ -128,10 +168,37 @@ async function loadStatus() {
     document.querySelectorAll('#statusButtons button').forEach(b => b.classList.toggle('active', b.dataset.status === res.status));
 }
 async function setStatus(status) {
-    await fetch(`/api/v1/agents/${AGENT_ID}/status`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ status })
-    });
-    loadStatus();
+    const pauseStatuses = [
+        'break','lunch','tea','training','meeting',
+        'system_issue','personal_break','custom'
+    ];
+    const reason_code = pauseStatuses.includes(status)
+        ? document.getElementById('pauseReason').value
+        : null;
+
+    if (pauseStatuses.includes(status) && !reason_code) {
+        alert('Select an active pause reason configured by your administrator.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/v1/agents/${AGENT_ID}/status`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ status, reason_code })
+        });
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            alert(result.message || result.error || 'Unable to change agent status.');
+            return;
+        }
+
+        await loadStatus();
+    } catch (error) {
+        console.error('Agent status update failed:', error);
+        alert('Unable to update agent status. Please retry.');
+    }
 }
 loadStatus();
 
@@ -143,6 +210,151 @@ async function loadCrmConfig() {
     } catch (e) { console.warn('CRM config unavailable', e); }
 }
 loadCrmConfig();
+
+let customerLookupToken = 0;
+
+function setCustomerText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent =
+        value === null || value === undefined || String(value).trim() === ''
+            ? '—' : String(value);
+}
+
+function clearCustomerProfile() {
+    [
+        'customerProfileId', 'customerProfileName', 'customerProfilePhone',
+        'customerProfileAltPhone', 'customerProfileEmail',
+        'customerProfileAddress', 'customerProfileComments'
+    ].forEach(id => setCustomerText(id, '—'));
+
+    const body = document.getElementById('customerHistoryBody');
+    body.replaceChildren();
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'Loading conversation history…';
+    row.appendChild(cell);
+    body.appendChild(row);
+}
+
+function renderCustomerProfile(data) {
+    const contact = data.contact || {};
+    setCustomerText('customerProfileId', contact.external_customer_id || contact.id);
+    setCustomerText('customerProfileName', contact.full_name);
+    setCustomerText('customerProfilePhone', contact.primary_phone);
+    setCustomerText('customerProfileAltPhone', contact.alt_phone);
+    setCustomerText('customerProfileEmail', contact.email);
+
+    const address = [
+        contact.address_line1, contact.address_line2, contact.city,
+        contact.state, contact.postal_code, contact.country
+    ].filter(Boolean).join(', ');
+    setCustomerText('customerProfileAddress', address);
+    setCustomerText('customerProfileComments', contact.comments);
+    setCustomerText('customerProfileStatus', 'Customer record matched.');
+
+    const body = document.getElementById('customerHistoryBody');
+    body.replaceChildren();
+
+    const history = Array.isArray(data.history) ? data.history : [];
+    if (!history.length) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.textContent = 'No previous conversations found.';
+        row.appendChild(cell);
+        body.appendChild(row);
+        return;
+    }
+
+    history.forEach(call => {
+        const row = document.createElement('tr');
+        const time = call.start_time ? new Date(call.start_time).toLocaleString() : '—';
+        const values = [
+            time,
+            call.direction,
+            call.campaign_name,
+            call.queue_name,
+            call.status,
+            call.talk_seconds
+        ];
+
+        values.forEach(value => {
+            const cell = document.createElement('td');
+            cell.textContent = value === null || value === undefined || value === ''
+                ? '—' : String(value);
+            row.appendChild(cell);
+        });
+        body.appendChild(row);
+    });
+}
+
+async function loadCustomerProfile(phone) {
+    const token = ++customerLookupToken;
+    const wrap = document.getElementById('customerProfileWrap');
+    const status = document.getElementById('customerProfileStatus');
+
+    wrap.style.display = 'block';
+    clearCustomerProfile();
+
+    if (!phone) {
+        status.textContent = 'Caller number is unavailable.';
+        return;
+    }
+
+    status.textContent = 'Looking up customer…';
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (token !== customerLookupToken) return;
+
+        try {
+            const query = new URLSearchParams({ phone: String(phone) });
+            const response = await fetch('/api/v1/contacts/lookup?' + query.toString(), {
+                headers: { 'Accept': 'application/json' }
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (token !== customerLookupToken) return;
+
+            if (!response.ok) {
+                status.textContent = result.error === 'forbidden'
+                    ? 'Customer lookup is not permitted for this account.'
+                    : 'Customer lookup is temporarily unavailable.';
+                return;
+            }
+
+            if (result.found && result.contact) {
+                renderCustomerProfile(result);
+                return;
+            }
+
+            if (attempt < 2) {
+                await new Promise(resolve => window.setTimeout(resolve, 500));
+            }
+        } catch (err) {
+            if (token !== customerLookupToken) return;
+            if (attempt === 2) {
+                status.textContent = 'Customer lookup is temporarily unavailable.';
+                console.warn('Customer profile lookup failed:', err);
+                return;
+            }
+            await new Promise(resolve => window.setTimeout(resolve, 500));
+        }
+    }
+
+    if (token === customerLookupToken) {
+        status.textContent =
+            'No matching customer record found yet. A new inbound contact may not have been stored.';
+        const body = document.getElementById('customerHistoryBody');
+        body.replaceChildren();
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.textContent = 'No history available.';
+        row.appendChild(cell);
+        body.appendChild(row);
+    }
+}
 
 function buildCrmUrl(template, callData) {
     return template
@@ -204,7 +416,18 @@ async function initSip() {
     }
 
     const { UserAgent, Registerer } = SIP;
-    const uri = UserAgent.makeURI(`sip:${creds.sip_username}@${creds.sip_domain}`);
+
+    if (!creds.sip_uri_user) {
+        setRegStatus('SIP line identity missing', 'status-offline');
+        return;
+    }
+
+    const uri = UserAgent.makeURI(`sip:${creds.sip_uri_user}@${creds.sip_domain}`);
+    if (!uri) {
+        setRegStatus('Invalid SIP line URI', 'status-offline');
+        return;
+    }
+
     userAgent = new UserAgent({
         uri,
         transportOptions: { server: creds.ws_uri },
@@ -223,6 +446,8 @@ async function initSip() {
             // accept, so the agent sees customer context immediately.
             const callerNumber = invitation.remoteIdentity && invitation.remoteIdentity.uri
                 ? invitation.remoteIdentity.uri.user : null;
+            loadCustomerProfile(callerNumber);
+
             if (crmConfig && crmConfig.trigger_event === 'ringing') {
                 fireCrmScreenPop({ customer_number: callerNumber, direction: 'inbound', agent_extension: creds.extension });
             }

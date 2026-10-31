@@ -16,7 +16,11 @@
                 <option value="robo_survey">Robo — IVR Survey (collects responses)</option>
             </select>
         </div>
-        <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="1.0"></div>
+        <div><label>Dial Level</label>
+            <input id="campaign_dial_level" type="number" min="1" max="20"
+                   step="0.1" name="dial_level" value="1.0" required>
+            <small>Preview/Progressive: 1. Power: 1–5. Predictive: 1–3. Robo: integer 1–20.</small>
+        </div>
         <div><label>Start Date</label><input type="date" name="start_date"></div>
         <div><label>End Date</label><input type="date" name="end_date"></div>
         <div>
@@ -51,6 +55,7 @@
     <td>
         <% if (c.is_robo_campaign) { %><a href="?script=<%= c.id %>">Edit script</a> &middot;<% } %>
         <a href="/admin/campaigns/<%= c.id %>/leads">Leads</a> &middot;
+        <a href="?assign=<%= c.id %>">Assign Agents</a> &middot;
         <a href="?edit=<%= c.id %>">Edit</a> &middot;
         <form method="post" action="/admin/campaigns/<%= c.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this campaign?');">
             <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
@@ -60,6 +65,41 @@
 <% }) %>
 </table>
 
+<% if (typeof assignId !== 'undefined' && assignId) {
+    const assignmentCampaign = campaigns.find(x => x.id === assignId);
+    if (assignmentCampaign) { %>
+<h2>Assign Agents — <%= assignmentCampaign.name %></h2>
+<p class="tl-subtitle">
+    Only active, provisioned users with the Agent role and verified Wazo identities
+    are listed. Changes are allowed only while the campaign is disabled.
+</p>
+<form method="post" action="/admin/campaigns/<%= assignmentCampaign.id %>/agents" class="tl-card">
+    <% if (eligibleAgents.length) { %>
+        <div class="tl-filters">
+            <% eligibleAgents.forEach(agent => { %>
+            <label style="display:block;min-width:250px">
+                <input type="checkbox" name="agent_ids" value="<%= agent.id %>"
+                    <%= assignedAgentIds.includes(agent.id) ? 'checked' : '' %>>
+                <strong><%= agent.display_name %></strong>
+                — Agent <%= agent.agent_number %>
+                — Ext <%= agent.extension || 'not set' %>
+            </label>
+            <% }) %>
+        </div>
+    <% } else { %>
+        <p>No eligible, fully provisioned agent profiles exist in this tenant.</p>
+    <% } %>
+    <button class="tl-btn" type="submit"
+        <%= assignmentCampaign.is_active ? 'disabled' : '' %>>
+        Save Agent Assignments
+    </button>
+    <% if (assignmentCampaign.is_active) { %>
+        <p>Disable the campaign before changing assignments.</p>
+    <% } %>
+    <a class="tl-btn secondary" href="/admin/campaigns">Close</a>
+</form>
+<% } } %>
+
 <% if (typeof editId !== 'undefined' && editId) {
     const c = campaigns.find(x => x.id === editId);
     if (c) { %>
@@ -67,7 +107,21 @@
 <form method="post" action="/admin/campaigns/<%= c.id %>/edit" class="tl-card">
     <div class="tl-filters">
         <div><label>Name</label><input name="name" value="<%= c.name %>" required></div>
-        <div><label>Dial Level</label><input type="number" step="0.1" name="dial_level" value="<%= c.dial_level %>"></div>
+        <div><label>Dial Mode</label>
+            <select name="dialing_mode" required>
+                <option value="preview" <%= c.dialing_mode === 'preview' ? 'selected' : '' %>>Preview</option>
+                <option value="progressive" <%= c.dialing_mode === 'progressive' ? 'selected' : '' %>>Progressive</option>
+                <option value="power" <%= c.dialing_mode === 'power' ? 'selected' : '' %>>Power</option>
+                <option value="predictive" <%= c.dialing_mode === 'predictive' ? 'selected' : '' %>>Predictive</option>
+                <option value="voice_blast" <%= c.dialing_mode === 'voice_blast' ? 'selected' : '' %>>Voice Blast</option>
+                <option value="robo_survey" <%= c.dialing_mode === 'robo_survey' ? 'selected' : '' %>>Robo Survey</option>
+            </select>
+        </div>
+        <div><label>Dial Level</label>
+            <input type="number" min="1" max="20" step="0.1"
+                   name="dial_level" value="<%= c.dial_level %>" required>
+            <small>Preview/Progressive: 1. Power: up to 5. Predictive: up to 3. Robo: integer 1–20.</small>
+        </div>
         <div><label>Start Date</label><input type="date" name="start_date" value="<%= c.start_date ? new Date(c.start_date).toISOString().slice(0,10) : '' %>"></div>
         <div><label>End Date</label><input type="date" name="end_date" value="<%= c.end_date ? new Date(c.end_date).toISOString().slice(0,10) : '' %>"></div>
         <div>

@@ -12,6 +12,7 @@ const {
     setPrefixOutboundRouteEnabled
 } = require('../src/wazoOutboundRoutingService');
 const { provisionInboundDid } = require('../src/wazoInboundRoutingService');
+const { syncIvrMenu } = require('../src/wazoIvrService');
 const trunkCredentialCrypto = require('../src/trunkCredentialCrypto');
 const phoneMasker = require('../src/phoneMasker');
 const { resolveTenantContext } = require('../src/tenantContext');
@@ -317,11 +318,11 @@ router.post('/users/create', async (req, res) => {
         }
 
         let newAgentId = null;
-        if (b.role_type === 'agent') {
+        if (['agent', 'supervisor'].includes(b.role_type)) {
             const agentRes = await client.query(
                 `INSERT INTO agents (tenant_id, user_id, caller_id, provisioning_status)
                  VALUES ($1,$2,$3,'pending') RETURNING id`,
-                [t, newUserId, callerId || null]
+                [t, newUserId, b.role_type === 'agent' ? (callerId || null) : null]
             );
             newAgentId = agentRes.rows[0].id;
         }
@@ -360,7 +361,7 @@ router.post('/users/create', async (req, res) => {
             if (mode === 'manual' && b.manual_extension) {
                 await wazoProvisioning.attachManualLine(
                     t, newAgentId, b.manual_extension,
-                    b.manual_sip_username || ('agt' + b.manual_extension),
+                    b.manual_sip_username || await wazoProvisioning.tenantSipUsername(t, b.manual_extension),
                     b.manual_sip_password || crypto.randomBytes(8).toString('hex')
                 );
             } else {
@@ -368,6 +369,18 @@ router.post('/users/create', async (req, res) => {
                 const result = await wazoProvisioning.provisionForAgent(t, newAgentId, requested);
                 if (!result.ok) {
                     await writeAuditLog(t, req.session.user.id, 'AGENT_PROVISIONING_FAILED', 'agent', newAgentId, null, result);
+                } else if (b.role_type === 'agent') {
+                    const ccResult = await wazoProvisioning.provisionWazoAgent(t, newAgentId);
+                    if (!ccResult.ok) {
+                        console.error('WAZO_CONTACT_CENTER_AGENT_PROVISIONING_FAILED', {
+                            tenant_id: t, agent_id: newAgentId, error: ccResult.error
+                        });
+                        await writeAuditLog(
+                            t, req.session.user.id,
+                            'WAZO_CONTACT_CENTER_AGENT_PROVISIONING_FAILED',
+                            'agent', newAgentId, null, ccResult
+                        );
+                    }
                 }
             }
         }
@@ -833,7 +846,7 @@ router.post('/trunks/:id/edit', async (req, res) => {
         return res.status(400).send('SIP username is required for credential authentication.');
     }
     const current = await pool.query(
-        'SELECT sip_password_enc FROM trunks WHERE id = $1 AND tenant_id = $2',
+        'SELECT sip_password_enc, is_active FROM trunks WHERE id = $1 AND tenant_id = $2',
         [req.params.id, t]
     );
     if (!current.rowCount) return res.status(404).send('Trunk not found.');
@@ -842,6 +855,21 @@ router.post('/trunks/:id/edit', async (req, res) => {
     if (authMode === 'credentials' && !passwordEnc) {
         return res.status(400).send('Enter a SIP password for this trunk.');
     }
+    // Fail closed before deactivating a trunk: disable dependent Wazo routes
+    // and mark their TECH-Life prefixes inactive before changing trunk state.
+    if (current.rows[0].is_active && b.is_active !== '1') {
+        try {
+            const prefixRouting = require('../src/wazoOutboundRoutingService');
+            await prefixRouting.deactivatePrefixesDependingOnTrunk(t, req.params.id);
+        } catch (error) {
+            console.error('[trunk deactivation] Dependent route safety check failed:', error.message);
+            return res.status(502).send(
+                'Trunk was not deactivated because dependent routes could not be made safe: ' +
+                error.message
+            );
+        }
+    }
+
     await pool.query(
         `UPDATE trunks SET name=$1, sip_server=$2, transport=$3, codec=$4, max_calls=$5,
             is_active=$6, caller_id=$7, auth_mode=$8, sip_username=$9, sip_password_enc=$10
@@ -1295,7 +1323,15 @@ router.post('/prefixes/:id/edit', async (req, res) => {
             `UPDATE prefixes
                 SET trunk_id=$1, prefix_digits=$2, route_name=$3,
                     strip_digits=$4, prepend_digits=$5, priority=$6,
-                    agent_id=$7, user_group_id=$8, campaign_id=$9
+                    agent_id=$7, user_group_id=$8, campaign_id=$9,
+                    provisioning_status = CASE
+                        WHEN $12 = 'tenant' THEN 'pending'
+                        ELSE 'failed'
+                    END,
+                    provisioning_error = CASE
+                        WHEN $12 = 'tenant' THEN NULL
+                        ELSE 'Scope-specific routing is not implemented; route remains inactive.'
+                    END
               WHERE id=$10 AND tenant_id=$11`,
             [
                 orderedTrunkIds[0], digits, routeName, strip, prepend || null,
@@ -1303,7 +1339,7 @@ router.post('/prefixes/:id/edit', async (req, res) => {
                 scopeType === 'agent' ? agentId : null,
                 scopeType === 'group' ? groupId : null,
                 scopeType === 'campaign' ? campaignId : null,
-                old.id, tenantId
+                old.id, tenantId, scopeType
             ]
         );
 
@@ -1367,9 +1403,13 @@ router.post('/prefixes/:id/activate', async (req, res) => {
         return res.status(409).send('Prefix is already active.');
     }
 
-    if (prefix.campaign_id) {
+    // Fail closed before creating or modifying any Wazo resources.
+    // Scoped routes require scope-aware Wazo runtime routing, which is
+    // not implemented yet. Keep this check in addition to the service guard.
+    if (prefix.campaign_id || prefix.agent_id || prefix.user_group_id) {
         return res.status(409).send(
-            'Campaign-scoped routing is configured but activation is blocked until campaign-specific runtime routing is implemented.'
+            'Scoped routing is not available yet. Campaign-, agent-, and ' +
+            'group-specific Wazo runtime routing must be implemented before activation.'
         );
     }
 
@@ -1521,9 +1561,10 @@ router.post('/prefixes/:id/deactivate', async (req, res) => {
 
     const prefix = found.rows[0];
 
-    // Only touch Wazo when this prefix has a dedicated pattern extension.
-    // Legacy routes without one are left untouched in Wazo.
-    if (prefix.wazo_outcall_id && prefix.wazo_pattern_extension_id) {
+    // Disable any outcall owned by this prefix, including legacy routes
+    // whose pattern-extension ID was never persisted. The service verifies
+    // tenant ownership and refuses shared outcalls before changing Wazo.
+    if (prefix.wazo_outcall_id) {
         try {
             await setPrefixOutboundRouteEnabled(prefix.id, t, false);
         } catch (error) {
@@ -1555,10 +1596,232 @@ router.post('/prefixes/:id/deactivate', async (req, res) => {
 });
 
 
+
+// ---------------- Inbound Groups ----------------
+const INBOUND_GROUP_DESTINATIONS = new Set(['queue', 'ivr', 'agent', 'extension']);
+
+async function validateInboundGroupBody(tenantId, body) {
+    const groupCode = String(body.group_code || '').trim();
+    const name = String(body.name || '').trim();
+    const type = String(body.destination_type || 'queue').trim();
+    const timeoutRaw = String(body.queue_timeout_seconds ?? '60').trim();
+    const timeout = Number(timeoutRaw);
+
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(groupCode)) {
+        throw new Error('Group code must be 1–40 letters, numbers, underscores, or hyphens.');
+    }
+    if (!name || name.length > 150) throw new Error('Group name is required (maximum 150 characters).');
+    if (!INBOUND_GROUP_DESTINATIONS.has(type)) throw new Error('Invalid inbound-group destination type.');
+    if (!/^\d+$/.test(timeoutRaw) || !Number.isInteger(timeout) || timeout < 0 || timeout > 7200) {
+        throw new Error('Queue timeout must be a whole number from 0 to 7200 seconds.');
+    }
+
+    const fields = {
+        queue: ['default_queue_id', 'queues'],
+        ivr: ['default_ivr_id', 'ivr_menus'],
+        agent: ['default_agent_id', 'agents'],
+        extension: ['default_extension', null]
+    };
+    const [field, table] = fields[type];
+    const target = String(body[field] || '').trim();
+    if (!target) throw new Error('Select a destination for the inbound group.');
+
+    if (table) {
+        const check = await pool.query(
+            `SELECT id FROM ${table}
+              WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+            [target, tenantId]
+        );
+        if (!check.rowCount) throw new Error('Destination is missing, inactive, or outside this tenant.');
+    } else {
+        const check = await pool.query(
+            `SELECT extension AS target FROM agents
+              WHERE tenant_id = $1 AND extension = $2 AND is_active = TRUE
+             UNION ALL
+             SELECT did_number AS target FROM dids
+              WHERE tenant_id = $1 AND did_number = $2 AND is_active = TRUE`,
+            [tenantId, target]
+        );
+        if (check.rowCount !== 1) {
+            throw new Error('Extension must match exactly one active agent extension or DID in this tenant.');
+        }
+    }
+
+    // Only persist documented enum values. These options are not yet a
+    // promise that the corresponding fallback is provisioned in Wazo.
+    const noAgentAction = String(body.no_agent_action || 'hangup');
+    if (!['hangup', 'voicemail', 'extension'].includes(noAgentAction)) {
+        throw new Error('Invalid no-agent action.');
+    }
+
+    return {
+        groupCode, name, type,
+        queue: type === 'queue' ? target : null,
+        ivr: type === 'ivr' ? target : null,
+        agent: type === 'agent' ? target : null,
+        extension: type === 'extension' ? target : null,
+        timeout,
+        noAgentAction,
+        welcomeMessage: String(body.welcome_message || '').trim().slice(0, 2000) || null,
+        isActive: body.is_active === undefined ? true : body.is_active === '1'
+    };
+}
+
+function inboundGroupsRedirect(req, extra = '') {
+    const params = new URLSearchParams();
+    if (req.query.as_tenant) params.set('as_tenant', String(req.query.as_tenant));
+    if (extra) params.set('edit', extra);
+    const query = params.toString();
+    return '/admin/inbound-groups' + (query ? `?${query}` : '');
+}
+
+router.get('/inbound-groups', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    const groups = (await pool.query(
+        `SELECT g.*,
+                q.name AS queue_name,
+                i.name AS ivr_name,
+                a.extension AS agent_extension
+           FROM inbound_groups g
+           LEFT JOIN queues q ON q.id = g.default_queue_id AND q.tenant_id = g.tenant_id
+           LEFT JOIN ivr_menus i ON i.id = g.default_ivr_id AND i.tenant_id = g.tenant_id
+           LEFT JOIN agents a ON a.id = g.default_agent_id AND a.tenant_id = g.tenant_id
+          WHERE g.tenant_id = $1
+          ORDER BY g.name`,
+        [t]
+    )).rows;
+    const queues = (await pool.query(
+        'SELECT id, name FROM queues WHERE tenant_id = $1 AND is_active = TRUE ORDER BY name', [t]
+    )).rows;
+    const ivrs = (await pool.query(
+        'SELECT id, name FROM ivr_menus WHERE tenant_id = $1 AND is_active = TRUE ORDER BY name', [t]
+    )).rows;
+    const agents = (await pool.query(
+        `SELECT id, extension, agent_number FROM agents
+          WHERE tenant_id = $1 AND is_active = TRUE AND extension IS NOT NULL
+          ORDER BY extension`, [t]
+    )).rows;
+    const extensions = (await pool.query(
+        `SELECT extension AS value, extension AS label FROM agents
+          WHERE tenant_id = $1 AND is_active = TRUE AND extension IS NOT NULL
+         UNION
+         SELECT did_number AS value, did_number AS label FROM dids
+          WHERE tenant_id = $1 AND is_active = TRUE
+         ORDER BY label`, [t]
+    )).rows;
+
+    res.render('admin/inbound-groups', {
+        pageTitle: 'Admin — Inbound Groups',
+        groups, queues, ivrs, agents, extensions,
+        editId: req.query.edit || null
+    });
+});
+
+router.post('/inbound-groups/create', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    try {
+        const g = await validateInboundGroupBody(t, req.body);
+        const saved = await pool.query(
+            `INSERT INTO inbound_groups
+                (tenant_id, group_code, name, destination_type,
+                 default_queue_id, default_ivr_id, default_agent_id, default_extension,
+                 queue_timeout_seconds, no_agent_action, welcome_message, is_active)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             RETURNING id`,
+            [t, g.groupCode, g.name, g.type, g.queue, g.ivr, g.agent, g.extension,
+             g.timeout, g.noAgentAction, g.welcomeMessage, g.isActive]
+        );
+        await writeAuditLog(t, req.session.user.id, 'INBOUND_GROUP_CREATED',
+            'inbound_group', saved.rows[0].id, null, {
+                group_code: g.groupCode, destination_type: g.type
+            });
+        return res.redirect(inboundGroupsRedirect(req, saved.rows[0].id));
+    } catch (error) {
+        const status = /duplicate key|unique constraint/i.test(String(error.message)) ? 409 : 400;
+        return res.status(status).send('Inbound group was not saved: ' + error.message);
+    }
+});
+
+router.post('/inbound-groups/:id/edit', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    try {
+        const g = await validateInboundGroupBody(t, req.body);
+        const result = await pool.query(
+            `UPDATE inbound_groups
+                SET group_code = $1, name = $2, destination_type = $3,
+                    default_queue_id = $4, default_ivr_id = $5,
+                    default_agent_id = $6, default_extension = $7,
+                    queue_timeout_seconds = $8, no_agent_action = $9,
+                    welcome_message = $10, is_active = $11, updated_at = now()
+              WHERE id = $12 AND tenant_id = $13
+              RETURNING id`,
+            [g.groupCode, g.name, g.type, g.queue, g.ivr, g.agent, g.extension,
+             g.timeout, g.noAgentAction, g.welcomeMessage, g.isActive,
+             req.params.id, t]
+        );
+        if (!result.rowCount) return res.status(404).send('Inbound group not found in this tenant.');
+        await writeAuditLog(t, req.session.user.id, 'INBOUND_GROUP_UPDATED',
+            'inbound_group', req.params.id, null, {
+                group_code: g.groupCode, destination_type: g.type, is_active: g.isActive
+            });
+        return res.redirect(inboundGroupsRedirect(req, req.params.id));
+    } catch (error) {
+        const status = /duplicate key|unique constraint/i.test(String(error.message)) ? 409 : 400;
+        return res.status(status).send('Inbound group was not updated: ' + error.message);
+    }
+});
+
+router.post('/inbound-groups/:id/delete', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    try {
+        const result = await pool.query(
+            'DELETE FROM inbound_groups WHERE id = $1 AND tenant_id = $2 RETURNING id',
+            [req.params.id, t]
+        );
+        if (!result.rowCount) return res.status(404).send('Inbound group not found in this tenant.');
+        await writeAuditLog(t, req.session.user.id, 'INBOUND_GROUP_DELETED',
+            'inbound_group', req.params.id);
+        return res.redirect(inboundGroupsRedirect(req));
+    } catch (error) {
+        return res.status(409).send(deleteBlockedMessage(error, 'This inbound group'));
+    }
+});
+
 // ---------------- DIDs ----------------
 const DID_DESTINATIONS = new Set(['queue', 'ivr', 'agent', 'extension']);
 
 async function validateDidTarget(t, b) {
+    const groupId = String(b.inbound_group_id || '').trim() || null;
+
+    if (groupId) {
+        const group = await pool.query(
+            `SELECT id
+               FROM inbound_groups
+              WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+            [groupId, t]
+        );
+        if (!group.rowCount) {
+            throw new Error('Inbound group is missing, inactive, or outside this tenant.');
+        }
+
+        if (b.campaign_id) {
+            const c = await pool.query(
+                'SELECT id FROM campaigns WHERE id = $1 AND tenant_id = $2',
+                [b.campaign_id, t]
+            );
+            if (!c.rowCount) throw new Error('Campaign does not belong to this tenant.');
+        }
+
+        return {
+            type: 'group',
+            groupId,
+            queue: null,
+            ivr: null,
+            agent: null,
+            extension: null
+        };
+    }
+
     const type = b.destination_type || 'queue';
     if (!DID_DESTINATIONS.has(type)) throw new Error('Invalid DID destination type.');
 
@@ -1569,24 +1832,31 @@ async function validateDidTarget(t, b) {
         extension: ['default_extension', null]
     };
     const [field, table] = fields[type];
-    const target = (b[field] || '').trim();
+    const target = String(b[field] || '').trim();
     if (!target) throw new Error('Select a destination for this DID.');
 
     if (table) {
         const check = await pool.query(
-            `SELECT id FROM ${table} WHERE id = $1 AND tenant_id = $2 AND is_active = true`,
+            `SELECT id FROM ${table}
+              WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
             [target, t]
         );
-        if (!check.rows.length) throw new Error('Destination not found, inactive, or outside this tenant.');
+        if (!check.rowCount) {
+            throw new Error('Destination not found, inactive, or outside this tenant.');
+        }
     } else {
         const check = await pool.query(
-            `SELECT id FROM agents WHERE tenant_id = $1 AND extension = $2 AND is_active = true
+            `SELECT id FROM agents
+              WHERE tenant_id = $1 AND extension = $2 AND is_active = TRUE
              UNION ALL
-             SELECT id FROM dids WHERE tenant_id = $1 AND did_number = $2 AND is_active = true
+             SELECT id FROM dids
+              WHERE tenant_id = $1 AND did_number = $2 AND is_active = TRUE
              LIMIT 1`,
             [t, target]
         );
-        if (!check.rows.length) throw new Error('Extension must belong to an active agent or DID in this tenant.');
+        if (!check.rowCount) {
+            throw new Error('Extension must belong to an active agent or DID in this tenant.');
+        }
     }
 
     if (b.campaign_id) {
@@ -1594,11 +1864,12 @@ async function validateDidTarget(t, b) {
             'SELECT id FROM campaigns WHERE id = $1 AND tenant_id = $2',
             [b.campaign_id, t]
         );
-        if (!c.rows.length) throw new Error('Campaign does not belong to this tenant.');
+        if (!c.rowCount) throw new Error('Campaign does not belong to this tenant.');
     }
 
     return {
         type,
+        groupId: null,
         queue: type === 'queue' ? target : null,
         ivr: type === 'ivr' ? target : null,
         agent: type === 'agent' ? target : null,
@@ -1610,25 +1881,27 @@ router.get('/dids', async (req, res) => {
     const t = req.effectiveTenant.id;
     const dids = (await pool.query(
         `SELECT d.*, q.name AS queue_name, c.name AS campaign_name,
-                i.name AS ivr_name, ag.extension AS agent_extension
+                i.name AS ivr_name, ag.extension AS agent_extension, ig.name AS inbound_group_name
          FROM dids d
          LEFT JOIN queues q ON q.id = d.default_queue_id AND q.tenant_id = d.tenant_id
          LEFT JOIN campaigns c ON c.id = d.campaign_id AND c.tenant_id = d.tenant_id
          LEFT JOIN ivr_menus i ON i.id = d.default_ivr_id AND i.tenant_id = d.tenant_id
          LEFT JOIN agents ag ON ag.id = d.default_agent_id AND ag.tenant_id = d.tenant_id
+         LEFT JOIN inbound_groups ig ON ig.id = d.inbound_group_id AND ig.tenant_id = d.tenant_id
          WHERE d.tenant_id = $1 ORDER BY d.did_number`, [t]
     )).rows;
     const queues = (await pool.query('SELECT id, name FROM queues WHERE tenant_id=$1 AND is_active=true ORDER BY name', [t])).rows;
     const ivrs = (await pool.query('SELECT id, name FROM ivr_menus WHERE tenant_id=$1 AND is_active=true ORDER BY name', [t])).rows;
     const agents = (await pool.query('SELECT id, extension, agent_number FROM agents WHERE tenant_id=$1 AND is_active=true AND extension IS NOT NULL ORDER BY extension', [t])).rows;
     const campaigns = (await pool.query('SELECT id, name FROM campaigns WHERE tenant_id=$1 ORDER BY name', [t])).rows;
+    const inboundGroups = (await pool.query('SELECT id, group_code, name FROM inbound_groups WHERE tenant_id=$1 AND is_active=TRUE ORDER BY name', [t])).rows;
     const extensions = (await pool.query(
         `SELECT extension AS value, extension AS label FROM agents WHERE tenant_id=$1 AND is_active=true AND extension IS NOT NULL
          UNION SELECT did_number AS value, did_number AS label FROM dids WHERE tenant_id=$1 AND is_active=true
          ORDER BY label`, [t]
     )).rows;
     res.render('admin/dids', {
-        pageTitle: 'Admin — DIDs', dids, queues, ivrs, agents, campaigns, extensions,
+        pageTitle: 'Admin — DIDs', dids, queues, ivrs, agents, campaigns, extensions, inboundGroups,
         editId: req.query.edit || null
     });
 });
@@ -1640,10 +1913,10 @@ router.post('/dids/create', async (req, res) => {
         const d = await validateDidTarget(t, b);
         const saved = await pool.query(
             `INSERT INTO dids
-             (tenant_id,did_number,description,destination_type,default_queue_id,default_ivr_id,default_agent_id,default_extension,campaign_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             (tenant_id,did_number,description,destination_type,default_queue_id,default_ivr_id,default_agent_id,default_extension,campaign_id,inbound_group_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
              RETURNING id`,
-            [t, b.did_number.trim(), b.description || null, d.type, d.queue, d.ivr, d.agent, d.extension, b.campaign_id || null]
+            [t, b.did_number.trim(), b.description || null, d.type === 'group' ? 'queue' : d.type, d.queue, d.ivr, d.agent, d.extension, b.campaign_id || null, d.groupId]
         );
         try {
             const result = await provisionInboundDid(saved.rows[0].id, t);
@@ -1671,10 +1944,10 @@ router.post('/dids/:id/edit', async (req, res) => {
         const d = await validateDidTarget(t, b);
         const result = await pool.query(
             `UPDATE dids SET description=$1,destination_type=$2,default_queue_id=$3,default_ivr_id=$4,
-             default_agent_id=$5,default_extension=$6,campaign_id=$7,is_active=$8
-             WHERE id=$9 AND tenant_id=$10`,
-            [b.description || null, d.type, d.queue, d.ivr, d.agent, d.extension,
-             b.campaign_id || null, b.is_active === '1', req.params.id, t]
+             default_agent_id=$5,default_extension=$6,campaign_id=$7,is_active=$8,inbound_group_id=$9
+             WHERE id=$10 AND tenant_id=$11`,
+            [b.description || null, d.type === 'group' ? 'queue' : d.type, d.queue, d.ivr, d.agent, d.extension,
+             b.campaign_id || null, b.is_active === '1', d.groupId, req.params.id, t]
         );
         if (!result.rowCount) return res.status(404).send('DID not found in this tenant.');
         try {
@@ -1707,6 +1980,98 @@ router.post('/dids/:id/delete', async (req, res) => {
     }
 });
 
+
+const CAMPAIGN_DIAL_MODE_LIMITS = Object.freeze({
+    preview:      { min: 1, max: 1, integer: false },
+    progressive:  { min: 1, max: 1, integer: false },
+    power:        { min: 1, max: 5, integer: false },
+    predictive:   { min: 1, max: 3, integer: false },
+    voice_blast:  { min: 1, max: 20, integer: true },
+    robo_survey:  { min: 1, max: 20, integer: true }
+});
+
+function parseCampaignDialConfig(body) {
+    const name = String(body.name || '').trim();
+    const mode = String(body.dialing_mode || '').trim();
+    const limits = CAMPAIGN_DIAL_MODE_LIMITS[mode];
+
+    if (!name || name.length > 120) {
+        return { error: 'Campaign name is required and must not exceed 120 characters.' };
+    }
+    if (!limits) {
+        return { error: 'Select a valid campaign dialing mode.' };
+    }
+
+    const rawLevel = String(body.dial_level ?? '1').trim();
+    const dialLevel = Number(rawLevel);
+
+    if (
+        !Number.isFinite(dialLevel) ||
+        dialLevel < limits.min ||
+        dialLevel > limits.max ||
+        Math.abs(dialLevel * 10 - Math.round(dialLevel * 10)) > 1e-8 ||
+        (limits.integer && !Number.isInteger(dialLevel))
+    ) {
+        return {
+            error: `Dial Level for ${mode} must be ${limits.integer ? 'an integer ' : ''}between ${limits.min} and ${limits.max}.`
+        };
+    }
+
+    const startDate = String(body.start_date || '').trim() || null;
+    const endDate = String(body.end_date || '').trim() || null;
+
+    const validDate = value => !value || (
+        /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+        !Number.isNaN(Date.parse(value + 'T00:00:00Z')) &&
+        new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value
+    );
+
+    if (
+        !validDate(startDate) ||
+        !validDate(endDate) ||
+        (startDate && endDate && startDate > endDate)
+    ) {
+        return { error: 'Choose valid campaign dates in chronological order.' };
+    }
+
+    const callerId = String(body.caller_id || '').trim();
+    if (callerId && (callerId.length > 30 || !/^[+0-9*#]+$/.test(callerId))) {
+        return {
+            error: 'Campaign CLI must be up to 30 characters and contain only digits, +, * or #.'
+        };
+    }
+
+    const isRobo = mode === 'voice_blast' || mode === 'robo_survey';
+    const rawConcurrent = String(body.max_concurrent_robo_calls || '').trim();
+    let maxConcurrent = null;
+
+    if (isRobo && rawConcurrent) {
+        maxConcurrent = Number(rawConcurrent);
+        if (
+            !Number.isInteger(maxConcurrent) ||
+            maxConcurrent < 1 ||
+            maxConcurrent > 100
+        ) {
+            return { error: 'Maximum concurrent Robo calls must be an integer from 1 to 100.' };
+        }
+    }
+
+    return {
+        value: {
+            name,
+            mode,
+            dialLevel,
+            isRobo,
+            maxConcurrent,
+            amd: isRobo && body.amd === 'on',
+            startDate,
+            endDate,
+            callerId: callerId || null,
+            trunkId: String(body.trunk_id || '').trim() || null
+        }
+    };
+}
+
 // ---------------- Campaigns (incl. robo/voice-blast script builder) ----------------
 router.get('/campaigns', async (req, res) => {
     const t = req.effectiveTenant.id;
@@ -1715,75 +2080,323 @@ router.get('/campaigns', async (req, res) => {
         'SELECT id, name, sip_server, caller_id FROM trunks WHERE tenant_id = $1 AND is_active = TRUE ORDER BY name',
         [t]
     )).rows;
+    // Only genuine agent-role profiles with a complete Wazo identity
+    // are assignable. A supervisor profile alone is never sufficient.
+    const eligibleAgents = (await pool.query(
+        `SELECT a.id, a.agent_number, a.extension,
+                a.wazo_agent_id, a.wazo_extension_id,
+                COALESCE(NULLIF(u.full_name, ''), u.username, a.agent_number) AS display_name
+           FROM agents a
+           JOIN users u
+             ON u.id = a.user_id AND u.tenant_id = a.tenant_id
+          WHERE a.tenant_id = $1
+            AND a.is_active = TRUE
+            AND u.is_active = TRUE
+            AND a.provisioning_status = 'provisioned'
+            AND a.wazo_agent_id IS NOT NULL
+            AND a.wazo_extension_id IS NOT NULL
+            AND u.wazo_user_uuid IS NOT NULL
+            AND EXISTS (
+                SELECT 1
+                  FROM user_roles ur
+                  JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = u.id
+                   AND r.role_type::text = 'agent'
+            )
+          ORDER BY display_name, a.agent_number`,
+        [t]
+    )).rows;
+
+    const assignmentRows = (await pool.query(
+        `SELECT campaign_id, agent_id
+           FROM campaign_agents
+          WHERE tenant_id = $1`,
+        [t]
+    )).rows;
+
+    const assignmentMap = {};
+    for (const row of assignmentRows) {
+        if (!assignmentMap[row.campaign_id]) assignmentMap[row.campaign_id] = [];
+        assignmentMap[row.campaign_id].push(row.agent_id);
+    }
+
+    const assignId = req.query.assign || null;
+    const assignedAgentIds = assignId ? (assignmentMap[assignId] || []) : [];
+
     const scriptCampaignId = req.query.script || null;
     let scriptNodes = [];
     if (scriptCampaignId) {
         scriptNodes = (await pool.query('SELECT * FROM campaign_voice_content WHERE campaign_id = $1 ORDER BY step_number', [scriptCampaignId])).rows;
     }
-    res.render('admin/campaigns', { pageTitle: 'Admin — Campaigns', campaigns, trunks, scriptCampaignId, scriptNodes, editId: req.query.edit || null });
+    res.render('admin/campaigns', {
+        pageTitle: 'Admin — Campaigns',
+        campaigns, trunks, scriptCampaignId, scriptNodes,
+        editId: req.query.edit || null,
+        eligibleAgents, assignId, assignedAgentIds
+    });
 });
 
-router.post('/campaigns/create', async (req, res) => {
+router.post('/campaigns/create', async (req, res, next) => {
     const t = req.effectiveTenant.id;
-    const b = req.body;
-    const callerId = String(b.caller_id || '').trim();
-    const trunkId = String(b.trunk_id || '').trim() || null;
+    const parsed = parseCampaignDialConfig(req.body || {});
+    if (parsed.error) return res.status(400).send(parsed.error);
 
-    if (callerId && (callerId.length > 30 || !/^[+0-9*#]+$/.test(callerId))) {
-        return res.status(400).send('Campaign CLI must be up to 30 characters and contain only digits, +, * or #.');
-    }
-    if (trunkId) {
-        const tr = await pool.query(
-            'SELECT id FROM trunks WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE',
-            [trunkId, t]
+    const c = parsed.value;
+
+    try {
+        if (c.trunkId) {
+            const tr = await pool.query(
+                `SELECT id FROM trunks
+                  WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+                [c.trunkId, t]
+            );
+            if (!tr.rowCount) {
+                return res.status(400).send('Selected trunk is invalid or inactive for this tenant.');
+            }
+        }
+
+        // New campaigns stay disabled until leads, agents and routing
+        // have been configured and independently verified.
+        const result = await pool.query(
+            `INSERT INTO campaigns
+                (tenant_id, name, channel, dialing_mode, dial_level,
+                 is_robo_campaign, max_concurrent_robo_calls,
+                 answering_machine_detection, start_date, end_date,
+                 caller_id, trunk_id, is_active)
+             VALUES ($1,$2,'voice',$3,$4,$5,$6,$7,$8,$9,$10,$11,FALSE)
+             RETURNING id`,
+            [
+                t, c.name, c.mode, c.dialLevel, c.isRobo,
+                c.maxConcurrent, c.amd, c.startDate, c.endDate,
+                c.callerId, c.trunkId
+            ]
         );
-        if (!tr.rowCount) return res.status(400).send('Selected trunk is invalid or inactive for this tenant.');
-    }
 
-    const isRobo = ['robo_survey', 'voice_blast'].includes(b.dialing_mode);
-    const result = await pool.query(
-        `INSERT INTO campaigns
-            (tenant_id, name, channel, dialing_mode, dial_level, is_robo_campaign,
-             max_concurrent_robo_calls, answering_machine_detection, start_date, end_date,
-             caller_id, trunk_id)
-         VALUES ($1,$2,'voice',$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-        [t, b.name, b.dialing_mode, b.dial_level || 1.0, isRobo,
-         b.max_concurrent_robo_calls || null, !!b.amd, b.start_date || null, b.end_date || null,
-         callerId || null, trunkId]
-    );
-    const campaignId = result.rows[0].id;
-    await writeAuditLog(t, req.session.user.id, 'CAMPAIGN_CREATED', 'campaign', campaignId, null, b);
-    res.redirect(`/admin/campaigns?script=${campaignId}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+        const campaignId = result.rows[0].id;
+        await writeAuditLog(
+            t, req.session.user.id, 'CAMPAIGN_CREATED',
+            'campaign', campaignId, null, c
+        );
+
+        return res.redirect(
+            `/admin/campaigns?script=${campaignId}` +
+            (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : '')
+        );
+    } catch (err) {
+        next(err);
+    }
 });
 
-router.post('/campaigns/:id/edit', async (req, res) => {
+router.post('/campaigns/:id/edit', async (req, res, next) => {
     const t = req.effectiveTenant.id;
-    const b = req.body;
-    const callerId = String(b.caller_id || '').trim();
-    const trunkId = String(b.trunk_id || '').trim() || null;
+    const parsed = parseCampaignDialConfig(req.body || {});
+    if (parsed.error) return res.status(400).send(parsed.error);
 
-    if (callerId && (callerId.length > 30 || !/^[+0-9*#]+$/.test(callerId))) {
-        return res.status(400).send('Campaign CLI must be up to 30 characters and contain only digits, +, * or #.');
-    }
-    if (trunkId) {
-        const tr = await pool.query(
-            'SELECT id FROM trunks WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE',
-            [trunkId, t]
+    const c = parsed.value;
+
+    try {
+        const currentResult = await pool.query(
+            `SELECT c.dialing_mode, c.is_active,
+                    EXISTS (
+                        SELECT 1 FROM leads l
+                         WHERE l.tenant_id = c.tenant_id
+                           AND l.campaign_id = c.id
+                    ) AS has_leads,
+                    EXISTS (
+                        SELECT 1 FROM calls ca
+                         WHERE ca.tenant_id = c.tenant_id
+                           AND ca.campaign_id = c.id
+                    ) AS has_calls
+               FROM campaigns c
+              WHERE c.id = $1 AND c.tenant_id = $2`,
+            [req.params.id, t]
         );
-        if (!tr.rowCount) return res.status(400).send('Selected trunk is invalid or inactive for this tenant.');
+
+        const current = currentResult.rows[0];
+        if (!current) return res.status(404).send('Campaign not found.');
+
+        const modeChanged = current.dialing_mode !== c.mode;
+        if (
+            modeChanged &&
+            (current.is_active || current.has_leads || current.has_calls)
+        ) {
+            return res.status(409).send(
+                'Disable the campaign first. Dialing mode can only be changed before leads or calls have been added.'
+            );
+        }
+
+        if (c.trunkId) {
+            const tr = await pool.query(
+                `SELECT id FROM trunks
+                  WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+                [c.trunkId, t]
+            );
+            if (!tr.rowCount) {
+                return res.status(400).send('Selected trunk is invalid or inactive for this tenant.');
+            }
+        }
+
+        await pool.query(
+            `UPDATE campaigns
+                SET name = $1,
+                    dialing_mode = $2,
+                    is_robo_campaign = $3,
+                    dial_level = $4,
+                    max_concurrent_robo_calls = $5,
+                    answering_machine_detection = $6,
+                    start_date = $7,
+                    end_date = $8,
+                    is_active = $9,
+                    caller_id = $10,
+                    trunk_id = $11
+              WHERE id = $12 AND tenant_id = $13`,
+            [
+                c.name, c.mode, c.isRobo, c.dialLevel,
+                c.maxConcurrent, c.amd, c.startDate, c.endDate,
+                req.body.is_active === '1',
+                c.callerId, c.trunkId, req.params.id, t
+            ]
+        );
+
+        await writeAuditLog(
+            t, req.session.user.id, 'CAMPAIGN_UPDATED',
+            'campaign', req.params.id, null, c
+        );
+
+        return res.redirect(
+            '/admin/campaigns' +
+            (req.query.as_tenant ? `?as_tenant=${req.query.as_tenant}` : '')
+        );
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/campaigns/:id/agents', async (req, res, next) => {
+    const tenantId = req.effectiveTenant.id;
+    const rawIds = req.body?.agent_ids;
+    const ids = [...new Set(
+        (Array.isArray(rawIds) ? rawIds : rawIds ? [rawIds] : [])
+            .map(value => String(value).trim())
+    )];
+
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    if (ids.length > 200 || ids.some(id => !uuidPattern.test(id))) {
+        return res.status(400).send('Invalid agent selection.');
     }
 
-    await pool.query(
-        `UPDATE campaigns SET name = $1, dial_level = $2, max_concurrent_robo_calls = $3,
-            answering_machine_detection = $4, start_date = $5, end_date = $6, is_active = $7,
-            caller_id = $8, trunk_id = $9
-         WHERE id = $10 AND tenant_id = $11`,
-        [b.name, b.dial_level || 1.0, b.max_concurrent_robo_calls || null, !!b.amd,
-         b.start_date || null, b.end_date || null, b.is_active === '1',
-         callerId || null, trunkId, req.params.id, t]
-    );
-    await writeAuditLog(t, req.session.user.id, 'CAMPAIGN_UPDATED', 'campaign', req.params.id, null, b);
-    res.redirect('/admin/campaigns' + (req.query.as_tenant ? `?as_tenant=${req.query.as_tenant}` : ''));
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const campaignResult = await client.query(
+            `SELECT id, is_active
+               FROM campaigns
+              WHERE id = $1 AND tenant_id = $2
+              FOR UPDATE`,
+            [req.params.id, tenantId]
+        );
+
+        const campaign = campaignResult.rows[0];
+        if (!campaign) {
+            await client.query('ROLLBACK');
+            return res.status(404).send('Campaign not found for this tenant.');
+        }
+
+        if (campaign.is_active) {
+            await client.query('ROLLBACK');
+            return res.status(409).send(
+                'Disable this campaign before changing its agent assignments.'
+            );
+        }
+
+        const activeCalls = await client.query(
+            `SELECT 1 FROM calls
+              WHERE tenant_id = $1 AND campaign_id = $2
+                AND status IN ('ringing', 'answered')
+                AND end_time IS NULL
+              LIMIT 1`,
+            [tenantId, campaign.id]
+        );
+
+        if (activeCalls.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).send(
+                'Agent assignments cannot change while campaign calls are active.'
+            );
+        }
+
+        if (ids.length) {
+            const valid = await client.query(
+                `SELECT a.id
+                   FROM agents a
+                   JOIN users u
+                     ON u.id = a.user_id AND u.tenant_id = a.tenant_id
+                  WHERE a.tenant_id = $1
+                    AND a.id = ANY($2::uuid[])
+                    AND a.is_active = TRUE
+                    AND u.is_active = TRUE
+                    AND a.provisioning_status = 'provisioned'
+                    AND a.wazo_agent_id IS NOT NULL
+                    AND a.wazo_extension_id IS NOT NULL
+                    AND u.wazo_user_uuid IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1
+                          FROM user_roles ur
+                          JOIN roles r ON r.id = ur.role_id
+                         WHERE ur.user_id = u.id
+                           AND r.role_type::text = 'agent'
+                    )`,
+                [tenantId, ids]
+            );
+
+            if (valid.rowCount !== ids.length) {
+                await client.query('ROLLBACK');
+                return res.status(422).send(
+                    'One or more selected agents are inactive, unprovisioned, outside this tenant, or do not have the agent role.'
+                );
+            }
+        }
+
+        await client.query(
+            `DELETE FROM campaign_agents
+              WHERE tenant_id = $1 AND campaign_id = $2`,
+            [tenantId, campaign.id]
+        );
+
+        for (const agentId of ids) {
+            await client.query(
+                `INSERT INTO campaign_agents (tenant_id, campaign_id, agent_id)
+                 VALUES ($1, $2, $3)`,
+                [tenantId, campaign.id, agentId]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        await writeAuditLog(
+            tenantId,
+            req.session.user.id,
+            'CAMPAIGN_AGENTS_UPDATED',
+            'campaign',
+            campaign.id,
+            null,
+            { assigned_agent_ids: ids }
+        );
+
+        return res.redirect(
+            `/admin/campaigns?assign=${campaign.id}` +
+            (req.query.as_tenant
+                ? `&as_tenant=${encodeURIComponent(req.query.as_tenant)}`
+                : '')
+        );
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return next(err);
+    } finally {
+        client.release();
+    }
 });
 
 router.post('/campaigns/:id/delete', async (req, res) => {
@@ -1830,6 +2443,973 @@ router.post('/campaigns/add-voice-node', (req, res, next) => {
          !!b.expects_response, b.response_type || null, b.valid_dtmf_options || null, b.max_response_seconds || 5]
     );
     res.redirect(`/admin/campaigns?script=${b.campaign_id}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+});
+
+
+
+
+// ---------------- DNC Management ----------------
+router.get('/dnc', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+        const q = String(req.query.q || '').trim().slice(0, 120);
+
+        const [entriesResult, campaignsResult] = await Promise.all([
+            pool.query(
+                `SELECT d.id, d.phone_number, d.campaign_id, d.reason,
+                        d.created_at,
+                        c.name AS campaign_name,
+                        COALESCE(NULLIF(u.full_name, ''), u.username, 'Admin') AS created_by_name
+                   FROM do_not_call_entries d
+                   LEFT JOIN campaigns c
+                     ON c.id = d.campaign_id AND c.tenant_id = d.tenant_id
+                   LEFT JOIN users u
+                     ON u.id = d.created_by AND u.tenant_id = d.tenant_id
+                  WHERE d.tenant_id = $1
+                    AND ($2 = ''
+                      OR d.phone_number ILIKE '%' || $2 || '%'
+                      OR COALESCE(d.reason, '') ILIKE '%' || $2 || '%'
+                      OR COALESCE(c.name, '') ILIKE '%' || $2 || '%')
+                  ORDER BY d.created_at DESC
+                  LIMIT 500`,
+                [t, q]
+            ),
+            pool.query(
+                `SELECT id, name
+                   FROM campaigns
+                  WHERE tenant_id = $1
+                  ORDER BY name`,
+                [t]
+            )
+        ]);
+
+        res.render('admin/dnc', {
+            pageTitle: 'Admin — DNC Management',
+            entries: entriesResult.rows,
+            campaigns: campaignsResult.rows,
+            q,
+            error: req.query.error || null,
+            saved: req.query.saved === '1'
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/dnc/create', async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    const phone = String(req.body.phone_number || '').replace(/\D/g, '');
+    const scope = String(req.body.scope || 'tenant');
+    const reason = String(req.body.reason || '').trim().slice(0, 100);
+    const rawCampaignId = String(req.body.campaign_id || '').trim();
+
+    if (phone.length < 7 || phone.length > 15) {
+        return res.status(400).send('Enter a valid phone number with 7–15 digits.');
+    }
+    if (!['tenant', 'campaign'].includes(scope)) {
+        return res.status(400).send('Invalid DNC scope.');
+    }
+
+    let campaignId = null;
+    if (scope === 'campaign') {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCampaignId)) {
+            return res.status(400).send('Select a valid campaign.');
+        }
+        const validCampaign = await pool.query(
+            'SELECT 1 FROM campaigns WHERE tenant_id = $1 AND id = $2',
+            [t, rawCampaignId]
+        );
+        if (!validCampaign.rowCount) {
+            return res.status(400).send('Campaign not found for this tenant.');
+        }
+        campaignId = rawCampaignId;
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO do_not_call_entries
+                (tenant_id, phone_number, campaign_id, reason, created_by)
+             VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT DO NOTHING
+             RETURNING id`,
+            [t, phone, campaignId, reason || null, u.id]
+        );
+
+        if (!result.rowCount) {
+            return res.redirect('/admin/dnc?error=duplicate');
+        }
+
+        await writeAuditLog(
+            t, u.id, 'DNC_ENTRY_CREATED', 'do_not_call_entry',
+            result.rows[0].id, null,
+            { scope, campaign_id: campaignId, reason: reason || null }
+        );
+
+        return res.redirect('/admin/dnc?saved=1');
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/dnc/:id/delete', async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    const id = String(req.params.id || '');
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return res.status(400).send('Invalid DNC entry ID.');
+    }
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM do_not_call_entries
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, campaign_id, reason`,
+            [t, id]
+        );
+        if (!result.rowCount) return res.status(404).send('DNC entry not found.');
+
+        await writeAuditLog(
+            t, u.id, 'DNC_ENTRY_DELETED', 'do_not_call_entry',
+            id, { campaign_id: result.rows[0].campaign_id, reason: result.rows[0].reason }, null
+        );
+
+        return res.redirect('/admin/dnc?saved=1');
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ---------------- Robo-Agents ----------------
+router.get('/robo-agents', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+
+        const [campaignsResult, trunksResult, responsesResult] = await Promise.all([
+            pool.query(
+                `SELECT c.id, c.name, c.dialing_mode, c.dial_level,
+                        c.is_active, c.caller_id, c.trunk_id,
+                        c.max_concurrent_robo_calls, c.answering_machine_detection,
+                        c.start_date, c.end_date, c.created_at,
+                        (SELECT COUNT(*)::int FROM leads l
+                          WHERE l.tenant_id = c.tenant_id AND l.campaign_id = c.id) AS lead_count,
+                        (SELECT COUNT(*)::int FROM calls ca
+                          WHERE ca.tenant_id = c.tenant_id AND ca.campaign_id = c.id) AS call_count,
+                        (SELECT COUNT(*)::int FROM calls ca
+                          WHERE ca.tenant_id = c.tenant_id AND ca.campaign_id = c.id
+                            AND ca.answer_time IS NOT NULL) AS answered_count,
+                        (SELECT COUNT(*)::int FROM survey_responses sr
+                          WHERE sr.tenant_id = c.tenant_id AND sr.campaign_id = c.id) AS response_count
+                   FROM campaigns c
+                  WHERE c.tenant_id = $1
+                    AND c.is_robo_campaign = TRUE
+                    AND c.dialing_mode IN ('robo_survey','voice_blast')
+                  ORDER BY c.created_at DESC`,
+                [t]
+            ),
+            pool.query(
+                `SELECT id, name, sip_server
+                   FROM trunks
+                  WHERE tenant_id = $1 AND is_active = TRUE
+                  ORDER BY name`,
+                [t]
+            ),
+            pool.query(
+                `SELECT c.id AS campaign_id, c.name AS campaign_name,
+                        sr.node_name,
+                        COALESCE(NULLIF(sr.response_dtmf::text, ''), '(no DTMF)') AS response_dtmf,
+                        COUNT(*)::int AS response_count,
+                        MAX(sr.responded_at) AS last_response
+                   FROM survey_responses sr
+                   JOIN campaigns c
+                     ON c.id = sr.campaign_id AND c.tenant_id = sr.tenant_id
+                  WHERE sr.tenant_id = $1 AND c.is_robo_campaign = TRUE
+                  GROUP BY c.id, c.name, sr.node_name, sr.response_dtmf
+                  ORDER BY MAX(sr.responded_at) DESC NULLS LAST
+                  LIMIT 100`,
+                [t]
+            )
+        ]);
+
+        res.render('admin/robo_agents', {
+            pageTitle: 'Admin — Robo-Agents',
+            campaigns: campaignsResult.rows,
+            trunks: trunksResult.rows,
+            responses: responsesResult.rows,
+            created: req.query.created === '1'
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/robo-agents/create', async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    const name = String(req.body.name || '').trim().slice(0, 120);
+    const mode = String(req.body.dialing_mode || '');
+    const callerId = String(req.body.caller_id || '').trim();
+    const trunkId = String(req.body.trunk_id || '').trim() || null;
+
+    if (!name || !['robo_survey', 'voice_blast'].includes(mode)) {
+        return res.status(400).send('Enter a name and select a valid Robo campaign type.');
+    }
+    if (callerId && (callerId.length > 30 || !/^[+0-9*#]+$/.test(callerId))) {
+        return res.status(400).send('Caller ID must contain only digits, +, * or #, up to 30 characters.');
+    }
+
+    const dialLevel = Number(req.body.dial_level || 1);
+    if (!Number.isFinite(dialLevel) || dialLevel < 0.1 || dialLevel > 100) {
+        return res.status(400).send('Dial level must be between 0.1 and 100.');
+    }
+
+    const rawConcurrent = String(req.body.max_concurrent_robo_calls || '').trim();
+    let maxConcurrent = null;
+    if (rawConcurrent) {
+        maxConcurrent = Number(rawConcurrent);
+        if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 100) {
+            return res.status(400).send('Maximum concurrent calls must be an integer from 1 to 100.');
+        }
+    }
+
+    const startDate = String(req.body.start_date || '').trim() || null;
+    const endDate = String(req.body.end_date || '').trim() || null;
+    const validDate = value => !value || (
+        /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+        !Number.isNaN(Date.parse(value + 'T00:00:00Z')) &&
+        new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value
+    );
+
+    if (!validDate(startDate) || !validDate(endDate) ||
+        (startDate && endDate && startDate > endDate)) {
+        return res.status(400).send('Choose valid campaign dates in chronological order.');
+    }
+
+    try {
+        if (trunkId) {
+            const trunk = await pool.query(
+                `SELECT 1 FROM trunks
+                  WHERE tenant_id = $1 AND id = $2 AND is_active = TRUE`,
+                [t, trunkId]
+            );
+            if (!trunk.rowCount) {
+                return res.status(400).send('Selected trunk is invalid or inactive for this tenant.');
+            }
+        }
+
+        // Create disabled: creating the configuration must never launch outbound calls.
+        const result = await pool.query(
+            `INSERT INTO campaigns
+                (tenant_id, name, channel, dialing_mode, dial_level, is_robo_campaign,
+                 max_concurrent_robo_calls, answering_machine_detection, start_date,
+                 end_date, caller_id, trunk_id, is_active)
+             VALUES ($1,$2,'voice',$3,$4,TRUE,$5,$6,$7,$8,$9,$10,FALSE)
+             RETURNING id`,
+            [t, name, mode, dialLevel, maxConcurrent, req.body.amd === 'on',
+             startDate, endDate, callerId || null, trunkId]
+        );
+
+        await writeAuditLog(
+            t, u.id, 'ROBO_CAMPAIGN_CREATED', 'campaign',
+            result.rows[0].id, null,
+            { name, dialing_mode: mode, is_active: false, trunk_id: trunkId }
+        );
+
+        return res.redirect('/admin/robo-agents?created=1');
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ---------------- Callback Management ----------------
+const callbackManagementStatuses = [
+    'scheduled', 'claimed', 'dialing', 'completed', 'cancelled', 'failed'
+];
+const callbackAdminStatuses = [
+    'scheduled', 'completed', 'cancelled', 'failed'
+];
+
+router.get('/callbacks', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+        const statusOptions = ['all', ...callbackManagementStatuses];
+        const viewOptions = ['all', 'overdue', 'upcoming'];
+        const status = statusOptions.includes(String(req.query.status || ''))
+            ? String(req.query.status || 'all') : 'all';
+        const view = viewOptions.includes(String(req.query.view || ''))
+            ? String(req.query.view || 'all') : 'all';
+
+        const [callbacksResult, agentsResult, countsResult] = await Promise.all([
+            pool.query(
+                `SELECT cb.id, cb.agent_id, cb.call_id, cb.lead_id, cb.campaign_id,
+                        cb.phone_number, cb.due_at, cb.status, cb.notes,
+                        cb.claimed_at, cb.completed_at, cb.created_at, cb.updated_at,
+                        ag.extension,
+                        COALESCE(NULLIF(u.full_name, ''), u.username, ag.extension, 'Agent') AS agent_name,
+                        c.name AS campaign_name,
+                        ca.direction AS call_direction, ca.status AS call_status
+                   FROM agent_callbacks cb
+                   JOIN agents ag
+                     ON ag.id = cb.agent_id AND ag.tenant_id = cb.tenant_id
+                   JOIN users u
+                     ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+                   LEFT JOIN campaigns c
+                     ON c.id = cb.campaign_id AND c.tenant_id = cb.tenant_id
+                   LEFT JOIN calls ca
+                     ON ca.id = cb.call_id AND ca.tenant_id = cb.tenant_id
+                  WHERE cb.tenant_id = $1
+                    AND ($2::text = 'all' OR cb.status::text = $2::text)
+                    AND (
+                        $3::text = 'all'
+                        OR ($3::text = 'overdue' AND cb.status = 'scheduled' AND cb.due_at < now())
+                        OR ($3::text = 'upcoming' AND cb.status = 'scheduled' AND cb.due_at >= now())
+                    )
+                  ORDER BY
+                    CASE
+                      WHEN cb.status = 'scheduled' AND cb.due_at < now() THEN 0
+                      WHEN cb.status = 'scheduled' THEN 1
+                      ELSE 2
+                    END,
+                    cb.due_at ASC
+                  LIMIT 500`,
+                [t, status, view]
+            ),
+            pool.query(
+                `SELECT ag.id, ag.extension,
+                        COALESCE(NULLIF(u.full_name, ''), u.username, ag.extension, 'Agent') AS agent_name
+                   FROM agents ag
+                   JOIN users u ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+                  WHERE ag.tenant_id = $1
+                  ORDER BY agent_name, ag.extension`,
+                [t]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS total,
+                        COUNT(*) FILTER (WHERE status = 'scheduled')::int AS scheduled,
+                        COUNT(*) FILTER (
+                            WHERE status = 'scheduled' AND due_at < now()
+                        )::int AS overdue,
+                        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+                        COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+                        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+                   FROM agent_callbacks
+                  WHERE tenant_id = $1`,
+                [t]
+            )
+        ]);
+
+        res.render('admin/callbacks', {
+            pageTitle: 'Admin — Callback Management',
+            callbacks: callbacksResult.rows,
+            agents: agentsResult.rows,
+            counts: countsResult.rows[0],
+            status, view,
+            updated: req.query.updated === '1'
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/callbacks/:id/update', async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    const callbackId = String(req.params.id || '');
+    const action = String(req.body.action || '');
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(callbackId)) {
+        return res.status(400).send('Invalid callback ID.');
+    }
+
+    try {
+        const oldResult = await pool.query(
+            `SELECT id, agent_id, due_at, status, notes
+               FROM agent_callbacks
+              WHERE tenant_id = $1 AND id = $2`,
+            [t, callbackId]
+        );
+        const oldCallback = oldResult.rows[0];
+        if (!oldCallback) return res.status(404).send('Callback not found.');
+
+        let changed;
+        let newValues;
+
+        if (action === 'status') {
+            const status = String(req.body.status || '');
+            if (!callbackAdminStatuses.includes(status)) {
+                return res.status(400).send('Invalid callback status.');
+            }
+
+            changed = await pool.query(
+                `UPDATE agent_callbacks
+                    SET status = $3,
+                        claimed_at = CASE WHEN $3 = 'scheduled' THEN NULL ELSE claimed_at END,
+                        completed_at = CASE
+                            WHEN $3 = 'completed' THEN COALESCE(completed_at, now())
+                            WHEN $3 IN ('scheduled', 'cancelled', 'failed') THEN NULL
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                  WHERE tenant_id = $1 AND id = $2
+                  RETURNING id, agent_id, due_at, status, notes`,
+                [t, callbackId, status]
+            );
+            newValues = changed.rows[0];
+        } else if (action === 'reschedule') {
+            const dueAt = typeof req.body.due_at === 'string'
+                ? new Date(req.body.due_at) : null;
+            if (!dueAt || Number.isNaN(dueAt.getTime()) || dueAt <= new Date()) {
+                return res.status(400).send('Choose a valid future callback date and time.');
+            }
+
+            const notes = typeof req.body.notes === 'string'
+                ? req.body.notes.trim().slice(0, 4000) : '';
+
+            changed = await pool.query(
+                `UPDATE agent_callbacks
+                    SET due_at = $3,
+                        status = 'scheduled',
+                        claimed_at = NULL,
+                        completed_at = NULL,
+                        notes = COALESCE(NULLIF($4, ''), notes),
+                        updated_at = now()
+                  WHERE tenant_id = $1 AND id = $2
+                  RETURNING id, agent_id, due_at, status, notes`,
+                [t, callbackId, dueAt.toISOString(), notes]
+            );
+            newValues = changed.rows[0];
+        } else if (action === 'reassign') {
+            const agentId = String(req.body.agent_id || '');
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId)) {
+                return res.status(400).send('Select a valid agent.');
+            }
+
+            const validAgent = await pool.query(
+                `SELECT 1 FROM agents WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
+                [t, agentId]
+            );
+            if (!validAgent.rowCount) {
+                return res.status(400).send('Selected agent does not belong to this tenant.');
+            }
+
+            changed = await pool.query(
+                `UPDATE agent_callbacks
+                    SET agent_id = $3, updated_at = now()
+                  WHERE tenant_id = $1 AND id = $2
+                  RETURNING id, agent_id, due_at, status, notes`,
+                [t, callbackId, agentId]
+            );
+            newValues = changed.rows[0];
+        } else if (action === 'notes') {
+            const notes = typeof req.body.notes === 'string'
+                ? req.body.notes.trim().slice(0, 4000) : '';
+
+            changed = await pool.query(
+                `UPDATE agent_callbacks
+                    SET notes = NULLIF($3, ''), updated_at = now()
+                  WHERE tenant_id = $1 AND id = $2
+                  RETURNING id, agent_id, due_at, status, notes`,
+                [t, callbackId, notes]
+            );
+            newValues = changed.rows[0];
+        } else {
+            return res.status(400).send('Unsupported callback action.');
+        }
+
+        if (!changed || !changed.rowCount) {
+            return res.status(404).send('Callback not found.');
+        }
+
+        try {
+            await writeAuditLog(
+                t, u.id, 'CALLBACK_ADMIN_UPDATED', 'agent_callback',
+                callbackId,
+                {
+                    agent_id: oldCallback.agent_id,
+                    due_at: oldCallback.due_at,
+                    status: oldCallback.status,
+                    notes: oldCallback.notes
+                },
+                {
+                    action,
+                    agent_id: newValues.agent_id,
+                    due_at: newValues.due_at,
+                    status: newValues.status,
+                    notes: newValues.notes
+                }
+            );
+        } catch (auditErr) {
+            console.error('Callback audit log failed:', auditErr.message);
+        }
+
+        return res.redirect('/admin/callbacks?updated=1');
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ---------------- List Management ----------------
+router.get('/lists', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+        const [listsResult, campaignsResult] = await Promise.all([
+            pool.query(
+                `SELECT l.*, c.name AS campaign_name,
+                        COUNT(m.id) FILTER (
+                            WHERE m.membership_status = 'active'
+                        )::int AS member_count
+                   FROM contact_lists l
+                   LEFT JOIN campaigns c
+                     ON c.id = l.campaign_id AND c.tenant_id = l.tenant_id
+                   LEFT JOIN contact_list_members m
+                     ON m.list_id = l.id AND m.tenant_id = l.tenant_id
+                  WHERE l.tenant_id = $1
+                  GROUP BY l.id, c.name
+                  ORDER BY l.list_type, l.is_default DESC, l.name`,
+                [t]
+            ),
+            pool.query(
+                `SELECT id, name, is_active
+                   FROM campaigns
+                  WHERE tenant_id = $1
+                  ORDER BY name`,
+                [t]
+            )
+        ]);
+
+        res.render('admin/lists', {
+            pageTitle: 'Admin — List Management',
+            lists: listsResult.rows,
+            campaigns: campaignsResult.rows,
+            error: req.query.error || null
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/lists/create', async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    const name = String(req.body.name || '').trim().slice(0, 120);
+    const description = String(req.body.description || '').trim().slice(0, 500);
+    const listType = String(req.body.list_type || '').trim();
+    let campaignId = null;
+
+    if (!name || !['inbound', 'outbound'].includes(listType)) {
+        return res.status(400).send('Enter a list name and valid list type.');
+    }
+
+    if (listType === 'outbound') {
+        campaignId = String(req.body.campaign_id || '').trim();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(campaignId)) {
+            return res.status(400).send('Select a valid campaign for the outbound list.');
+        }
+
+        const campaign = await pool.query(
+            'SELECT 1 FROM campaigns WHERE tenant_id = $1 AND id = $2',
+            [t, campaignId]
+        );
+        if (!campaign.rowCount) {
+            return res.status(400).send('Campaign not found for this tenant.');
+        }
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO contact_lists
+                (tenant_id, name, list_type, description, campaign_id, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             RETURNING id`,
+            [t, name, listType, description || null, campaignId, u.id]
+        );
+
+        await writeAuditLog(
+            t, u.id, 'CONTACT_LIST_CREATED', 'contact_list',
+            result.rows[0].id, null,
+            { name, list_type: listType, campaign_id: campaignId }
+        );
+
+        return res.redirect('/admin/lists');
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.redirect('/admin/lists?error=duplicate_name');
+        }
+        next(err);
+    }
+});
+
+router.post('/lists/:id/toggle', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+        const result = await pool.query(
+            `UPDATE contact_lists
+                SET is_active = NOT is_active, updated_at = now()
+              WHERE tenant_id = $1 AND id = $2
+                AND NOT (list_type = 'inbound' AND is_default = true)
+              RETURNING id, is_active`,
+            [t, req.params.id]
+        );
+
+        if (!result.rowCount) {
+            return res.status(404).send('List not found, or the default inbound list cannot be disabled.');
+        }
+
+        await writeAuditLog(
+            t, req.session.user.id, 'CONTACT_LIST_STATUS_CHANGED',
+            'contact_list', result.rows[0].id, null,
+            { is_active: result.rows[0].is_active }
+        );
+
+        return res.redirect('/admin/lists');
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/lists/:id', async (req, res, next) => {
+    try {
+        const t = req.effectiveTenant.id;
+        const q = String(req.query.q || '').trim().slice(0, 120);
+        const listResult = await pool.query(
+            `SELECT l.*, c.name AS campaign_name
+               FROM contact_lists l
+               LEFT JOIN campaigns c
+                 ON c.id = l.campaign_id AND c.tenant_id = l.tenant_id
+              WHERE l.tenant_id = $1 AND l.id = $2`,
+            [t, req.params.id]
+        );
+
+        const list = listResult.rows[0];
+        if (!list) return res.status(404).send('List not found.');
+
+        const membersResult = await pool.query(
+            `SELECT c.id, c.external_customer_id, c.full_name,
+                    c.primary_phone, c.alt_phone, c.email, c.city, c.state,
+                    c.address_line1, c.address_line2, c.postal_code, c.country,
+                    c.comments, m.membership_status, m.added_at,
+                    last_call.direction AS last_direction,
+                    last_call.status AS last_status,
+                    last_call.start_time AS last_call_at
+               FROM contact_list_members m
+               JOIN contacts c
+                 ON c.id = m.contact_id AND c.tenant_id = m.tenant_id
+               LEFT JOIN LATERAL (
+                    SELECT ca.direction, ca.status, ca.start_time
+                      FROM calls ca
+                     WHERE ca.tenant_id = c.tenant_id
+                       AND (
+                           ca.contact_id = c.id
+                           OR (
+                               c.primary_phone IS NOT NULL
+                               AND regexp_replace(COALESCE(ca.from_number,''), '[^0-9]', '', 'g')
+                                 = regexp_replace(c.primary_phone, '[^0-9]', '', 'g')
+                           )
+                           OR (
+                               c.alt_phone IS NOT NULL
+                               AND regexp_replace(COALESCE(ca.from_number,''), '[^0-9]', '', 'g')
+                                 = regexp_replace(c.alt_phone, '[^0-9]', '', 'g')
+                           )
+                       )
+                     ORDER BY ca.start_time DESC NULLS LAST
+                     LIMIT 1
+               ) last_call ON true
+              WHERE m.tenant_id = $1 AND m.list_id = $2
+                AND (
+                    $3 = ''
+                    OR c.full_name ILIKE '%' || $3 || '%'
+                    OR c.external_customer_id ILIKE '%' || $3 || '%'
+                    OR c.primary_phone ILIKE '%' || $3 || '%'
+                    OR c.alt_phone ILIKE '%' || $3 || '%'
+                    OR c.email ILIKE '%' || $3 || '%'
+                )
+              ORDER BY m.added_at DESC
+              LIMIT 250`,
+            [t, list.id, q]
+        );
+
+        let importResult = null;
+        if (req.query.imported) {
+            try {
+                const decoded = JSON.parse(
+                    Buffer.from(String(req.query.imported), 'base64').toString('utf8')
+                );
+                if (decoded && typeof decoded === 'object') importResult = decoded;
+            } catch (_) {
+                importResult = null;
+            }
+        }
+
+        res.render('admin/list_detail', {
+            pageTitle: `Admin — ${list.name}`,
+            list,
+            members: membersResult.rows,
+            q,
+            importResult,
+            error: req.query.error || null
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/lists/:id/import', (req, res, next) => {
+    leadsUpload.single('contacts_csv')(req, res, (err) => {
+        if (err) return res.status(400).send('CSV upload failed: ' + err.message);
+        next();
+    });
+}, async (req, res, next) => {
+    const t = req.effectiveTenant.id;
+    const u = req.session.user;
+    let client = null;
+    let inTransaction = false;
+
+    try {
+        if (!req.file) return res.status(400).send('Select a CSV file.');
+
+        const listResult = await pool.query(
+            `SELECT id, name, list_type, campaign_id, is_active
+               FROM contact_lists
+              WHERE tenant_id = $1 AND id = $2`,
+            [t, req.params.id]
+        );
+        const list = listResult.rows[0];
+
+        if (!list) return res.status(404).send('List not found.');
+        if (!list.is_active) return res.status(409).send('This list is inactive.');
+        if (list.list_type === 'outbound' && !list.campaign_id) {
+            return res.status(409).send('This outbound list has no campaign assigned.');
+        }
+
+        const raw = fs.readFileSync(req.file.path, 'utf8');
+        const records = parse(raw, {
+            columns: header => header.map(h =>
+                String(h || '').replace(/^\uFEFF/, '').trim().toLowerCase()
+            ),
+            skip_empty_lines: true,
+            trim: true,
+            bom: true
+        });
+
+        const phoneKeys = ['phone', 'phone_number', 'mobile', 'number', 'contact_number', 'primary_phone'];
+        const altPhoneKeys = ['alt_phone', 'alternate_phone', 'secondary_phone', 'other_phone'];
+        const nameKeys = ['name', 'full_name', 'customer_name'];
+        const idKeys = ['external_customer_id', 'customer_id', 'unique_id', 'customer_number'];
+        const emailKeys = ['email', 'email_address'];
+        const address1Keys = ['address_line1', 'address1', 'address', 'street'];
+        const address2Keys = ['address_line2', 'address2'];
+        const cityKeys = ['city'];
+        const stateKeys = ['state', 'province'];
+        const postalKeys = ['postal_code', 'postcode', 'zip', 'zipcode'];
+        const countryKeys = ['country'];
+        const commentKeys = ['comments', 'comment', 'notes', 'note'];
+
+        if (!records.length) {
+            return res.redirect(`/admin/lists/${list.id}?error=empty_csv`);
+        }
+
+        const headers = Object.keys(records[0]);
+        if (!headers.some(h => phoneKeys.includes(h))) {
+            return res.status(400).send(
+                'CSV must contain a phone column: phone, phone_number, mobile, number, contact_number, or primary_phone.'
+            );
+        }
+
+        const pick = (row, keys) => {
+            for (const key of keys) {
+                const value = row[key];
+                if (value !== undefined && value !== null && String(value).trim()) {
+                    return String(value).trim();
+                }
+            }
+            return '';
+        };
+        const digits = value => String(value || '').replace(/\D/g, '');
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        inTransaction = true;
+
+        const existingLeadPhones = new Set();
+        if (list.list_type === 'outbound') {
+            const existing = await client.query(
+                `SELECT regexp_replace(phone_number, '[^0-9]', '', 'g') AS phone
+                   FROM leads
+                  WHERE tenant_id = $1 AND campaign_id = $2`,
+                [t, list.campaign_id]
+            );
+            for (const row of existing.rows) existingLeadPhones.add(row.phone);
+        }
+
+        const seenThisFile = new Set();
+        let contactsCreated = 0;
+        let membershipsAdded = 0;
+        let leadsAdded = 0;
+        let duplicates = 0;
+        let invalid = 0;
+
+        for (const row of records) {
+            const phone = digits(pick(row, phoneKeys));
+            if (phone.length < 7 || phone.length > 15) {
+                invalid++;
+                continue;
+            }
+            if (seenThisFile.has(phone)) {
+                duplicates++;
+                continue;
+            }
+            seenThisFile.add(phone);
+
+            const altPhone = digits(pick(row, altPhoneKeys));
+            const name = pick(row, nameKeys);
+            const externalId = pick(row, idKeys);
+            const email = pick(row, emailKeys);
+            const city = pick(row, cityKeys);
+            const state = pick(row, stateKeys);
+            const address1 = pick(row, address1Keys);
+            const address2 = pick(row, address2Keys);
+            const postal = pick(row, postalKeys);
+            const country = pick(row, countryKeys);
+            const comments = pick(row, commentKeys);
+
+            const mapped = [
+                ...phoneKeys, ...altPhoneKeys, ...nameKeys, ...idKeys,
+                ...emailKeys, ...cityKeys, ...stateKeys, ...address1Keys,
+                ...address2Keys, ...postalKeys, ...countryKeys, ...commentKeys
+            ];
+            const customFields = {};
+            for (const [key, value] of Object.entries(row)) {
+                if (!mapped.includes(key) && value !== undefined && value !== '') {
+                    customFields[key] = value;
+                }
+            }
+
+            await client.query(
+                'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+                [`${t}:${phone}`]
+            );
+
+            let contactResult = await client.query(
+                `SELECT id
+                   FROM contacts
+                  WHERE tenant_id = $1
+                    AND (
+                        regexp_replace(COALESCE(primary_phone,''), '[^0-9]', '', 'g') = $2
+                        OR regexp_replace(COALESCE(alt_phone,''), '[^0-9]', '', 'g') = $2
+                    )
+                  ORDER BY id
+                  LIMIT 1`,
+                [t, phone]
+            );
+
+            let contactId;
+            if (contactResult.rowCount) {
+                contactId = contactResult.rows[0].id;
+                await client.query(
+                    `UPDATE contacts
+                        SET external_customer_id = COALESCE(NULLIF(external_customer_id,''), NULLIF($3,'')),
+                            full_name = COALESCE(NULLIF(full_name,''), NULLIF($4,'')),
+                            alt_phone = COALESCE(NULLIF(alt_phone,''), NULLIF($5,'')),
+                            email = COALESCE(NULLIF(email,''), NULLIF($6,'')),
+                            city = COALESCE(NULLIF(city,''), NULLIF($7,'')),
+                            state = COALESCE(NULLIF(state,''), NULLIF($8,'')),
+                            address_line1 = COALESCE(NULLIF(address_line1,''), NULLIF($9,'')),
+                            address_line2 = COALESCE(NULLIF(address_line2,''), NULLIF($10,'')),
+                            postal_code = COALESCE(NULLIF(postal_code,''), NULLIF($11,'')),
+                            country = COALESCE(NULLIF(country,''), NULLIF($12,'')),
+                            comments = COALESCE(NULLIF(comments,''), NULLIF($13,'')),
+                            updated_at = now()
+                      WHERE tenant_id = $1 AND id = $2`,
+                    [t, contactId, externalId, name, altPhone, email, city, state,
+                     address1, address2, postal, country, comments]
+                );
+            } else {
+                contactResult = await client.query(
+                    `INSERT INTO contacts
+                        (tenant_id, external_customer_id, full_name, primary_phone,
+                         alt_phone, email, city, state, address_line1, address_line2,
+                         postal_code, country, comments, custom_fields)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
+                     RETURNING id`,
+                    [t, externalId || null, name || null, phone, altPhone || null,
+                     email || null, city || null, state || null, address1 || null,
+                     address2 || null, postal || null, country || null, comments || null,
+                     JSON.stringify(customFields)]
+                );
+                contactId = contactResult.rows[0].id;
+                contactsCreated++;
+            }
+
+            const memberResult = await client.query(
+                `INSERT INTO contact_list_members
+                    (tenant_id, list_id, contact_id, membership_status, created_by)
+                 VALUES ($1,$2,$3,'active',$4)
+                 ON CONFLICT (list_id, contact_id) DO NOTHING`,
+                [t, list.id, contactId, u.id]
+            );
+            membershipsAdded += memberResult.rowCount;
+
+            if (list.list_type === 'outbound') {
+                await client.query(
+                    `INSERT INTO campaign_contacts
+                        (tenant_id, campaign_id, contact_id, status)
+                     VALUES ($1,$2,$3,'pending')
+                     ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+                    [t, list.campaign_id, contactId]
+                );
+
+                if (existingLeadPhones.has(phone)) {
+                    duplicates++;
+                } else {
+                    const leadFields = { ...customFields };
+                    if (name) leadFields.name = name;
+
+                    await client.query(
+                        `INSERT INTO leads
+                            (tenant_id, campaign_id, contact_id, phone_number, status, custom_fields)
+                         VALUES ($1,$2,$3,$4,'new',$5::jsonb)`,
+                        [t, list.campaign_id, contactId, phone, JSON.stringify(leadFields)]
+                    );
+                    existingLeadPhones.add(phone);
+                    leadsAdded++;
+                }
+            }
+        }
+
+        await client.query('COMMIT');
+        inTransaction = false;
+        client.release();
+        client = null;
+
+        const summary = {
+            contactsCreated, membershipsAdded, leadsAdded, duplicates, invalid
+        };
+        try {
+            await writeAuditLog(
+                t, u.id, 'CONTACT_LIST_IMPORTED', 'contact_list',
+                list.id, null, summary
+            );
+        } catch (auditErr) {
+            console.error('List import audit logging failed:', auditErr.message);
+        }
+
+        const encoded = encodeURIComponent(Buffer.from(JSON.stringify(summary)).toString('base64'));
+        return res.redirect(`/admin/lists/${list.id}?imported=${encoded}`);
+    } catch (err) {
+        if (client && inTransaction) {
+            try { await client.query('ROLLBACK'); } catch (_) {}
+        }
+        if (err.code === '23503' || err.code === '23505') {
+            return res.status(400).send(
+                'Import stopped because a database constraint was not satisfied. No partial import was committed.'
+            );
+        }
+        next(err);
+    } finally {
+        if (client) client.release();
+        if (req.file && req.file.path) fs.unlink(req.file.path, () => {});
+    }
 });
 
 // ---------------- Lead upload (CSV) for auto-dial campaigns ----------------
@@ -2043,19 +3623,29 @@ router.post('/privacy-settings/toggle', async (req, res) => {
 router.get('/ivr', async (req, res) => {
     const t = req.effectiveTenant.id;
     const menus = (await pool.query('SELECT * FROM ivr_menus WHERE tenant_id = $1 ORDER BY name', [t])).rows;
-    const editId = req.query.edit || null;
+    const requestedEditId = req.query.edit || null;
+    const editId = requestedEditId && menus.some(m => m.id === requestedEditId)
+        ? requestedEditId : null;
     let options = [];
     if (editId) {
         options = (await pool.query(
-            `SELECT o.*, q.name AS queue_name, sm.name AS submenu_name FROM ivr_menu_options o
-             LEFT JOIN queues q ON q.id = o.target_queue_id
-             LEFT JOIN ivr_menus sm ON sm.id = o.target_submenu_id
-             WHERE o.ivr_menu_id = $1 ORDER BY o.dtmf_digit`,
-            [editId]
+            `SELECT o.*, q.name AS queue_name, sm.name AS submenu_name
+             FROM ivr_menu_options o
+             LEFT JOIN queues q
+               ON q.id = o.target_queue_id AND q.tenant_id = o.tenant_id
+             LEFT JOIN ivr_menus sm
+               ON sm.id = o.target_submenu_id AND sm.tenant_id = o.tenant_id
+             WHERE o.ivr_menu_id = $1 AND o.tenant_id = $2
+             ORDER BY o.dtmf_digit`,
+            [editId, t]
         )).rows;
     }
     const queues = (await pool.query('SELECT id, name FROM queues WHERE tenant_id = $1 ORDER BY name', [t])).rows;
-    res.render('admin/ivr', { pageTitle: 'Admin — IVR Menus', menus, editId, options, queues });
+    res.render('admin/ivr', {
+        pageTitle: 'Admin — IVR Menus',
+        menus, editId, options, queues,
+        synced: req.query.synced === '1'
+    });
 });
 
 router.post('/ivr/create', async (req, res) => {
@@ -2070,15 +3660,210 @@ router.post('/ivr/create', async (req, res) => {
     res.redirect(`/admin/ivr?edit=${result.rows[0].id}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
 });
 
+
+async function parseIvrFallback(body, prefix, tenantId) {
+    const action = String(body[`${prefix}_action_type`] || 'none');
+
+    if (action === 'none') return null;
+    if (!['queue', 'extension', 'voicemail', 'hangup'].includes(action)) {
+        throw new Error(`Unsupported ${prefix} fallback action.`);
+    }
+
+    if (action === 'queue') {
+        const queueId = String(body[`${prefix}_target_queue_id`] || '');
+        const result = await pool.query(
+            `SELECT id FROM queues
+              WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE`,
+            [queueId, tenantId]
+        );
+        if (!result.rowCount) {
+            throw new Error(`Choose an active queue in this tenant for ${prefix}.`);
+        }
+        return { action_type: action, target_queue_id: result.rows[0].id };
+    }
+
+    if (action === 'extension') {
+        const target = String(body[`${prefix}_target_extension`] || '').trim();
+        if (!/^[0-9*#]{1,40}$/.test(target)) {
+            throw new Error(`Enter a valid extension or DID for ${prefix}.`);
+        }
+        return { action_type: action, target_extension: target };
+    }
+
+    if (action === 'voicemail') {
+        const raw = String(body[`${prefix}_target_voicemail_id`] || '').trim();
+        const id = Number(raw);
+        if (!/^\d+$/.test(raw) || !Number.isSafeInteger(id) || id < 1) {
+            throw new Error(`Enter a positive Wazo voicemail ID for ${prefix}.`);
+        }
+        return { action_type: action, target_voicemail_id: id };
+    }
+
+    return { action_type: 'hangup' };
+}
+
 router.post('/ivr/:id/edit', async (req, res) => {
     const t = req.effectiveTenant.id;
-    const b = req.body;
-    await pool.query(
-        `UPDATE ivr_menus SET name = $1, greeting_type = $2, greeting_text = $3, invalid_retry_limit = $4, timeout_seconds = $5, is_active = $6
-         WHERE id = $7 AND tenant_id = $8`,
-        [b.name, b.greeting_type, b.greeting_text || null, b.invalid_retry_limit || 3, b.timeout_seconds || 5, b.is_active === '1', req.params.id, t]
+    const b = req.body || {};
+    const menuId = req.params.id;
+
+    const current = await pool.query(
+        'SELECT * FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+        [menuId, t]
     );
-    res.redirect(`/admin/ivr?edit=${req.params.id}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+    if (!current.rowCount) {
+        return res.status(404).send('IVR menu not found for this tenant.');
+    }
+
+    let invalidFallback;
+    let timeoutFallback;
+    let abortFallback;
+
+    try {
+        invalidFallback = await parseIvrFallback(b, 'invalid', t);
+        timeoutFallback = await parseIvrFallback(b, 'timeout', t);
+        abortFallback = await parseIvrFallback(b, 'abort', t);
+    } catch (error) {
+        return res.status(400).send(error.message);
+    }
+
+    const result = await pool.query(
+        `UPDATE ivr_menus
+            SET name = $1,
+                greeting_type = $2,
+                greeting_text = $3,
+                invalid_retry_limit = $4,
+                timeout_seconds = $5,
+                is_active = $6,
+                invalid_destination_json = $7::jsonb,
+                timeout_destination_json = $8::jsonb,
+                abort_destination_json = $9::jsonb
+          WHERE id = $10 AND tenant_id = $11`,
+        [
+            b.name,
+            b.greeting_type,
+            b.greeting_text || null,
+            b.invalid_retry_limit || 3,
+            b.timeout_seconds || 5,
+            b.is_active === '1',
+            invalidFallback ? JSON.stringify(invalidFallback) : null,
+            timeoutFallback ? JSON.stringify(timeoutFallback) : null,
+            abortFallback ? JSON.stringify(abortFallback) : null,
+            menuId,
+            t
+        ]
+    );
+
+    if (!result.rowCount) {
+        return res.status(404).send('IVR menu not found for this tenant.');
+    }
+
+    try {
+        await writeAuditLog(
+            t, req.session.user.id, 'IVR_MENU_UPDATED',
+            'ivr_menu', menuId,
+            {
+                name: current.rows[0].name,
+                greeting_type: current.rows[0].greeting_type,
+                invalid_destination_json: current.rows[0].invalid_destination_json,
+                timeout_destination_json: current.rows[0].timeout_destination_json,
+                abort_destination_json: current.rows[0].abort_destination_json
+            },
+            {
+                name: b.name,
+                greeting_type: b.greeting_type,
+                invalid_destination_json: invalidFallback,
+                timeout_destination_json: timeoutFallback,
+                abort_destination_json: abortFallback
+            }
+        );
+    } catch (error) {
+        console.error('[IVR] Menu updated but audit logging failed:', error.message);
+    }
+
+    res.redirect(`/admin/ivr?edit=${menuId}` +
+        (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+});
+
+router.post('/ivr/:id/sync', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    const menuId = req.params.id;
+
+    try {
+        const owned = await pool.query(
+            `SELECT id, is_active, greeting_type, greeting_audio_path
+               FROM ivr_menus
+              WHERE id = $1 AND tenant_id = $2`,
+            [menuId, t]
+        );
+
+        if (!owned.rowCount) {
+            return res.status(404).send('IVR menu not found for this tenant.');
+        }
+
+        const menu = owned.rows[0];
+
+        if (!menu.is_active) {
+            return res.status(400).send('Activate this IVR menu before syncing it.');
+        }
+
+        if (menu.greeting_type === 'audio_file' &&
+            (typeof menu.greeting_audio_path !== 'string' ||
+             !menu.greeting_audio_path.startsWith('/uploads/audio/'))) {
+            return res.status(400).send(
+                'Upload a greeting audio file before syncing this IVR menu.'
+            );
+        }
+
+        if (!['tts', 'audio_file'].includes(menu.greeting_type)) {
+            return res.status(400).send('Choose a supported IVR greeting type.');
+        }
+
+        const result = await syncIvrMenu(t, menuId);
+
+        try {
+            await writeAuditLog(
+                t,
+                req.session.user.id,
+                'IVR_MENU_SYNCED_TO_WAZO',
+                'ivr_menu',
+                menuId,
+                null,
+                { wazoIvrId: result.id, created: result.created }
+            );
+        } catch (auditErr) {
+            console.error(
+                '[IVR] Wazo sync succeeded, but audit logging failed:',
+                auditErr.message
+            );
+        }
+
+        return res.redirect(
+            `/admin/ivr?edit=${encodeURIComponent(menuId)}&synced=1` +
+            (req.query.as_tenant
+                ? `&as_tenant=${encodeURIComponent(req.query.as_tenant)}`
+                : '')
+        );
+    } catch (err) {
+        console.error('[IVR] Wazo sync failed:', {
+            menuId,
+            tenantId: t,
+            error: err.message
+        });
+
+        // Only show known configuration-validation errors to the browser.
+        const message = String(err.message || '');
+        const safeValidation =
+            /^(Activate the IVR menu|This menu has no uploaded greeting audio|Add at least one keypad option|Queue for digit|Submenu for digit|Extension\/DID|Extension .+|Digit .+|Wazo voicemail|Tenant has no configured Wazo context|Wazo \/extensions listing)/;
+
+        if (safeValidation.test(message)) {
+            return res.status(400).send(message);
+        }
+
+        return res.status(502).send(
+            'Wazo IVR synchronization failed. Check the server logs for details.'
+        );
+    }
 });
 
 router.post('/ivr/:id/delete', async (req, res) => {
@@ -2094,23 +3879,481 @@ router.post('/ivr/:id/delete', async (req, res) => {
 
 router.post('/ivr/:id/options/create', async (req, res) => {
     const t = req.effectiveTenant.id;
-    const b = req.body;
-    await pool.query(
-        `INSERT INTO ivr_menu_options (tenant_id, ivr_menu_id, dtmf_digit, label, action_type, target_queue_id, target_extension, target_submenu_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [t, req.params.id, b.dtmf_digit, b.label, b.action_type,
-         b.action_type === 'queue' ? b.target_queue_id : null,
-         b.action_type === 'extension' ? b.target_extension : null,
-         b.action_type === 'submenu' ? b.target_submenu_id : null]
+    const b = req.body || {};
+    const menuId = req.params.id;
+    const digit = String(b.dtmf_digit || '');
+    const label = String(b.label || '').trim();
+    const action = String(b.action_type || '');
+    const allowedDigits = new Set(['1','2','3','4','5','6','7','8','9','0','*','#']);
+    const allowedActions = new Set(['queue','extension','submenu','voicemail','hangup']);
+
+    if (!allowedDigits.has(digit) || !label || label.length > 120 ||
+        !allowedActions.has(action)) {
+        return res.status(400).send(
+            'Invalid IVR option. Use a valid DTMF key, a label up to 120 characters, and a supported action. Voicemail routing is not enabled until a voicemail target can be stored.'
+        );
+    }
+
+    const menu = await pool.query(
+        'SELECT id FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+        [menuId, t]
     );
-    res.redirect(`/admin/ivr?edit=${req.params.id}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+    if (!menu.rowCount) {
+        return res.status(404).send('IVR menu not found for this tenant.');
+    }
+
+    let queueId = null;
+    let extension = null;
+    let submenuId = null;
+    let voicemailId = null;
+
+    if (action === 'queue') {
+        queueId = String(b.target_queue_id || '');
+        const q = await pool.query(
+            'SELECT id FROM queues WHERE id = $1 AND tenant_id = $2',
+            [queueId, t]
+        );
+        if (!q.rowCount) {
+            return res.status(400).send('Choose a queue belonging to this tenant.');
+        }
+    } else if (action === 'extension') {
+        extension = String(b.target_extension || '').trim();
+        if (!/^[0-9*#+]{1,40}$/.test(extension)) {
+            return res.status(400).send('Enter a valid extension or dial string.');
+        }
+    } else if (action === 'voicemail') {
+        const rawVoicemailId = String(b.target_voicemail_id || '').trim();
+        const parsedVoicemailId = Number(rawVoicemailId);
+        if (!/^\d+$/.test(rawVoicemailId) ||
+            !Number.isSafeInteger(parsedVoicemailId) ||
+            parsedVoicemailId < 1) {
+            return res.status(400).send(
+                'Enter a positive Wazo voicemail ID for this action.'
+            );
+        }
+        voicemailId = parsedVoicemailId;
+    } else if (action === 'submenu') {
+        submenuId = String(b.target_submenu_id || '');
+        if (submenuId === menuId) {
+            return res.status(400).send('A menu cannot point directly to itself.');
+        }
+        const sm = await pool.query(
+            'SELECT id FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+            [submenuId, t]
+        );
+        if (!sm.rowCount) {
+            return res.status(400).send('Choose a submenu belonging to this tenant.');
+        }
+
+        // Reject indirect submenu cycles before inserting the option.
+        const cycle = await pool.query(
+            `WITH RECURSIVE reachable(menu_id, path) AS (
+                SELECT $1::uuid, ARRAY[$1::uuid]
+                UNION ALL
+                SELECT o.target_submenu_id, r.path || o.target_submenu_id
+                  FROM reachable r
+                  JOIN ivr_menu_options o
+                    ON o.ivr_menu_id = r.menu_id
+                   AND o.tenant_id = $2
+                   AND o.action_type = 'submenu'
+                 WHERE o.target_submenu_id IS NOT NULL
+                   AND NOT o.target_submenu_id = ANY(r.path)
+            )
+            SELECT 1
+              FROM reachable
+             WHERE menu_id = $3::uuid
+             LIMIT 1`,
+            [submenuId, t, menuId]
+        );
+
+        if (cycle.rowCount) {
+            return res.status(400).send(
+                'This submenu would create an IVR loop. Choose a different submenu.'
+            );
+        }
+    }
+
+    try {
+        const inserted = await pool.query(
+            `INSERT INTO ivr_menu_options
+                (tenant_id, ivr_menu_id, dtmf_digit, label, action_type,
+                 target_queue_id, target_extension, target_submenu_id,
+                 target_voicemail_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             RETURNING id`,
+            [t, menuId, digit, label, action, queueId, extension,
+             submenuId, voicemailId]
+        );
+
+        try {
+            await writeAuditLog(
+                t, req.session.user.id, 'IVR_OPTION_CREATED',
+                'ivr_menu_option', inserted.rows[0].id, null,
+                { menuId, digit, label, action }
+            );
+        } catch (auditErr) {
+            console.error('[IVR] Option saved, but audit logging failed:', auditErr.message);
+        }
+
+        return res.redirect(`/admin/ivr?edit=${menuId}` +
+            (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(409).send(
+                'That key already exists in this IVR menu. Choose another digit.'
+            );
+        }
+        throw err;
+    }
 });
 
 router.post('/ivr/:id/options/:optionId/delete', async (req, res) => {
     const t = req.effectiveTenant.id;
-    await pool.query('DELETE FROM ivr_menu_options WHERE id = $1 AND tenant_id = $2', [req.params.optionId, t]);
-    res.redirect(`/admin/ivr?edit=${req.params.id}` + (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+    const result = await pool.query(
+        `DELETE FROM ivr_menu_options
+          WHERE id = $1 AND ivr_menu_id = $2 AND tenant_id = $3
+          RETURNING id`,
+        [req.params.optionId, req.params.id, t]
+    );
+
+    if (!result.rowCount) {
+        return res.status(404).send('IVR option not found for this menu and tenant.');
+    }
+
+    try {
+        await writeAuditLog(
+            t, req.session.user.id, 'IVR_OPTION_DELETED',
+            'ivr_menu_option', req.params.optionId, null,
+            { menuId: req.params.id }
+        );
+    } catch (auditErr) {
+        console.error('[IVR] Option deleted, but audit logging failed:', auditErr.message);
+    }
+
+    return res.redirect(`/admin/ivr?edit=${req.params.id}` +
+        (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
 });
+
+
+// Additive IVR enhancements: tenant-scoped option edit, clone, and audio upload.
+router.post('/ivr/:id/options/:optionId/edit', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    const b = req.body;
+    const menuId = req.params.id;
+    const optionId = req.params.optionId;
+    const digit = String(b.dtmf_digit || '');
+    const label = String(b.label || '').trim();
+    const action = String(b.action_type || '');
+    const allowedDigits = new Set(['1','2','3','4','5','6','7','8','9','0','*','#']);
+    const allowedActions = new Set(['queue','extension','submenu','voicemail','hangup']);
+
+    if (!allowedDigits.has(digit) || !label || label.length > 120 ||
+        !allowedActions.has(action)) {
+        return res.status(400).send('Invalid IVR option. Check the key, label, and action.');
+    }
+
+    const menu = await pool.query(
+        'SELECT id FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+        [menuId, t]
+    );
+    if (!menu.rowCount) return res.status(404).send('IVR menu not found for this tenant.');
+
+    const option = await pool.query(
+        'SELECT id FROM ivr_menu_options WHERE id = $1 AND ivr_menu_id = $2 AND tenant_id = $3',
+        [optionId, menuId, t]
+    );
+    if (!option.rowCount) return res.status(404).send('IVR option not found for this menu.');
+
+    let queueId = null;
+    let extension = null;
+    let submenuId = null;
+    let voicemailId = null;
+
+    if (action === 'queue') {
+        queueId = String(b.target_queue_id || '');
+        const q = await pool.query(
+            'SELECT id FROM queues WHERE id = $1 AND tenant_id = $2',
+            [queueId, t]
+        );
+        if (!q.rowCount) return res.status(400).send('Choose a queue belonging to this tenant.');
+    } else if (action === 'extension') {
+        extension = String(b.target_extension || '').trim();
+        if (!/^[0-9*#+]{1,40}$/.test(extension)) {
+            return res.status(400).send('Enter a valid extension or dial string.');
+        }
+    } else if (action === 'voicemail') {
+        const rawVoicemailId = String(b.target_voicemail_id || '').trim();
+        const parsedVoicemailId = Number(rawVoicemailId);
+        if (!/^\d+$/.test(rawVoicemailId) ||
+            !Number.isSafeInteger(parsedVoicemailId) ||
+            parsedVoicemailId < 1) {
+            return res.status(400).send(
+                'Enter a positive Wazo voicemail ID for this action.'
+            );
+        }
+        voicemailId = parsedVoicemailId;
+    } else if (action === 'submenu') {
+        submenuId = String(b.target_submenu_id || '');
+        if (submenuId === menuId) {
+            return res.status(400).send('A menu cannot point directly to itself.');
+        }
+        const sm = await pool.query(
+            'SELECT id FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+            [submenuId, t]
+        );
+        if (!sm.rowCount) return res.status(400).send('Choose a submenu belonging to this tenant.');
+
+        // Reject indirect cycles, e.g. A -> B -> C -> A.
+        const cycle = await pool.query(
+            `WITH RECURSIVE reachable(menu_id, path) AS (
+                SELECT $1::uuid, ARRAY[$1::uuid]
+                UNION ALL
+                SELECT o.target_submenu_id, r.path || o.target_submenu_id
+                  FROM reachable r
+                  JOIN ivr_menu_options o
+                    ON o.ivr_menu_id = r.menu_id
+                   AND o.tenant_id = $2
+                   AND o.action_type = 'submenu'
+                 WHERE o.target_submenu_id IS NOT NULL
+                   AND NOT o.target_submenu_id = ANY(r.path)
+            )
+            SELECT 1
+              FROM reachable
+             WHERE menu_id = $3::uuid
+             LIMIT 1`,
+            [submenuId, t, menuId]
+        );
+        if (cycle.rowCount) {
+            return res.status(400).send('This submenu would create an IVR loop. Choose a different submenu.');
+        }
+    }
+
+    try {
+        const updated = await pool.query(
+            `UPDATE ivr_menu_options
+             SET dtmf_digit = $1, label = $2, action_type = $3,
+                 target_queue_id = $4, target_extension = $5,
+                 target_submenu_id = $6, target_voicemail_id = $7
+             WHERE id = $8 AND ivr_menu_id = $9 AND tenant_id = $10`,
+            [digit, label, action, queueId, extension, submenuId,
+             voicemailId, optionId, menuId, t]
+        );
+        if (!updated.rowCount) {
+            return res.status(404).send('IVR option not found for this menu.');
+        }
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(409).send('That key already exists in this IVR menu. Choose another digit.');
+        }
+        throw err;
+    }
+
+    try {
+        await writeAuditLog(t, req.session.user.id, 'IVR_OPTION_UPDATED',
+            'ivr_menu_option', optionId, null,
+            { menuId, digit, label, action });
+    } catch (auditErr) {
+        console.error('[IVR] Option saved but audit logging failed:', auditErr.message);
+    }
+
+    return res.redirect(`/admin/ivr?edit=${menuId}` +
+        (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+});
+
+router.post('/ivr/:id/clone', async (req, res) => {
+    const t = req.effectiveTenant.id;
+    const sourceId = req.params.id;
+    const name = String(req.body.name || '').trim();
+
+    if (!name || name.length > 128) {
+        return res.status(400).send('Enter a clone name up to 128 characters.');
+    }
+
+    const client = await pool.connect();
+    let cloneId;
+    try {
+        await client.query('BEGIN');
+        const source = await client.query(
+            `SELECT name, greeting_type, greeting_text, greeting_audio_path,
+                    invalid_retry_limit, timeout_seconds
+             FROM ivr_menus WHERE id = $1 AND tenant_id = $2 FOR SHARE`,
+            [sourceId, t]
+        );
+        if (!source.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(404).send('Source IVR menu not found for this tenant.');
+        }
+
+        const s = source.rows[0];
+
+        // Refuse to clone broken or cyclic submenu graphs.
+        const invalidTarget = await client.query(
+            `SELECT 1
+               FROM ivr_menu_options o
+               LEFT JOIN ivr_menus target
+                 ON target.id = o.target_submenu_id
+                AND target.tenant_id = $2
+              WHERE o.ivr_menu_id = $1
+                AND o.tenant_id = $2
+                AND o.action_type = 'submenu'
+                AND (o.target_submenu_id IS NULL OR target.id IS NULL)
+              LIMIT 1`,
+            [sourceId, t]
+        );
+
+        if (invalidTarget.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(400).send(
+                'This IVR menu has an invalid submenu target. Fix its submenu options before cloning.'
+            );
+        }
+
+        const cycle = await client.query(
+            `WITH RECURSIVE reachable(menu_id) AS (
+                SELECT $1::uuid
+                UNION
+                SELECT o.target_submenu_id
+                  FROM reachable r
+                  JOIN ivr_menu_options o
+                    ON o.ivr_menu_id = r.menu_id
+                   AND o.tenant_id = $2
+                   AND o.action_type = 'submenu'
+                 WHERE o.target_submenu_id IS NOT NULL
+            ),
+            edges AS (
+                SELECT o.ivr_menu_id AS from_id,
+                       o.target_submenu_id AS to_id
+                  FROM ivr_menu_options o
+                  JOIN reachable r ON r.menu_id = o.ivr_menu_id
+                 WHERE o.tenant_id = $2
+                   AND o.action_type = 'submenu'
+                   AND o.target_submenu_id IS NOT NULL
+            ),
+            walk(start_id, node_id, path, has_cycle) AS (
+                SELECT e.from_id, e.to_id,
+                       ARRAY[e.from_id, e.to_id],
+                       e.from_id = e.to_id
+                  FROM edges e
+                UNION ALL
+                SELECT w.start_id, e.to_id,
+                       w.path || e.to_id,
+                       e.to_id = ANY(w.path)
+                  FROM walk w
+                  JOIN edges e ON e.from_id = w.node_id
+                 WHERE NOT w.has_cycle
+            )
+            SELECT 1 FROM walk WHERE has_cycle LIMIT 1`,
+            [sourceId, t]
+        );
+
+        if (cycle.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(400).send(
+                'This IVR menu contains a submenu loop. Fix the loop before cloning.'
+            );
+        }
+
+        const cloned = await client.query(
+            `INSERT INTO ivr_menus
+                (tenant_id, name, is_active, greeting_type, greeting_text,
+                 greeting_audio_path, invalid_retry_limit, timeout_seconds, wazo_ivr_id)
+             VALUES ($1,$2,FALSE,$3,$4,$5,$6,$7,NULL)
+             RETURNING id`,
+            [t, name, s.greeting_type, s.greeting_text, s.greeting_audio_path,
+             s.invalid_retry_limit, s.timeout_seconds]
+        );
+        cloneId = cloned.rows[0].id;
+
+        await client.query(
+            `INSERT INTO ivr_menu_options
+                (tenant_id, ivr_menu_id, dtmf_digit, label, action_type,
+                 target_queue_id, target_extension, target_submenu_id)
+             SELECT tenant_id, $1, dtmf_digit, label, action_type,
+                    target_queue_id, target_extension,
+                    CASE WHEN target_submenu_id = $2 THEN $1 ELSE target_submenu_id END
+             FROM ivr_menu_options
+             WHERE ivr_menu_id = $2 AND tenant_id = $3`,
+            [cloneId, sourceId, t]
+        );
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+
+    await writeAuditLog(t, req.session.user.id, 'IVR_MENU_CLONED',
+        'ivr_menu', cloneId, null, { sourceId, name });
+    return res.redirect(`/admin/ivr?edit=${cloneId}` +
+        (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+});
+
+router.post('/ivr/:id/audio', audioUpload.single('audio_upload'), async (req, res) => {
+    const t = req.effectiveTenant.id;
+    const menuId = req.params.id;
+
+    if (!req.file) return res.status(400).send('Select an audio file to upload.');
+
+    const owned = await pool.query(
+        'SELECT id FROM ivr_menus WHERE id = $1 AND tenant_id = $2',
+        [menuId, t]
+    );
+    if (!owned.rowCount) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        return res.status(404).send('IVR menu not found for this tenant.');
+    }
+
+    let convertedPath = null;
+    let greetingSaved = false;
+
+    try {
+        const converted = await convertToWav(req.file.path);
+        convertedPath = converted.path;
+        const publicRoot = path.resolve('public');
+        const outputPath = path.resolve(publicRoot, converted.publicPath.replace(/^\/+/, ''));
+        if (!outputPath.startsWith(publicRoot + path.sep)) {
+            await fs.promises.unlink(converted.path).catch(() => {});
+            throw new Error('Converted audio path failed validation.');
+        }
+
+        const updateResult = await pool.query(
+            `UPDATE ivr_menus SET greeting_audio_path = $1, greeting_type = 'audio_file'
+             WHERE id = $2 AND tenant_id = $3`,
+            [converted.publicPath, menuId, t]
+        );
+        if (!updateResult.rowCount) {
+            throw new Error('IVR menu was not updated; it may no longer belong to this tenant.');
+        }
+        greetingSaved = true;
+
+        if (path.resolve(req.file.path) !== path.resolve(converted.path)) {
+            await fs.promises.unlink(req.file.path).catch(() => {});
+        }
+        // The greeting is already saved. An audit-log outage must not
+        // report a successful upload as a failed upload.
+        try {
+            await writeAuditLog(t, req.session.user.id, 'IVR_GREETING_AUDIO_UPDATED',
+                'ivr_menu', menuId, null,
+                { publicPath: converted.publicPath, durationSeconds: converted.durationSeconds });
+        } catch (auditErr) {
+            console.error('[IVR] Greeting saved, but audit logging failed:', auditErr.message);
+        }
+
+        return res.redirect(`/admin/ivr?edit=${menuId}` +
+            (req.query.as_tenant ? `&as_tenant=${req.query.as_tenant}` : ''));
+    } catch (err) {
+        // Remove temporary uploads on failure. Keep converted audio only
+        // when the database successfully saved it as the menu greeting.
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        if (!greetingSaved && convertedPath) {
+            await fs.promises.unlink(convertedPath).catch(() => {});
+        }
+        console.error('[IVR] Audio upload/conversion failed:', err.message);
+        return res.status(400).send('Audio upload failed. Please use a valid audio file and try again.');
+    }
+});
+
 
 // ---------------- Omnichannel Webchat Widget + Chatbot ----------------
 const crypto2 = require('crypto');
@@ -2751,10 +4994,21 @@ router.get('/user-groups', async (req, res) => {
         const [groups, agents, editing] = await Promise.all([
             pool.query(`
                 SELECT g.id, g.name, g.description, g.is_active, g.created_at,
-                       COUNT(uga.agent_id)::int AS agent_count
+                       COUNT(DISTINCT uga.agent_id)::int AS agent_count,
+                       COUNT(DISTINCT sga.supervisor_id)::int AS supervisor_count,
+                       COUNT(DISTINCT qa.queue_id)::int AS queue_count,
+                       COUNT(DISTINCT ca.campaign_id)::int AS campaign_count
                 FROM user_groups g
                 LEFT JOIN user_group_agents uga
                   ON uga.group_id = g.id AND uga.tenant_id = g.tenant_id
+                LEFT JOIN supervisor_group_assignments sga
+                  ON sga.group_id = g.id AND sga.tenant_id = g.tenant_id
+                LEFT JOIN queue_agents qa
+                  ON qa.agent_id = uga.agent_id
+                 AND qa.tenant_id = g.tenant_id
+                 AND qa.is_active = TRUE
+                LEFT JOIN campaign_agents ca
+                  ON ca.agent_id = uga.agent_id AND ca.tenant_id = g.tenant_id
                 WHERE g.tenant_id = $1
                 GROUP BY g.id
                 ORDER BY g.name`, [t]),
@@ -2794,7 +5048,7 @@ router.post('/user-groups/create', async (req, res) => {
     const t = req.effectiveTenant.id;
     const name = String(req.body.name || '').trim();
     const description = String(req.body.description || '').trim() || null;
-    if (!name || name.length > 100 || (description && description.length > 250)) {
+    if (!name || name.length > 120 || (description && description.length > 500)) {
         return res.redirect(userGroupsRedirect(req, 'error=invalid'));
     }
     try {
@@ -2816,7 +5070,7 @@ router.post('/user-groups/:id/edit', async (req, res) => {
     const t = req.effectiveTenant.id;
     const name = String(req.body.name || '').trim();
     const description = String(req.body.description || '').trim() || null;
-    if (!name || name.length > 100 || (description && description.length > 250)) {
+    if (!name || name.length > 120 || (description && description.length > 500)) {
         return res.redirect(userGroupsRedirect(req, 'error=invalid'));
     }
     try {
@@ -3415,6 +5669,159 @@ router.post('/supervisor-assignments', async (req, res, next) => {
         await client.query('ROLLBACK').catch(() => {});
         return next(err);
     } finally { client.release(); }
+});
+
+
+
+// TECHLIFE ADMIN AUDIT LOG VIEW
+router.get('/audit-logs', async (req, res, next) => {
+    try {
+        const user = req.session?.user;
+        if (!user?.roles?.includes('admin')) {
+            return res.status(403).send('Forbidden');
+        }
+
+        const tenantId = req.effectiveTenant?.id || user.tenantId;
+        if (!tenantId) {
+            return res.status(403).send('Tenant context unavailable');
+        }
+
+        const isoDate = (value, fallback) => {
+            if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                return fallback;
+            }
+            const parsed = new Date(value + 'T00:00:00.000Z');
+            return Number.isFinite(parsed.getTime()) &&
+                parsed.toISOString().slice(0, 10) === value ? value : fallback;
+        };
+
+        const today = new Date().toISOString().slice(0, 10);
+        const weekAgo = new Date(Date.now() - 6 * 86400000)
+            .toISOString().slice(0, 10);
+
+        let from = isoDate(req.query.from, weekAgo);
+        let to = isoDate(req.query.to, today);
+        if (from > to) {
+            from = weekAgo;
+            to = today;
+        }
+
+        const action = String(req.query.action || '').trim().slice(0, 120);
+        const resourceType = String(req.query.resourceType || '').trim().slice(0, 80);
+        const resourceId = String(req.query.resourceId || '').trim().slice(0, 120);
+        const actor = String(req.query.actor || '').trim().slice(0, 120);
+
+        const where = [
+            'al.tenant_id = $1',
+            'al.created_at >= $2::date',
+            "al.created_at < ($3::date + INTERVAL '1 day')"
+        ];
+        const values = [tenantId, from, to];
+
+        const addSubstringFilter = (column, value) => {
+            values.push(value);
+            where.push(`position(lower($${values.length}) in lower(${column})) > 0`);
+        };
+
+        if (action) addSubstringFilter('al.action', action);
+        if (resourceType) addSubstringFilter('al.resource_type', resourceType);
+        if (resourceId) addSubstringFilter('al.resource_id', resourceId);
+
+        if (actor) {
+            values.push(actor);
+            const p = '$' + values.length;
+            where.push(
+                "(position(lower(" + p + ") in lower(COALESCE(u.full_name, ''))) > 0" +
+                " OR position(lower(" + p + ") in lower(COALESCE(u.username, ''))) > 0" +
+                " OR position(lower(" + p + ") in lower(COALESCE(al.user_id::text, ''))) > 0)"
+            );
+        }
+
+        const fromSql = where.join('\n AND ');
+        const joinSql =
+            ' FROM audit_logs al ' +
+            'LEFT JOIN users u ON u.id = al.user_id AND u.tenant_id = al.tenant_id ';
+
+        const countResult = await pool.query(
+            'SELECT COUNT(*) AS total' + joinSql + ' WHERE ' + fromSql,
+            values
+        );
+        const total = Number(countResult.rows[0]?.total || 0);
+
+        const pageSize = 50;
+        const requestedPage = Math.max(1, Math.min(
+            1000000, Number.parseInt(req.query.page, 10) || 1
+        ));
+        const pageCount = Math.max(1, Math.ceil(total / pageSize));
+        const page = Math.min(requestedPage, pageCount);
+        const offset = (page - 1) * pageSize;
+
+        const rowsValues = [...values, pageSize, offset];
+        const limitPos = values.length + 1;
+        const offsetPos = values.length + 2;
+
+        const result = await pool.query(
+            `SELECT al.id, al.tenant_id, al.user_id, al.action,
+                    al.resource_type, al.resource_id,
+                    al.previous_value, al.new_value,
+                    al.ip_address::text AS ip_address,
+                    al.created_at,
+                    COALESCE(
+                        NULLIF(u.full_name, ''),
+                        NULLIF(u.username, ''),
+                        CASE WHEN al.user_id IS NULL
+                             THEN 'System' ELSE 'User unavailable' END
+                    ) AS actor_name
+             ${joinSql}
+             WHERE ${fromSql}
+             ORDER BY al.created_at DESC, al.id DESC
+             LIMIT $${limitPos} OFFSET $${offsetPos}`,
+            rowsValues
+        );
+
+        // Do not expose credential-like fields saved by older audit events.
+        const redact = (value) => {
+            if (Array.isArray(value)) return value.map(redact);
+            if (!value || typeof value !== 'object') return value;
+
+            const out = {};
+            for (const [key, item] of Object.entries(value)) {
+                if (/(pass(word|phrase)?|secret|token|authorization|credential|api[_-]?key|private[_-]?key|client[_-]?secret|cookie)/i.test(key)) {
+                    out[key] = '[REDACTED]';
+                } else {
+                    out[key] = redact(item);
+                }
+            }
+            return out;
+        };
+
+        const displayJson = (value) => {
+            if (value == null) return '—';
+            try {
+                return JSON.stringify(redact(value), null, 2) || '—';
+            } catch (_) {
+                return '[Unable to display value]';
+            }
+        };
+
+        const records = result.rows.map((row) => ({
+            ...row,
+            previousDisplay: displayJson(row.previous_value),
+            newDisplay: displayJson(row.new_value)
+        }));
+
+        const queryParams = new URLSearchParams({
+            from, to, action, resourceType, resourceId, actor
+        }).toString();
+
+        res.render('admin/audit_logs', {
+            pageTitle: 'Admin — Audit Logs',
+            records, from, to, action, resourceType, resourceId, actor,
+            page, pageSize, pageCount, total, queryParams
+        });
+    } catch (err) {
+        next(err);
+    }
 });
 
 

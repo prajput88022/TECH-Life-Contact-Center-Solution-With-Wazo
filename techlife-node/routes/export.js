@@ -108,8 +108,26 @@ router.get('/calls', async (req, res) => {
         page++;
     } while (batch.length === 500 && page < 50);
 
-    const header = ['Call ID', 'Time', 'Agent', 'Queue', 'From', 'To', 'Direction', 'Status', 'Talk (s)', 'Disposition'];
-    const rows = allRows.map((r) => [r.short_id, r.start_time, r.agent_name, r.queue_name, r.from_number, r.to_number, r.direction, r.status, r.talk_seconds, r.disposition_label]);
+    const header = [
+        'Tenant', 'Agent', 'Extension', 'Queue', 'Campaign',
+        'Call UUID', 'Wazo Call ID', 'Wazo CDR ID',
+        'From', 'To', 'Direction', 'Status',
+        'Start Time', 'Ring Time', 'Answer Time', 'End Time',
+        'Setup Seconds', 'Queue Wait Seconds', 'Ring Seconds',
+        'Talk Seconds', 'Hold Seconds', 'ACW Seconds',
+        'Hangup Cause', 'Hangup By', 'Disposition',
+        'Recording ID', 'Recording Duration Seconds', 'Recording Downloadable'
+    ];
+    const rows = allRows.map((r) => [
+        r.tenant_name, r.agent_name, r.agent_extension, r.queue_name, r.campaign_name,
+        r.call_uuid, r.wazo_call_id, r.wazo_cdr_id,
+        r.from_number, r.to_number, r.direction, r.status,
+        r.start_time, r.ring_time, r.answer_time, r.end_time,
+        r.setup_seconds, r.wait_seconds, r.ring_seconds,
+        r.talk_seconds, r.hold_seconds, r.acw_seconds,
+        r.hangup_cause, r.hangup_by, r.disposition_label,
+        r.recording_id, r.recording_duration_seconds, r.recording_downloadable
+    ]);
     await sendExport(res, header, rows, `cdr_${context}`, format);
 });
 

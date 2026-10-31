@@ -28,6 +28,7 @@ module.exports = {
         calldUrl: process.env.WAZO_CALLD_URL || 'https://prashant.k.rajput:9500/1.0',
         confdUrl: process.env.WAZO_CONFD_URL || 'https://prashant.k.rajput:9486/1.1',
         agentdUrl: process.env.WAZO_AGENTD_URL || 'https://prashant.k.rajput:9493/1.0',
+        agentdInternalUrl: process.env.WAZO_AGENTD_INTERNAL_URL || 'http://127.0.0.1:9493/1.0',
         chatdUrl: process.env.WAZO_CHATD_URL || 'https://prashant.k.rajput:9304/1.0',
         authUrl: process.env.WAZO_AUTH_URL || 'https://prashant.k.rajput:9497/0.1',
         authUsername: process.env.WAZO_AUTH_USER || 'techlife-collector',

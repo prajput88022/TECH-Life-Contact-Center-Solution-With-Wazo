@@ -1,0 +1,135 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Robo-Agents</h1>
+<p class="tl-subtitle">
+    Manage voice-blast and IVR survey campaigns, voice scripts, lead lists,
+    call outcomes, and real DTMF responses.
+</p>
+
+<% if (created) { %>
+<div class="tl-card" role="status">
+    Robo campaign created disabled. Review its script and leads, then activate it from Campaigns when ready.
+</div>
+<% } %>
+
+<div class="tl-card">
+    <h2>Create a Robo campaign</h2>
+    <p class="tl-subtitle">New campaigns are created inactive. Creation alone will not start outbound calling.</p>
+    <form method="post" action="/admin/robo-agents/create">
+        <div class="tl-filters">
+            <div>
+                <label for="roboName">Campaign name</label>
+                <input id="roboName" name="name" maxlength="120" required>
+            </div>
+            <div>
+                <label for="roboMode">Robo type</label>
+                <select id="roboMode" name="dialing_mode" required>
+                    <option value="voice_blast">Voice blast — announcement</option>
+                    <option value="robo_survey">IVR survey — collect DTMF responses</option>
+                </select>
+            </div>
+            <div>
+                <label for="roboDialLevel">Dial level</label>
+                <input id="roboDialLevel" type="number" name="dial_level"
+                       min="0.1" max="100" step="0.1" value="1.0" required>
+            </div>
+            <div>
+                <label for="roboConcurrent">Max concurrent calls</label>
+                <input id="roboConcurrent" type="number" name="max_concurrent_robo_calls"
+                       min="1" max="100" placeholder="Use dial-level default">
+            </div>
+            <div>
+                <label for="roboStart">Start date (optional)</label>
+                <input id="roboStart" type="date" name="start_date">
+            </div>
+            <div>
+                <label for="roboEnd">End date (optional)</label>
+                <input id="roboEnd" type="date" name="end_date">
+            </div>
+            <div>
+                <label for="roboCallerId">Caller ID (optional)</label>
+                <input id="roboCallerId" name="caller_id" maxlength="30"
+                       pattern="[+0-9*#]{1,30}" placeholder="+911234567890">
+            </div>
+            <div>
+                <label for="roboTrunk">Outbound trunk (optional)</label>
+                <select id="roboTrunk" name="trunk_id">
+                    <option value="">Use default routing</option>
+                    <% trunks.forEach(tr => { %>
+                    <option value="<%= tr.id %>"><%= tr.name %> — <%= tr.sip_server %></option>
+                    <% }) %>
+                </select>
+            </div>
+        </div>
+        <label style="display:block;margin:10px 0">
+            <input type="checkbox" name="amd">
+            Enable answering-machine detection
+        </label>
+        <button class="tl-btn" type="submit">Create disabled Robo campaign</button>
+    </form>
+</div>
+
+<h2>Robo campaign summary</h2>
+<div class="tl-card" style="overflow-x:auto">
+    <table>
+        <thead>
+            <tr>
+                <th>Campaign</th><th>Type</th><th>Status</th><th>Leads</th>
+                <th>Calls</th><th>Answered</th><th>Survey responses</th><th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        <% campaigns.forEach(c => { %>
+            <tr>
+                <td>
+                    <strong><%= c.name %></strong>
+                    <div class="tl-subtitle">Dial level <%= c.dial_level %></div>
+                </td>
+                <td><%= c.dialing_mode === 'robo_survey' ? 'IVR Survey' : 'Voice Blast' %></td>
+                <td><%= c.is_active ? 'Active' : 'Disabled' %></td>
+                <td><%= c.lead_count %></td>
+                <td><%= c.call_count %></td>
+                <td><%= c.answered_count %></td>
+                <td><%= c.response_count %></td>
+                <td>
+                    <a href="/admin/campaigns?script=<%= c.id %>">Edit voice script</a>
+                    <span> · </span>
+                    <a href="/admin/campaigns/<%= c.id %>/leads">Manage leads</a>
+                    <span> · </span>
+                    <a href="/admin/campaigns?edit=<%= c.id %>">Edit / activate</a>
+                </td>
+            </tr>
+        <% }) %>
+        <% if (!campaigns.length) { %>
+            <tr><td colspan="8">No Robo campaigns configured.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+</div>
+
+<h2>Survey DTMF responses</h2>
+<div class="tl-card" style="overflow-x:auto">
+    <table>
+        <thead>
+            <tr><th>Campaign</th><th>Survey node</th><th>DTMF entry</th><th>Response count</th><th>Latest response</th></tr>
+        </thead>
+        <tbody>
+        <% responses.forEach(r => { %>
+            <tr>
+                <td><%= r.campaign_name %></td>
+                <td><%= r.node_name || '—' %></td>
+                <td><%= r.response_dtmf %></td>
+                <td><%= r.response_count %></td>
+                <td><%= r.last_response ? new Date(r.last_response).toLocaleString() : '—' %></td>
+            </tr>
+        <% }) %>
+        <% if (!responses.length) { %>
+            <tr><td colspan="5">No survey responses recorded yet.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+    <p class="tl-subtitle">This report uses recorded survey_responses data; no sample responses are generated.</p>
+</div>
+
+<%- include('../partials/foot') %>

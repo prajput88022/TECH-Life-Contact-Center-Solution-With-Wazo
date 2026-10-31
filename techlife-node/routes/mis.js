@@ -87,6 +87,122 @@ router.get('/campaign-report', async (req, res) => {
     res.render('mis/campaign_report', { pageTitle: 'MIS — Campaign Report', campaigns, campaignId, from, to, voiceSummary, selected, roboSummary, surveyResults });
 });
 
+
+// ---- Callback Management Report ----
+router.get('/callback-report', async (req, res, next) => {
+    try {
+        const t = req.session.user.tenantId;
+        const today = new Date().toISOString().slice(0, 10);
+        const validDate = value =>
+            /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+            !Number.isNaN(Date.parse(value + 'T00:00:00Z')) &&
+            new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
+
+        let from = String(req.query.from || today);
+        let to = String(req.query.to || today);
+        if (!validDate(from) || !validDate(to) || from > to) {
+            return res.status(400).send('Choose a valid date range.');
+        }
+
+        const allowedStatuses = [
+            'all', 'scheduled', 'claimed', 'dialing',
+            'completed', 'cancelled', 'failed'
+        ];
+        const status = allowedStatuses.includes(String(req.query.status || ''))
+            ? String(req.query.status || 'all') : 'all';
+
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        let agentId = String(req.query.agent_id || '').trim() || null;
+        let campaignId = String(req.query.campaign_id || '').trim() || null;
+
+        if (agentId && !uuidPattern.test(agentId)) {
+            return res.status(400).send('Invalid agent filter.');
+        }
+        if (campaignId && !uuidPattern.test(campaignId)) {
+            return res.status(400).send('Invalid campaign filter.');
+        }
+
+        const [agentsResult, campaignsResult] = await Promise.all([
+            pool.query(
+                `SELECT ag.id,
+                        COALESCE(NULLIF(u.full_name, ''), u.username, ag.extension, 'Agent') AS agent_name,
+                        ag.extension
+                   FROM agents ag
+                   JOIN users u ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+                  WHERE ag.tenant_id = $1
+                  ORDER BY agent_name`,
+                [t]
+            ),
+            pool.query(
+                `SELECT id, name FROM campaigns WHERE tenant_id = $1 ORDER BY name`,
+                [t]
+            )
+        ]);
+
+        if (agentId && !agentsResult.rows.some(a => a.id === agentId)) {
+            return res.status(400).send('Selected agent does not belong to this tenant.');
+        }
+        if (campaignId && !campaignsResult.rows.some(c => c.id === campaignId)) {
+            return res.status(400).send('Selected campaign does not belong to this tenant.');
+        }
+
+        const params = [t, from, to, agentId, campaignId];
+        const [rowsResult, summaryResult] = await Promise.all([
+            pool.query(
+                `SELECT cb.id, cb.phone_number, cb.due_at, cb.status, cb.notes,
+                        cb.created_at, cb.updated_at, cb.claimed_at, cb.completed_at,
+                        COALESCE(NULLIF(u.full_name, ''), u.username, ag.extension, 'Agent') AS agent_name,
+                        ag.extension, c.name AS campaign_name,
+                        ca.direction AS original_call_direction
+                   FROM agent_callbacks cb
+                   JOIN agents ag ON ag.id = cb.agent_id AND ag.tenant_id = cb.tenant_id
+                   JOIN users u ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+                   LEFT JOIN campaigns c ON c.id = cb.campaign_id AND c.tenant_id = cb.tenant_id
+                   LEFT JOIN calls ca ON ca.id = cb.call_id AND ca.tenant_id = cb.tenant_id
+                  WHERE cb.tenant_id = $1
+                    AND cb.due_at >= $2::date
+                    AND cb.due_at < ($3::date + INTERVAL '1 day')
+                    AND ($4::uuid IS NULL OR cb.agent_id = $4::uuid)
+                    AND ($5::uuid IS NULL OR cb.campaign_id = $5::uuid)
+                    AND ($6::text = 'all' OR cb.status::text = $6::text)
+                  ORDER BY cb.due_at DESC
+                  LIMIT 1000`,
+                [...params, status]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS total,
+                        COUNT(*) FILTER (WHERE status = 'scheduled')::int AS scheduled,
+                        COUNT(*) FILTER (
+                            WHERE status = 'scheduled' AND due_at < now()
+                        )::int AS overdue,
+                        COUNT(*) FILTER (WHERE status = 'claimed')::int AS claimed,
+                        COUNT(*) FILTER (WHERE status = 'dialing')::int AS dialing,
+                        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+                        COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+                        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+                   FROM agent_callbacks cb
+                  WHERE cb.tenant_id = $1
+                    AND cb.due_at >= $2::date
+                    AND cb.due_at < ($3::date + INTERVAL '1 day')
+                    AND ($4::uuid IS NULL OR cb.agent_id = $4::uuid)
+                    AND ($5::uuid IS NULL OR cb.campaign_id = $5::uuid)`,
+                params
+            )
+        ]);
+
+        res.render('mis/callback_report', {
+            pageTitle: 'MIS — Callback Report',
+            from, to, status, agentId, campaignId,
+            agents: agentsResult.rows,
+            campaigns: campaignsResult.rows,
+            rows: rowsResult.rows,
+            counts: summaryResult.rows[0]
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 router.get('/ivr-journey', async (req, res) => {
     const t = req.session.user.tenantId;
     const callId = req.query.call_id || null;

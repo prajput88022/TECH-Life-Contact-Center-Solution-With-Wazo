@@ -17,6 +17,15 @@ async function process(envelope) {
     try {
         await client.query('BEGIN');
 
+        // Claim the event inside the same transaction as its business writes.
+        // A duplicate delivery becomes a no-op; a failed handler rolls this
+        // insert back so the event can be retried.
+        const eventInsert = await writeOmnichannelEvent(client, envelope);
+        if (eventInsert.rowCount === 0) {
+            await client.query('COMMIT');
+            return;
+        }
+
         switch (envelope.event_type) {
             case 'AGENT_LOGIN': case 'AGENT_LOGOUT': case 'AGENT_AVAILABLE':
             case 'AGENT_BREAK_START': case 'AGENT_BREAK_END': case 'AGENT_STATUS_CHANGE':
@@ -40,7 +49,6 @@ async function process(envelope) {
                 break;
         }
 
-        await writeOmnichannelEvent(client, envelope);
         await client.query('COMMIT');
 
         // CRM webhook push happens AFTER commit, outside the transaction,
@@ -50,22 +58,60 @@ async function process(envelope) {
             await notifyCrmIfConfigured(envelope);
         }
     } catch (e) {
-        await client.query('ROLLBACK');
-        console.error('EventProcessor error:', e.message, envelope);
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackError) {
+            console.error('EventProcessor rollback error:', rollbackError.message);
+        }
+        console.error('EventProcessor error:', e.message, {
+            tenant_id: envelope.tenant_id,
+            event_type: envelope.event_type,
+            event_time: envelope.event_time,
+            entity_ids: envelope.entity_ids
+        });
+        throw e;
     } finally {
         client.release();
     }
 }
 
+function stableEventUuid(e) {
+    if (typeof e.event_uuid === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e.event_uuid)) {
+        return e.event_uuid.toLowerCase();
+    }
+
+    const canonical = JSON.stringify([
+        e.tenant_id || '',
+        e.event_type || '',
+        e.channel || 'voice',
+        e.event_time || '',
+        e.entity_ids || {},
+        e.payload || {}
+    ]);
+    const digest = crypto.createHash('sha256').update(canonical).digest();
+    digest[6] = (digest[6] & 0x0f) | 0x50;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    const hex = digest.subarray(0, 16).toString('hex');
+
+    return [
+        hex.slice(0, 8),
+        hex.slice(8, 12),
+        hex.slice(12, 16),
+        hex.slice(16, 20),
+        hex.slice(20, 32)
+    ].join('-');
+}
+
 async function writeOmnichannelEvent(client, e) {
     const ids = e.entity_ids || {};
-    await client.query(
+    return client.query(
         `INSERT INTO omnichannel_events
             (tenant_id, event_uuid, event_type, channel, conversation_id, contact_id,
              agent_id, queue_id, campaign_id, did_id, call_id, message_id, event_time, payload_json)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (event_uuid, event_time) DO NOTHING`,
-        [e.tenant_id, e.event_uuid || crypto.randomUUID(), e.event_type, e.channel || 'voice',
+        [e.tenant_id, stableEventUuid(e), e.event_type, e.channel || 'voice',
          ids.conversation_id || null, ids.contact_id || null, ids.agent_id || null, ids.queue_id || null,
          ids.campaign_id || null, ids.did_id || null, ids.call_id || null, ids.message_id || null,
          e.event_time, JSON.stringify(e.payload || {})]
@@ -91,19 +137,112 @@ async function handleAgentStatus(client, e) {
     }
 }
 
+async function ensureInboundContact(client, e) {
+    const ids = e.entity_ids || {};
+    if (String(e.payload?.direction || '').toLowerCase() !== 'inbound') {
+        return ids.contact_id || null;
+    }
+
+    let contactId = null;
+
+    if (ids.contact_id) {
+        const known = await client.query(
+            'SELECT id FROM contacts WHERE tenant_id = $1 AND id = $2 LIMIT 1',
+            [e.tenant_id, ids.contact_id]
+        );
+        contactId = known.rows[0]?.id || null;
+    }
+
+    const rawPhone = String(e.payload?.from_number || '').trim();
+    const phone = rawPhone.replace(/\D/g, '');
+
+    if (!contactId && phone.length >= 6 && phone.length <= 15) {
+        await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [`inbound-contact:${e.tenant_id}:${phone}`]
+        );
+
+        const found = await client.query(
+            `SELECT id
+               FROM contacts
+              WHERE tenant_id = $1
+                AND (
+                    regexp_replace(COALESCE(primary_phone, ''), '[^0-9]', '', 'g') = $2
+                    OR regexp_replace(COALESCE(alt_phone, ''), '[^0-9]', '', 'g') = $2
+                )
+              ORDER BY CASE
+                  WHEN regexp_replace(COALESCE(primary_phone, ''), '[^0-9]', '', 'g') = $2
+                  THEN 0 ELSE 1 END,
+                  created_at
+              LIMIT 1
+              FOR UPDATE`,
+            [e.tenant_id, phone]
+        );
+
+        if (found.rowCount) {
+            contactId = found.rows[0].id;
+        } else {
+            const created = await client.query(
+                `INSERT INTO contacts (tenant_id, primary_phone)
+                 VALUES ($1, $2)
+                 RETURNING id`,
+                [e.tenant_id, phone]
+            );
+            contactId = created.rows[0].id;
+        }
+    }
+
+    if (!contactId) return null;
+
+    let list = await client.query(
+        `SELECT id
+           FROM contact_lists
+          WHERE tenant_id = $1 AND list_type = 'inbound' AND is_default = true
+          LIMIT 1`,
+        [e.tenant_id]
+    );
+
+    if (!list.rowCount) {
+        list = await client.query(
+            `INSERT INTO contact_lists
+                (tenant_id, name, list_type, is_default, is_active)
+             VALUES ($1, 'Default Inbound', 'inbound', true, true)
+             ON CONFLICT (tenant_id)
+                WHERE list_type = 'inbound' AND is_default = true
+             DO UPDATE SET updated_at = contact_lists.updated_at
+             RETURNING id`,
+            [e.tenant_id]
+        );
+    }
+
+    if (list.rows[0]) {
+        await client.query(
+            `INSERT INTO contact_list_members
+                (tenant_id, list_id, contact_id, membership_status)
+             VALUES ($1, $2, $3, 'active')
+             ON CONFLICT (list_id, contact_id) DO NOTHING`,
+            [e.tenant_id, list.rows[0].id, contactId]
+        );
+    }
+
+    return contactId;
+}
+
 async function handleCallEvent(client, e) {
     const ids = e.entity_ids || {};
     const callRef = ids.wazo_call_id;
     if (!callRef) return;
 
     if (e.event_type === 'CALL_STARTED') {
+        const contactId = await ensureInboundContact(client, e);
         await client.query(
             `INSERT INTO calls (tenant_id, wazo_call_id, agent_id, queue_id, campaign_id, did_id, contact_id,
                 direction, from_number, to_number, status, start_time)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ringing',$11)
-             ON CONFLICT (tenant_id, wazo_call_id) DO NOTHING`,
+             ON CONFLICT (tenant_id, wazo_call_id) DO UPDATE
+                SET contact_id = COALESCE(calls.contact_id, EXCLUDED.contact_id)`,
             [e.tenant_id, callRef, ids.agent_id || null, ids.queue_id || null, ids.campaign_id || null,
-             ids.did_id || null, ids.contact_id || null, e.payload?.direction || 'inbound',
+             ids.did_id || null, contactId, e.payload?.direction || 'inbound',
              e.payload?.from_number || null, e.payload?.to_number || null, e.event_time]
         );
     } else if (e.event_type === 'CALL_ANSWERED') {
@@ -113,12 +252,20 @@ async function handleCallEvent(client, e) {
             [e.event_time, ids.agent_id || null, e.tenant_id, callRef]
         );
     } else if (e.event_type === 'CALL_HANGUP') {
+        const requestedStatus = String(e.payload?.status || 'missed').trim().toLowerCase();
+        const unansweredStatus = ['missed', 'abandoned', 'busy', 'failed'].includes(requestedStatus)
+            ? requestedStatus
+            : 'missed';
+
         await client.query(
             `UPDATE calls SET end_time = $1,
-                status = CASE WHEN answer_time IS NOT NULL THEN 'completed' ELSE $2 END,
-                hangup_cause = $3
-             WHERE tenant_id = $4 AND wazo_call_id = $5`,
-            [e.event_time, e.payload?.status || 'missed', e.payload?.hangup_cause || null, e.tenant_id, callRef]
+                status = CASE
+                    WHEN answer_time IS NOT NULL THEN 'completed'::call_status_type
+                    ELSE $2::call_status_type
+                END,
+                hangup_cause = COALESCE(NULLIF($3, ''), hangup_cause)
+             WHERE tenant_id = $4 AND wazo_call_id = $5 AND end_time IS NULL`,
+            [e.event_time, unansweredStatus, e.payload?.hangup_cause || null, e.tenant_id, callRef]
         );
     } else if (['CALL_HOLD', 'CALL_RESUME'].includes(e.event_type)) {
         await appendCallEventRow(client, e, callRef);

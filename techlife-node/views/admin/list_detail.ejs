@@ -1,0 +1,98 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<p><a href="/admin/lists">← List Management</a></p>
+<h1><%= list.name %></h1>
+<p class="tl-subtitle">
+    <%= list.list_type === 'inbound' ? 'Inbound list' : 'Outbound campaign list' %>
+    <% if (list.campaign_name) { %> · Campaign: <%= list.campaign_name %><% } %>
+    · <%= list.is_active ? 'Active' : 'Inactive' %>
+</p>
+
+<% if (error === 'empty_csv') { %>
+<div class="tl-card">The uploaded CSV did not contain any data rows.</div>
+<% } %>
+
+<% if (importResult) { %>
+<div class="tl-card">
+    <h2>Import summary</h2>
+    <p>New contacts: <strong><%= importResult.contactsCreated || 0 %></strong></p>
+    <p>New list memberships: <strong><%= importResult.membershipsAdded || 0 %></strong></p>
+    <p>New outbound leads: <strong><%= importResult.leadsAdded || 0 %></strong></p>
+    <p>Duplicates skipped: <strong><%= importResult.duplicates || 0 %></strong></p>
+    <p>Invalid phone numbers skipped: <strong><%= importResult.invalid || 0 %></strong></p>
+</div>
+<% } %>
+
+<div class="tl-card">
+    <h2>Import contacts from CSV</h2>
+    <p class="tl-subtitle">
+        Recognized columns include phone, name, unique customer ID, alternate number,
+        email, address, city, state, postal code, country, comments, and custom fields.
+        Existing contacts are matched by primary or alternate phone.
+    </p>
+    <% if (list.is_active) { %>
+    <form method="post" action="/admin/lists/<%= list.id %>/import" enctype="multipart/form-data">
+        <div class="tl-filters">
+            <div>
+                <label for="contactsCsv">Contacts CSV (max 10 MB)</label>
+                <input id="contactsCsv" type="file" name="contacts_csv" accept=".csv,text/csv" required>
+            </div>
+            <div><button class="tl-btn" type="submit">Import CSV</button></div>
+        </div>
+    </form>
+    <% } else { %>
+    <p>This list is inactive. Activate it before importing.</p>
+    <% } %>
+</div>
+
+<div class="tl-card">
+    <h2>Search list contacts</h2>
+    <form method="get" action="/admin/lists/<%= list.id %>">
+        <div class="tl-filters">
+            <div>
+                <label for="searchContacts">Name, phone, customer ID, or email</label>
+                <input id="searchContacts" name="q" value="<%= q %>" maxlength="120">
+            </div>
+            <div><button class="tl-btn" type="submit">Search</button></div>
+            <% if (q) { %><div><a href="/admin/lists/<%= list.id %>">Clear</a></div><% } %>
+        </div>
+    </form>
+    <p class="tl-subtitle">Showing up to 250 matching members.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Customer ID / Name</th><th>Phone</th><th>Alternate</th>
+                <th>Email</th><th>Location</th><th>Last conversation</th>
+            </tr>
+        </thead>
+        <tbody>
+        <% members.forEach(m => { %>
+            <tr>
+                <td>
+                    <strong><%= m.full_name || 'Name not recorded' %></strong>
+                    <% if (m.external_customer_id) { %><div class="tl-subtitle"><%= m.external_customer_id %></div><% } %>
+                    <% if (m.comments) { %><div class="tl-subtitle"><%= m.comments %></div><% } %>
+                </td>
+                <td><%= m.primary_phone || '—' %></td>
+                <td><%= m.alt_phone || '—' %></td>
+                <td><%= m.email || '—' %></td>
+                <td>
+                    <%= [m.address_line1, m.address_line2, m.city, m.state, m.postal_code, m.country].filter(Boolean).join(', ') || '—' %>
+                </td>
+                <td>
+                    <% if (m.last_call_at) { %>
+                        <%= m.last_direction || 'Call' %> · <%= m.last_status || 'Unknown' %>
+                        <div class="tl-subtitle"><%= m.last_call_at %></div>
+                    <% } else { %>No call history<% } %>
+                </td>
+            </tr>
+        <% }) %>
+        <% if (!members.length) { %>
+            <tr><td colspan="6">No matching contacts in this list.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+</div>
+
+<%- include('../partials/foot') %>

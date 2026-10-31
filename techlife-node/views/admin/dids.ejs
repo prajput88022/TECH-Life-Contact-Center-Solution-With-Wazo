@@ -6,6 +6,14 @@
   <div class="tl-filters">
     <div><label>DID Number</label><input name="did_number" required></div>
     <div><label>Description</label><input name="description"></div>
+    <div><label>Inbound Group (optional)</label>
+      <select name="inbound_group_id" class="did-inbound-group">
+        <option value="">— Use direct destination —</option>
+        <% (inboundGroups || []).forEach(g => { %>
+          <option value="<%= g.id %>"><%= g.group_code %> — <%= g.name %></option>
+        <% }) %>
+      </select>
+    </div>
     <div><label>Destination Type</label>
       <select name="destination_type" class="did-destination" required>
         <option value="queue">Queue</option><option value="ivr">IVR</option>
@@ -45,7 +53,9 @@
 <table>
 <tr><th>DID</th><th>Description</th><th>Destination</th><th>Campaign</th><th>Status</th><th></th></tr>
 <% dids.forEach(d => { 
-  const dest = d.destination_type === 'ivr' ? ('IVR: ' + (d.ivr_name || '—'))
+  const dest = d.inbound_group_id
+    ? ('Inbound Group: ' + (d.inbound_group_name || 'Assigned group'))
+    : d.destination_type === 'ivr' ? ('IVR: ' + (d.ivr_name || '—'))
     : d.destination_type === 'agent' ? ('Agent: ' + (d.agent_extension || '—'))
     : d.destination_type === 'extension' ? ('Extension: ' + (d.default_extension || '—'))
     : ('Queue: ' + (d.queue_name || '—'));
@@ -71,6 +81,14 @@
 <form method="post" action="/admin/dids/<%= d.id %>/edit" class="tl-card">
   <div class="tl-filters">
     <div><label>Description</label><input name="description" value="<%= d.description || '' %>"></div>
+    <div><label>Inbound Group (optional)</label>
+      <select name="inbound_group_id" class="did-inbound-group">
+        <option value="">— Use direct destination —</option>
+        <% (inboundGroups || []).forEach(g => { %>
+          <option value="<%= g.id %>" <%= d.inbound_group_id === g.id ? 'selected' : '' %>><%= g.group_code %> — <%= g.name %></option>
+        <% }) %>
+      </select>
+    </div>
     <div><label>Destination Type</label>
       <select name="destination_type" class="did-destination" required>
         <option value="queue" <%= type === 'queue' ? 'selected' : '' %>>Queue</option>
@@ -119,10 +137,19 @@
 document.querySelectorAll('form').forEach(form => {
   const typeSelect = form.querySelector('.did-destination');
   if (!typeSelect) return;
+
+  const groupSelect = form.querySelector('.did-inbound-group');
+
   function updateTargets() {
+    const usingGroup = Boolean(groupSelect && groupSelect.value);
+
+    typeSelect.disabled = usingGroup;
+    typeSelect.required = !usingGroup;
+
     form.querySelectorAll('.did-target').forEach(box => {
-      const active = box.dataset.type === typeSelect.value;
+      const active = !usingGroup && box.dataset.type === typeSelect.value;
       box.hidden = !active;
+
       const select = box.querySelector('select');
       if (select) {
         select.required = active;
@@ -130,7 +157,9 @@ document.querySelectorAll('form').forEach(form => {
       }
     });
   }
+
   typeSelect.addEventListener('change', updateTargets);
+  if (groupSelect) groupSelect.addEventListener('change', updateTargets);
   updateTargets();
 });
 </script>

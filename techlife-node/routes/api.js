@@ -6,6 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../src/db');
+const phoneMasker = require('../src/phoneMasker');
 const { requireAuth } = require('../src/auth');
 const agentReportService = require('../src/services/agentReportService');
 const queueReportService = require('../src/services/queueReportService');
@@ -13,51 +14,83 @@ const didReportService = require('../src/services/didReportService');
 const campaignReportService = require('../src/services/campaignReportService');
 const ivrReportService = require('../src/services/ivrReportService');
 const config = require('../config/config');
+const { wazoFetch } = require('../src/wazoFetch');
+const wazoAgentService = require('../src/wazoAgentService');
 const { isScopedSupervisor, hasAdminAccess, agentAccessPredicate, canAccessAgent } = require('../src/supervisorScope');
 
 router.use(requireAuth);
 
-// ---- Outbound DND preflight ----
+// ---- Outbound DNC preflight ----
 router.post('/dnd/check', async (req, res) => {
     const u = req.session.user;
     const raw = typeof req.body?.phone_number === 'string'
         ? req.body.phone_number.trim()
         : '';
 
-    // Accept only dialable characters; normalize to digits for matching.
     if (!raw || !/^[+0-9().\-\s]+$/.test(raw)) {
         return res.status(400).json({ error: 'invalid_phone_number' });
     }
 
     const phone = raw.replace(/\D/g, '');
-    // Allow short numbers/extensions; reject input containing no digits.
     if (!phone) {
         return res.status(400).json({ error: 'invalid_phone_number' });
     }
 
+    const rawCampaignId = req.body?.campaign_id;
+    let campaignId = null;
+
+    if (rawCampaignId !== undefined &&
+        rawCampaignId !== null &&
+        rawCampaignId !== '') {
+        if (typeof rawCampaignId !== 'string' ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCampaignId)) {
+            return res.status(400).json({ error: 'invalid_campaign_id' });
+        }
+        campaignId = rawCampaignId;
+    }
+
     try {
+        if (campaignId) {
+            const campaign = await pool.query(
+                `SELECT 1 FROM campaigns
+                 WHERE tenant_id = $1 AND id = $2
+                 LIMIT 1`,
+                [u.tenantId, campaignId]
+            );
+
+            if (!campaign.rowCount) {
+                return res.status(400).json({ error: 'invalid_campaign_id' });
+            }
+        }
+
         const result = await pool.query(
-            `SELECT id
-             FROM do_not_call_entries
-             WHERE tenant_id = $1
-               AND campaign_id IS NULL
-               AND regexp_replace(phone_number, '[^0-9]', '', 'g') = $2
-             LIMIT 1`,
-            [u.tenantId, phone]
+            `SELECT d.id
+               FROM do_not_call_entries d
+              WHERE d.tenant_id = $1
+                AND regexp_replace(d.phone_number, '[^0-9]', '', 'g') = $2
+                AND (
+                    d.campaign_id IS NULL
+                    OR ($3::uuid IS NOT NULL AND d.campaign_id = $3::uuid)
+                )
+              LIMIT 1`,
+            [u.tenantId, phone, campaignId]
         );
 
-        if (result.rowCount > 0) {
+        if (result.rowCount) {
             return res.status(403).json({
                 allowed: false,
                 error: 'do_not_call',
-                message: 'This number is on your organisation’s Do Not Call list.'
+                message: 'This number is on the applicable Do Not Call list.'
             });
         }
 
         return res.json({ allowed: true });
     } catch (err) {
-        console.error('DND preflight failed:', err.message);
-        return res.status(503).json({ allowed: false, error: 'dnd_check_unavailable' });
+        console.error('DNC preflight failed:', err.message);
+        return res.status(503).json({
+            allowed: false,
+            error: 'dnc_check_unavailable'
+        });
     }
 });
 
@@ -69,13 +102,26 @@ function dateRange(req) {
 
 // ---- SIP credentials for the WebRTC workspace ----
 router.get('/agents/:id/sip-credentials', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
     const u = req.session.user;
-    const isSelf = u.agentId === req.params.id;
-    // SIP secrets are never exposed to supervisors for other agents.
-    if (!isSelf && !hasAdminAccess(u)) return res.status(403).json({ error: 'forbidden' });
+    let isSelf = u.agentId === req.params.id;
+    if (!isSelf) {
+        const ownProfile = await pool.query(
+            `SELECT 1 FROM agents
+              WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+              LIMIT 1`,
+            [req.params.id, u.tenantId, u.id]
+        );
+        isSelf = ownProfile.rowCount > 0;
+    }
+    // Never expose another user's SIP credentials to a supervisor.
+    if (!isSelf && !hasAdminAccess(u)) {
+        return res.status(403).json({ error: 'forbidden' });
+    }
 
     const result = await pool.query(
         `SELECT ag.extension, ag.sip_username, ag.sip_password, ag.provisioning_status,
+                ag.wazo_line_id, t.wazo_tenant_uuid,
                 COALESCE(NULLIF(t.sip_domain, ''), NULLIF($3, ''), NULLIF(ag.sip_domain, '')) AS sip_domain
          FROM agents ag JOIN tenants t ON t.id = ag.tenant_id
          WHERE ag.tenant_id = $1 AND ag.id = $2`,
@@ -86,9 +132,75 @@ router.get('/agents/:id/sip-credentials', async (req, res) => {
     if (row.provisioning_status !== 'provisioned' && row.provisioning_status !== 'manual') {
         return res.status(409).json({ error: 'not_provisioned', status: row.provisioning_status });
     }
+    // The Wazo line name is the configured AOR identity. It is
+    // intentionally separate from the SIP digest-authentication username.
+    let sipUriUser;
+    try {
+        if (!row.wazo_line_id || !row.wazo_tenant_uuid) {
+            throw new Error('Agent Wazo line or tenant UUID is missing');
+        }
+
+        const authResponse = await wazoFetch(
+            `${config.wazo.authUrl.replace(/\/$/, '')}/token`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Basic ' + Buffer.from(
+                        `${config.wazo.authUsername}:${config.wazo.authPassword}`
+                    ).toString('base64'),
+                },
+                body: JSON.stringify({ backend: 'wazo_user', expiration: 300 }),
+            }
+        );
+
+        const authPayload = await authResponse.json().catch(() => ({}));
+        const wazoToken = authPayload?.data?.token;
+        if (!authResponse.ok || !wazoToken) {
+            throw new Error(`Wazo authentication failed (HTTP ${authResponse.status})`);
+        }
+
+        const lineResponse = await wazoFetch(
+            `${config.wazo.confdUrl.replace(/\/$/, '')}/lines/${encodeURIComponent(row.wazo_line_id)}`,
+            {
+                headers: {
+                    'X-Auth-Token': wazoToken,
+                    'Wazo-Tenant': row.wazo_tenant_uuid,
+                    Accept: 'application/json',
+                },
+            }
+        );
+
+        const linePayload = await lineResponse.json().catch(() => ({}));
+        if (!lineResponse.ok) {
+            throw new Error(`Wazo line lookup failed (HTTP ${lineResponse.status})`);
+        }
+
+        const line = linePayload?.data?.data ?? linePayload?.data ?? linePayload;
+        if (
+            Number(line?.id) !== Number(row.wazo_line_id) ||
+            String(line?.tenant_uuid || '').toLowerCase() !==
+                String(row.wazo_tenant_uuid).toLowerCase()
+        ) {
+            throw new Error('Wazo line identity or tenant verification failed');
+        }
+
+        sipUriUser = String(line?.name || '').trim();
+        if (!sipUriUser || /[\s@;]/.test(sipUriUser)) {
+            throw new Error('Wazo line has no valid SIP URI identity');
+        }
+    } catch (err) {
+        console.error(
+            'Agent SIP line lookup failed:',
+            String(err.message || err).slice(0, 250)
+        );
+        return res.status(503).json({ error: 'sip_configuration_unavailable' });
+    }
+
     res.json({
         extension: row.extension,
         sip_username: row.sip_username,
+        sip_uri_user: sipUriUser,
         sip_password: row.sip_password,
         sip_domain: row.sip_domain,
         ws_uri: config.wazo.sipWsUri,
@@ -269,6 +381,108 @@ router.post('/agents/:id/disposition', async (req, res) => {
 });
 
 // ---- CRM screen-pop config, for the agent workspace to fetch on load ----
+
+// ---- Agent customer profile and recent call history ----
+router.get('/contacts/lookup', async (req, res) => {
+    const u = req.session.user;
+    const tenantId = u.tenantId;
+    const raw = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+
+    if (!raw || raw.length > 64 || !/^[+0-9().\-\s]+$/.test(raw)) {
+        return res.status(400).json({ error: 'invalid_phone_number' });
+    }
+
+    const phone = raw.replace(/\D/g, '');
+    if (phone.length < 6 || phone.length > 15) {
+        return res.status(400).json({ error: 'invalid_phone_number' });
+    }
+
+    try {
+        // Only an authenticated agent belonging to this tenant may use this endpoint.
+        const agent = await pool.query(
+            `SELECT id
+               FROM agents
+              WHERE tenant_id = $1 AND user_id = $2
+                AND ($3::uuid IS NULL OR id = $3::uuid)
+              LIMIT 1`,
+            [tenantId, u.id, u.agentId || null]
+        );
+
+        if (!agent.rowCount) {
+            return res.status(403).json({ error: 'forbidden' });
+        }
+
+        const contactResult = await pool.query(
+            `SELECT id, external_customer_id, full_name,
+                    primary_phone, alt_phone, email, city, state,
+                    address_line1, address_line2, postal_code, country, comments
+               FROM contacts
+              WHERE tenant_id = $1
+                AND (
+                    regexp_replace(COALESCE(primary_phone, ''), '[^0-9]', '', 'g') = $2
+                    OR regexp_replace(COALESCE(alt_phone, ''), '[^0-9]', '', 'g') = $2
+                )
+              ORDER BY
+                (regexp_replace(COALESCE(primary_phone, ''), '[^0-9]', '', 'g') = $2) DESC,
+                updated_at DESC,
+                created_at
+              LIMIT 1`,
+            [tenantId, phone]
+        );
+
+        if (!contactResult.rowCount) {
+            return res.json({ found: false, contact: null, history: [] });
+        }
+
+        const contact = contactResult.rows[0];
+        const phoneNumbers = [
+            contact.primary_phone,
+            contact.alt_phone
+        ].map(value => String(value || '').replace(/\D/g, '')).filter(Boolean);
+
+        const historyResult = await pool.query(
+            `SELECT ca.id, ca.direction, ca.status, ca.start_time,
+                    ca.answer_time, ca.end_time, ca.talk_seconds,
+                    ca.from_number, ca.to_number, ca.hangup_cause,
+                    cp.name AS campaign_name, q.name AS queue_name
+               FROM calls ca
+               LEFT JOIN campaigns cp
+                 ON cp.id = ca.campaign_id AND cp.tenant_id = ca.tenant_id
+               LEFT JOIN queues q
+                 ON q.id = ca.queue_id AND q.tenant_id = ca.tenant_id
+              WHERE ca.tenant_id = $1
+                AND (
+                    ca.contact_id = $2
+                    OR regexp_replace(COALESCE(ca.from_number, ''), '[^0-9]', '', 'g') = ANY($3::text[])
+                    OR regexp_replace(COALESCE(ca.to_number, ''), '[^0-9]', '', 'g') = ANY($3::text[])
+                )
+              ORDER BY ca.start_time DESC NULLS LAST
+              LIMIT 10`,
+            [tenantId, contact.id, phoneNumbers]
+        );
+
+        const shouldMask = await phoneMasker.shouldMask(tenantId, 'agent');
+        const maskValue = value => shouldMask ? phoneMasker.mask(value) : value;
+
+        res.json({
+            found: true,
+            contact: {
+                ...contact,
+                primary_phone: maskValue(contact.primary_phone),
+                alt_phone: maskValue(contact.alt_phone)
+            },
+            history: historyResult.rows.map(call => ({
+                ...call,
+                from_number: maskValue(call.from_number),
+                to_number: maskValue(call.to_number)
+            }))
+        });
+    } catch (err) {
+        console.error('Agent contact lookup failed:', err.message);
+        return res.status(503).json({ error: 'contact_lookup_unavailable' });
+    }
+});
+
 router.get('/crm/config', async (req, res) => {
     const u = req.session.user;
     const result = await pool.query(
@@ -288,8 +502,10 @@ router.get('/agents/:id/status', async (req, res) => {
         return res.status(403).json({ error: 'forbidden' });
     }
     const result = await pool.query(
-        `SELECT status, started_at FROM agent_status_events
-         WHERE tenant_id = $1 AND agent_id = $2 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1`,
+        `SELECT status, reason_code, queue_id, started_at
+         FROM agent_status_events
+         WHERE tenant_id = $1 AND agent_id = $2 AND ended_at IS NULL
+         ORDER BY started_at DESC LIMIT 1`,
         [u.tenantId, req.params.id]
     );
     res.json(result.rows[0] || { status: 'offline' });
@@ -300,28 +516,240 @@ router.post('/agents/:id/status', async (req, res) => {
     if (u.agentId !== req.params.id && !hasAdminAccess(u)) {
         return res.status(403).json({ error: 'forbidden' });
     }
-    const { status, reason_code, queue_id } = req.body;
-    const validStatuses = ['login','logout','available','break','lunch','tea','training',
-        'meeting','system_issue','personal_break','after_call_work','offline','custom'];
-    if (!validStatuses.includes(status)) return res.status(422).json({ error: 'invalid_status' });
+
+    const { status, reason_code, queue_id } = req.body || {};
+    const validStatuses = [
+        'login', 'logout', 'available', 'break', 'lunch', 'tea',
+        'training', 'meeting', 'system_issue', 'personal_break',
+        'offline', 'custom', 'after_call_work'
+    ];
+    const pauseStatuses = new Set([
+        'break', 'lunch', 'tea', 'training', 'meeting',
+        'system_issue', 'personal_break', 'custom'
+    ]);
+
+    if (!validStatuses.includes(status)) {
+        return res.status(422).json({ error: 'invalid_status' });
+    }
+
+    // ACW is system-managed. Agents cannot manually clear or create it.
+    if (req.body?.status === 'after_call_work') {
+        return res.status(409).json({ error: 'after_call_work_is_system_managed' });
+    }
+
+    if (pauseStatuses.has(status) && !reason_code) {
+        return res.status(422).json({ error: 'pause_reason_required' });
+    }
 
     const client = await pool.connect();
+    let wazoMutation = null;
+    let agentForCompensation = null;
+
     try {
         await client.query('BEGIN');
-        await client.query(
-            `UPDATE agent_status_events SET ended_at = now() WHERE tenant_id = $1 AND agent_id = $2 AND ended_at IS NULL`,
-            [u.tenantId, req.params.id]
+
+        const agentResult = await client.query(
+            `SELECT a.id, a.agent_number, a.wazo_agent_id, a.is_active,
+                    t.wazo_tenant_uuid
+             FROM agents a
+             JOIN tenants t ON t.id = a.tenant_id
+             WHERE a.id = $1 AND a.tenant_id = $2
+             FOR UPDATE OF a`,
+            [req.params.id, u.tenantId]
         );
+
+        const agent = agentResult.rows[0];
+        agentForCompensation = agent || null;
+        if (!agent || !agent.is_active) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'agent_not_found_or_inactive' });
+        }
+
+        if (!agent.wazo_agent_id || !agent.agent_number || !agent.wazo_tenant_uuid) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'wazo_agent_not_provisioned' });
+        }
+
+        const currentResult = await client.query(
+            `SELECT status::text, reason_code, queue_id, started_at
+             FROM agent_status_events
+             WHERE tenant_id = $1 AND agent_id = $2 AND ended_at IS NULL
+             ORDER BY started_at DESC
+             LIMIT 1
+             FOR UPDATE`,
+            [u.tenantId, agent.id]
+        );
+        const current = currentResult.rows[0] || null;
+
+        let validatedQueueId = null;
+        if (queue_id) {
+            const queueResult = await client.query(
+                `SELECT id FROM queues WHERE id = $1 AND tenant_id = $2`,
+                [queue_id, u.tenantId]
+            );
+            if (!queueResult.rowCount) {
+                await client.query('ROLLBACK');
+                return res.status(422).json({ error: 'invalid_queue_id' });
+            }
+            validatedQueueId = queueResult.rows[0].id;
+        }
+
+        // Do not discard the local reason while Wazo still owns a pause.
+        // Resume through Available first, then select another non-pause status.
+        if (
+            current &&
+            pauseStatuses.has(current.status) &&
+            status !== 'available' &&
+            !pauseStatuses.has(status)
+        ) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                error: 'resume_from_pause_before_status_change'
+            });
+        }
+
+        let pauseCode = null;
+        if (pauseStatuses.has(status)) {
+            const pauseResult = await client.query(
+                `SELECT id, code, label
+                 FROM pause_codes
+                 WHERE tenant_id = $1 AND id = $2 AND is_active = TRUE`,
+                [u.tenantId, reason_code]
+            );
+            pauseCode = pauseResult.rows[0] || null;
+
+            if (!pauseCode) {
+                await client.query('ROLLBACK');
+                return res.status(422).json({ error: 'invalid_or_inactive_pause_code' });
+            }
+
+            const existingAgent = await wazoAgentService.getAgent(
+                agent.wazo_tenant_uuid, agent.agent_number, agent.wazo_agent_id
+            );
+
+            if (!existingAgent.logged) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'wazo_agent_not_logged_in' });
+            }
+
+            if (existingAgent.paused) {
+                if (existingAgent.paused_reason !== pauseCode.code) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({ error: 'wazo_agent_paused_for_another_reason' });
+                }
+            } else {
+                wazoMutation = { action: 'pause', reason: pauseCode.code };
+                await wazoAgentService.pauseAgent(
+                    agent.wazo_tenant_uuid,
+                    agent.agent_number,
+                    agent.wazo_agent_id,
+                    pauseCode.code
+                );
+            }
+        } else if (status === 'available') {
+            if (current?.status === 'after_call_work') {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'after_call_work_not_expired' });
+            }
+
+            const activeCall = await client.query(
+                `SELECT 1
+                 FROM calls
+                 WHERE tenant_id = $1 AND agent_id = $2
+                   AND status IN ('ringing','answered')
+                   AND end_time IS NULL
+                 LIMIT 1`,
+                [u.tenantId, agent.id]
+            );
+
+            if (activeCall.rowCount) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'agent_has_active_call' });
+            }
+
+            const existingAgent = await wazoAgentService.getAgent(
+                agent.wazo_tenant_uuid, agent.agent_number, agent.wazo_agent_id
+            );
+
+            if (!existingAgent.logged) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'wazo_agent_not_logged_in' });
+            }
+
+            if (existingAgent.paused) {
+                const expectedReason = current?.reason_code;
+                if (!expectedReason || existingAgent.paused_reason !== expectedReason) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({ error: 'wazo_pause_not_owned_by_current_status' });
+                }
+
+                wazoMutation = { action: 'unpause', reason: expectedReason };
+                await wazoAgentService.unpauseAgent(
+                    agent.wazo_tenant_uuid,
+                    agent.agent_number,
+                    agent.wazo_agent_id,
+                    expectedReason
+                );
+            }
+        }
+
         await client.query(
-            `INSERT INTO agent_status_events (tenant_id, agent_id, queue_id, status, reason_code, started_at, source)
+            `UPDATE agent_status_events
+             SET ended_at = now()
+             WHERE tenant_id = $1 AND agent_id = $2 AND ended_at IS NULL`,
+            [u.tenantId, agent.id]
+        );
+
+        await client.query(
+            `INSERT INTO agent_status_events
+                (tenant_id, agent_id, queue_id, status, reason_code, started_at, source)
              VALUES ($1,$2,$3,$4,$5,now(),'node_ui')`,
-            [u.tenantId, req.params.id, queue_id || null, status, reason_code || null]
+            [
+                u.tenantId,
+                agent.id,
+                validatedQueueId,
+                status,
+                pauseCode ? pauseCode.code : null
+            ]
         );
+
         await client.query('COMMIT');
-        res.json({ ok: true });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(500).json({ error: 'server_error' });
+        return res.json({ ok: true, status, reason_code: pauseCode?.code || null });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+
+        // Compensate a successful Wazo pause/unpause if the database commit
+        // failed after the remote state changed.
+        if (wazoMutation) {
+            try {
+                if (wazoMutation.action === 'pause') {
+                    await wazoAgentService.unpauseAgent(
+                        agentForCompensation.wazo_tenant_uuid,
+                        agentForCompensation.agent_number,
+                        agentForCompensation.wazo_agent_id,
+                        wazoMutation.reason
+                    );
+                } else {
+                    await wazoAgentService.pauseAgent(
+                        agentForCompensation.wazo_tenant_uuid,
+                        agentForCompensation.agent_number,
+                        agentForCompensation.wazo_agent_id,
+                        wazoMutation.reason
+                    );
+                }
+            } catch (compensationError) {
+                console.error('Wazo status compensation failed:', compensationError.message);
+            }
+        }
+
+        console.error('Agent status update failed:', error.message);
+        const statusCode = [400, 401, 403, 404, 409].includes(error.status)
+            ? error.status
+            : 500;
+        return res.status(statusCode).json({
+            error: statusCode === 500 ? 'server_error' : 'wazo_status_update_failed',
+            message: statusCode === 500 ? undefined : error.message
+        });
     } finally {
         client.release();
     }

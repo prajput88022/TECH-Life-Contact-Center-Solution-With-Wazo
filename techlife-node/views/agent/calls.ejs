@@ -2,28 +2,47 @@
 <%- include('../partials/nav') %>
 <h1>My Calls</h1>
 <p class="tl-subtitle">
-    Each call keeps its own unique ID so you can always reference a specific call, even when the customer number is masked.
+    Each call has a unique UUID. Only calls assigned to your agent profile are shown.
     <% if (isMasked) { %><span class="tl-status-pill status-break">Number masking is ON for your screen</span><% } %>
 </p>
 <form method="get" class="tl-filters">
     <div><label>From</label><input type="datetime-local" name="from" value="<%= from.replace(' ','T').slice(0,16) %>"></div>
     <div><label>To</label><input type="datetime-local" name="to" value="<%= to.replace(' ','T').slice(0,16) %>"></div>
     <div><button class="tl-btn" type="submit">Run</button></div>
-    <div><a class="tl-btn secondary" href="/export/calls?format=csv&context=agent&from=<%= encodeURIComponent(from) %>&to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
+    <div><a class="tl-btn secondary" href="/export/calls?format=csv&amp;context=agent&amp;from=<%= encodeURIComponent(from) %>&amp;to=<%= encodeURIComponent(to) %>">Export CSV</a></div>
 </form>
+
+<div style="overflow-x:auto">
 <table>
-<tr><th>Call ID</th><th>Time</th><th>Customer Number</th><th>Direction</th><th>Status</th><th>Talk</th><th>Disposition</th></tr>
+<thead><tr>
+    <th>Call UUID</th><th>Wazo Call ID</th><th>Time</th><th>Customer Number</th>
+    <th>Direction</th><th>Status</th><th>Queue</th><th>Campaign</th>
+    <th>Setup (s)</th><th>Queue wait (s)</th><th>Ring (s)</th><th>Talk (s)</th>
+    <th>Hold (s)</th><th>Hangup cause</th><th>Disposition</th><th>Recording</th>
+</tr></thead>
+<tbody>
 <% rows.forEach(r => { %>
 <tr>
-    <td><code><%= r.short_id %></code></td>
-    <td><%= r.start_time %></td>
+    <td><code title="<%= r.call_uuid %>"><%= r.short_id %></code><br><small><%= r.call_uuid %></small></td>
+    <td><%= r.wazo_call_id || '—' %></td>
+    <td><%= r.start_time || '—' %></td>
     <td><%= (r.direction === 'inbound' ? r.from_number : r.to_number) || '—' %></td>
-    <td><%= r.direction %></td>
-    <td><%= r.status %></td>
-    <td><%= r.talk_seconds != null ? new Date(r.talk_seconds*1000).toISOString().substr(11,8) : '—' %></td>
+    <td><%= r.direction || '—' %></td>
+    <td><%= r.status || '—' %></td>
+    <td><%= r.queue_name || '—' %></td>
+    <td><%= r.campaign_name || '—' %></td>
+    <td><%= r.setup_seconds ?? '—' %></td>
+    <td><%= r.wait_seconds ?? '—' %></td>
+    <td><%= r.ring_seconds ?? '—' %></td>
+    <td><%= r.talk_seconds ?? '—' %></td>
+    <td><%= r.hold_seconds ?? '—' %></td>
+    <td><%= r.hangup_cause || '—' %></td>
     <td><%= r.disposition_label || '—' %></td>
+    <td><%= r.recording_id ? (r.recording_downloadable ? 'Downloadable' : 'Stored') : '—' %></td>
 </tr>
 <% }) %>
-<% if (rows.length === 0) { %><tr><td colspan="7">No calls in this range.</td></tr><% } %>
+<% if (rows.length === 0) { %><tr><td colspan="16">No calls in this range.</td></tr><% } %>
+</tbody>
 </table>
+</div>
 <%- include('../partials/foot') %>

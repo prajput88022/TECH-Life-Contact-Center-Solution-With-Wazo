@@ -1,0 +1,139 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Inbound Groups</h1>
+<p>Reusable inbound routing profiles. Group assignment to DIDs and live Wazo handling are separate integration steps.</p>
+
+<form method="post" action="/admin/inbound-groups/create" class="tl-card">
+  <h2>Create Inbound Group</h2>
+  <div class="tl-filters">
+    <div><label>Group Code</label><input name="group_code" maxlength="40" pattern="[A-Za-z0-9_-]+" required></div>
+    <div><label>Group Name</label><input name="name" maxlength="150" required></div>
+    <div><label>Destination Type</label>
+      <select name="destination_type" class="ig-destination" required>
+        <option value="queue">Queue</option><option value="ivr">IVR</option>
+        <option value="agent">Agent</option><option value="extension">Extension / DID</option>
+      </select>
+    </div>
+    <div class="ig-target" data-type="queue"><label>Queue</label>
+      <select name="default_queue_id"><option value="">— Select queue —</option>
+        <% queues.forEach(q => { %><option value="<%= q.id %>"><%= q.name %></option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="ivr" hidden><label>IVR Menu</label>
+      <select name="default_ivr_id"><option value="">— Select IVR —</option>
+        <% ivrs.forEach(i => { %><option value="<%= i.id %>"><%= i.name %></option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="agent" hidden><label>Agent</label>
+      <select name="default_agent_id"><option value="">— Select agent —</option>
+        <% agents.forEach(a => { %><option value="<%= a.id %>"><%= a.extension %> (<%= a.agent_number || 'Agent' %>)</option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="extension" hidden><label>Extension / DID</label>
+      <select name="default_extension"><option value="">— Select extension —</option>
+        <% extensions.forEach(x => { %><option value="<%= x.value %>"><%= x.label %></option><% }) %>
+      </select>
+    </div>
+    <div><label>Queue Timeout (seconds)</label><input type="number" name="queue_timeout_seconds" min="0" max="7200" value="60" required></div>
+    <div><label>No-Agent Action</label>
+      <select name="no_agent_action">
+        <option value="hangup">Hang up</option>
+        <option value="voicemail">Voicemail (requires configured Wazo destination)</option>
+        <option value="extension">Extension (fallback not yet configured)</option>
+      </select>
+    </div>
+    <div><label>Welcome Message (text only)</label><textarea name="welcome_message" maxlength="2000" rows="2"></textarea></div>
+    <div><label>Status</label><select name="is_active"><option value="1">Active</option><option value="0">Disabled</option></select></div>
+  </div>
+  <p><strong>Note:</strong> timeout, no-agent action, and welcome text are stored settings here; they do not yet trigger audio playback or fallback routing in Wazo.</p>
+  <button class="tl-btn" type="submit">Create Group</button>
+</form>
+
+<h2>Existing Groups</h2>
+<table>
+  <tr><th>Code</th><th>Name</th><th>Destination</th><th>Timeout</th><th>Status</th><th></th></tr>
+  <% groups.forEach(g => {
+    const dest = g.destination_type === 'queue' ? ('Queue: ' + (g.queue_name || '—'))
+      : g.destination_type === 'ivr' ? ('IVR: ' + (g.ivr_name || '—'))
+      : g.destination_type === 'agent' ? ('Agent: ' + (g.agent_extension || '—'))
+      : ('Extension: ' + (g.default_extension || '—'));
+  %>
+  <tr>
+    <td><%= g.group_code %></td><td><%= g.name %></td><td><%= dest %></td>
+    <td><%= g.queue_timeout_seconds %> sec</td><td><%= g.is_active ? 'Active' : 'Disabled' %></td>
+    <td><a href="?edit=<%= g.id %>">Edit</a> &middot;
+      <form method="post" action="/admin/inbound-groups/<%= g.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this group? Assigned DIDs will be unlinked.');">
+        <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
+      </form>
+    </td>
+  </tr>
+  <% }) %>
+  <% if (!groups.length) { %><tr><td colspan="6">No inbound groups configured yet.</td></tr><% } %>
+</table>
+
+<% if (editId) { const g = groups.find(x => x.id === editId); if (g) { %>
+<h2>Edit Group — <%= g.name %></h2>
+<form method="post" action="/admin/inbound-groups/<%= g.id %>/edit" class="tl-card">
+  <div class="tl-filters">
+    <div><label>Group Code</label><input name="group_code" maxlength="40" pattern="[A-Za-z0-9_-]+" value="<%= g.group_code %>" required></div>
+    <div><label>Group Name</label><input name="name" maxlength="150" value="<%= g.name %>" required></div>
+    <div><label>Destination Type</label>
+      <select name="destination_type" class="ig-destination" required>
+        <% ['queue','ivr','agent','extension'].forEach(type => { %><option value="<%= type %>" <%= g.destination_type === type ? 'selected' : '' %>><%= type === 'ivr' ? 'IVR' : type === 'extension' ? 'Extension / DID' : type.charAt(0).toUpperCase() + type.slice(1) %></option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="queue"><label>Queue</label>
+      <select name="default_queue_id"><option value="">— Select queue —</option>
+        <% queues.forEach(q => { %><option value="<%= q.id %>" <%= g.default_queue_id === q.id ? 'selected' : '' %>><%= q.name %></option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="ivr"><label>IVR Menu</label>
+      <select name="default_ivr_id"><option value="">— Select IVR —</option>
+        <% ivrs.forEach(i => { %><option value="<%= i.id %>" <%= g.default_ivr_id === i.id ? 'selected' : '' %>><%= i.name %></option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="agent"><label>Agent</label>
+      <select name="default_agent_id"><option value="">— Select agent —</option>
+        <% agents.forEach(a => { %><option value="<%= a.id %>" <%= g.default_agent_id === a.id ? 'selected' : '' %>><%= a.extension %> (<%= a.agent_number || 'Agent' %>)</option><% }) %>
+      </select>
+    </div>
+    <div class="ig-target" data-type="extension"><label>Extension / DID</label>
+      <select name="default_extension"><option value="">— Select extension —</option>
+        <% extensions.forEach(x => { %><option value="<%= x.value %>" <%= g.default_extension === x.value ? 'selected' : '' %>><%= x.label %></option><% }) %>
+      </select>
+    </div>
+    <div><label>Queue Timeout (seconds)</label><input type="number" name="queue_timeout_seconds" min="0" max="7200" value="<%= g.queue_timeout_seconds %>" required></div>
+    <div><label>No-Agent Action</label>
+      <select name="no_agent_action">
+        <% ['hangup','voicemail','extension'].forEach(v => { %><option value="<%= v %>" <%= g.no_agent_action === v ? 'selected' : '' %>><%= v === 'voicemail' ? 'Voicemail (requires configured Wazo destination)' : v === 'extension' ? 'Extension (fallback not yet configured)' : 'Hang up' %></option><% }) %>
+      </select>
+    </div>
+    <div><label>Welcome Message (text only)</label><textarea name="welcome_message" maxlength="2000" rows="2"><%= g.welcome_message || '' %></textarea></div>
+    <div><label>Status</label><select name="is_active"><option value="1" <%= g.is_active ? 'selected' : '' %>>Active</option><option value="0" <%= !g.is_active ? 'selected' : '' %>>Disabled</option></select></div>
+  </div>
+  <p><strong>Note:</strong> timeout, no-agent action, and welcome text are stored settings here; they do not yet trigger audio playback or fallback routing in Wazo.</p>
+  <button class="tl-btn" type="submit">Save Changes</button>
+  <a class="tl-btn secondary" href="/admin/inbound-groups">Cancel</a>
+</form>
+<% } } %>
+
+<script>
+document.querySelectorAll('form').forEach(form => {
+  const typeSelect = form.querySelector('.ig-destination');
+  if (!typeSelect) return;
+  function updateTargets() {
+    form.querySelectorAll('.ig-target').forEach(box => {
+      const active = box.dataset.type === typeSelect.value;
+      box.hidden = !active;
+      const select = box.querySelector('select');
+      if (select) {
+        select.required = active;
+        select.disabled = !active;
+      }
+    });
+  }
+  typeSelect.addEventListener('change', updateTargets);
+  updateTargets();
+});
+</script>
+<%- include('../partials/foot') %>

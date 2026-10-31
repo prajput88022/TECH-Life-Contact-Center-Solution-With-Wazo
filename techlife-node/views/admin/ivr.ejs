@@ -1,6 +1,9 @@
 <%- include('../partials/head') %>
 <%- include('../partials/nav') %>
 <h1>IVR Menus</h1>
+<% if (synced) { %>
+<p class="tl-card">Wazo accepted the IVR synchronization request.</p>
+<% } %>
 <p class="tl-subtitle">
     ⚠️ Building a menu here defines its configuration (greeting, options, routing) — actually
     routing live calls through it requires your Wazo dialplan to read this config via a small AGI
@@ -33,6 +36,9 @@
     <td><%= m.is_active ? 'Active' : 'Disabled' %></td>
     <td>
         <a href="?edit=<%= m.id %>">Edit / Options</a> &middot;
+        <form method="post" action="/admin/ivr/<%= m.id %>/sync" style="display:inline">
+            <button type="submit" style="background:none;border:none;color:var(--tl-link);cursor:pointer;text-decoration:underline;padding:0">Sync to Wazo</button>
+        </form> &middot;
         <form method="post" action="/admin/ivr/<%= m.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this IVR menu? This cannot be undone.');">
             <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
         </form>
@@ -44,7 +50,11 @@
 
 <% if (editId) {
     const m = menus.find(x => x.id === editId);
-    if (m) { %>
+    if (m) {
+    const invalidFb = m.invalid_destination_json || {};
+    const timeoutFb = m.timeout_destination_json || {};
+    const abortFb = m.abort_destination_json || {};
+    %>
 <h2>Edit Menu — <%= m.name %></h2>
 <form method="post" action="/admin/ivr/<%= m.id %>/edit" class="tl-card">
     <div class="tl-filters">
@@ -64,8 +74,129 @@
     <div class="tl-filters">
         <div style="flex:2"><label>Greeting Text (if TTS)</label><input name="greeting_text" value="<%= m.greeting_text || '' %>" style="width:100%"></div>
     </div>
-    <button class="tl-btn" type="submit">Save Changes</button>
+
+<div class="tl-card">
+    <h3>Invalid Key Fallback</h3>
+    <div class="tl-filters">
+        <div>
+            <label>Action</label>
+            <select name="invalid_action_type">
+                <option value="none" <%= !invalidFb.action_type || invalidFb.action_type === 'none' ? 'selected' : '' %>>None</option>
+                <option value="queue" <%= invalidFb.action_type === 'queue' ? 'selected' : '' %>>Queue</option>
+                <option value="extension" <%= invalidFb.action_type === 'extension' ? 'selected' : '' %>>Extension/DID</option>
+                <option value="voicemail" <%= invalidFb.action_type === 'voicemail' ? 'selected' : '' %>>Voicemail</option>
+                <option value="hangup" <%= invalidFb.action_type === 'hangup' ? 'selected' : '' %>>Hang Up</option>
+            </select>
+        </div>
+        <div>
+            <label>Queue</label>
+            <select name="invalid_target_queue_id">
+                <option value="">—</option>
+                <% queues.forEach(q => { %>
+                    <option value="<%= q.id %>" <%= String(invalidFb.target_queue_id || '') === String(q.id) ? 'selected' : '' %>><%= q.name %></option>
+                <% }) %>
+            </select>
+        </div>
+        <div>
+            <label>Extension/DID</label>
+            <input name="invalid_target_extension" value="<%= invalidFb.target_extension || '' %>" placeholder="1001">
+        </div>
+        <div>
+            <label>Wazo Voicemail ID</label>
+            <input type="number" min="1" step="1" name="invalid_target_voicemail_id" value="<%= invalidFb.target_voicemail_id || '' %>">
+        </div>
+    </div>
+</div>
+
+
+<div class="tl-card">
+    <h3>Timeout Fallback</h3>
+    <div class="tl-filters">
+        <div>
+            <label>Action</label>
+            <select name="timeout_action_type">
+                <option value="none" <%= !timeoutFb.action_type || timeoutFb.action_type === 'none' ? 'selected' : '' %>>None</option>
+                <option value="queue" <%= timeoutFb.action_type === 'queue' ? 'selected' : '' %>>Queue</option>
+                <option value="extension" <%= timeoutFb.action_type === 'extension' ? 'selected' : '' %>>Extension/DID</option>
+                <option value="voicemail" <%= timeoutFb.action_type === 'voicemail' ? 'selected' : '' %>>Voicemail</option>
+                <option value="hangup" <%= timeoutFb.action_type === 'hangup' ? 'selected' : '' %>>Hang Up</option>
+            </select>
+        </div>
+        <div>
+            <label>Queue</label>
+            <select name="timeout_target_queue_id">
+                <option value="">—</option>
+                <% queues.forEach(q => { %>
+                    <option value="<%= q.id %>" <%= String(timeoutFb.target_queue_id || '') === String(q.id) ? 'selected' : '' %>><%= q.name %></option>
+                <% }) %>
+            </select>
+        </div>
+        <div>
+            <label>Extension/DID</label>
+            <input name="timeout_target_extension" value="<%= timeoutFb.target_extension || '' %>" placeholder="1001">
+        </div>
+        <div>
+            <label>Wazo Voicemail ID</label>
+            <input type="number" min="1" step="1" name="timeout_target_voicemail_id" value="<%= timeoutFb.target_voicemail_id || '' %>">
+        </div>
+    </div>
+</div>
+
+
+<div class="tl-card">
+    <h3>Abort Fallback</h3>
+    <div class="tl-filters">
+        <div>
+            <label>Action</label>
+            <select name="abort_action_type">
+                <option value="none" <%= !abortFb.action_type || abortFb.action_type === 'none' ? 'selected' : '' %>>None</option>
+                <option value="queue" <%= abortFb.action_type === 'queue' ? 'selected' : '' %>>Queue</option>
+                <option value="extension" <%= abortFb.action_type === 'extension' ? 'selected' : '' %>>Extension/DID</option>
+                <option value="voicemail" <%= abortFb.action_type === 'voicemail' ? 'selected' : '' %>>Voicemail</option>
+                <option value="hangup" <%= abortFb.action_type === 'hangup' ? 'selected' : '' %>>Hang Up</option>
+            </select>
+        </div>
+        <div>
+            <label>Queue</label>
+            <select name="abort_target_queue_id">
+                <option value="">—</option>
+                <% queues.forEach(q => { %>
+                    <option value="<%= q.id %>" <%= String(abortFb.target_queue_id || '') === String(q.id) ? 'selected' : '' %>><%= q.name %></option>
+                <% }) %>
+            </select>
+        </div>
+        <div>
+            <label>Extension/DID</label>
+            <input name="abort_target_extension" value="<%= abortFb.target_extension || '' %>" placeholder="1001">
+        </div>
+        <div>
+            <label>Wazo Voicemail ID</label>
+            <input type="number" min="1" step="1" name="abort_target_voicemail_id" value="<%= abortFb.target_voicemail_id || '' %>">
+        </div>
+    </div>
+</div>
+
+<button class="tl-btn" type="submit">Save Changes</button>
 </form>
+
+<div class="tl-card">
+    <h3>Greeting Audio</h3>
+    <p>Upload WAV, MP3, OGG, or GSM audio. The server converts it to mono 8 kHz WAV.</p>
+    <p>Current file: <code><%= m.greeting_audio_path || 'No audio uploaded' %></code></p>
+    <form method="post" enctype="multipart/form-data" action="/admin/ivr/<%= m.id %>/audio">
+        <input type="file" name="audio_upload" accept=".wav,.mp3,.ogg,.gsm,audio/*" required>
+        <button class="tl-btn" type="submit">Upload Greeting Audio</button>
+    </form>
+</div>
+
+<div class="tl-card">
+    <h3>Clone Menu</h3>
+    <form method="post" action="/admin/ivr/<%= m.id %>/clone" class="tl-filters">
+        <div><label>New menu name</label><input name="name" maxlength="128" required placeholder="<%= m.name %> copy"></div>
+        <button class="tl-btn" type="submit">Clone Menu</button>
+    </form>
+    <p>The clone starts disabled and has no Wazo IVR ID, so it won't overwrite the original.</p>
+</div>
 
 <h2>Menu Options (what each key press does)</h2>
 <form method="post" action="/admin/ivr/<%= m.id %>/options/create" class="tl-card">
@@ -80,7 +211,8 @@
             <select name="action_type" onchange="
                 document.getElementById('optQueueRow').style.display = this.value === 'queue' ? 'flex' : 'none';
                 document.getElementById('optExtRow').style.display = this.value === 'extension' ? 'flex' : 'none';
-                document.getElementById('optSubmenuRow').style.display = this.value === 'submenu' ? 'flex' : 'none';">
+                document.getElementById('optSubmenuRow').style.display = this.value === 'submenu' ? 'flex' : 'none';
+                document.getElementById('optVoicemailRow').style.display = this.value === 'voicemail' ? 'flex' : 'none';">
                 <option value="queue">Send to Queue</option>
                 <option value="extension">Send to Extension/DID</option>
                 <option value="submenu">Go to Submenu</option>
@@ -99,6 +231,12 @@
     <div class="tl-filters" id="optExtRow" style="display:none">
         <div><label>Extension/DID</label><input name="target_extension" placeholder="1001"></div>
     </div>
+    <div class="tl-filters" id="optVoicemailRow" style="display:none">
+        <div>
+            <label>Wazo Voicemail ID</label>
+            <input type="number" name="target_voicemail_id" min="1" step="1">
+        </div>
+    </div>
     <div class="tl-filters" id="optSubmenuRow" style="display:none">
         <div><label>Submenu</label>
             <select name="target_submenu_id"><option value="">—</option>
@@ -113,13 +251,47 @@
 <tr><th>Key</th><th>Label</th><th>Action</th><th>Target</th><th></th></tr>
 <% options.forEach(o => { %>
 <tr>
-    <td><strong><%= o.dtmf_digit %></strong></td>
-    <td><%= o.label %></td>
-    <td><%= o.action_type %></td>
-    <td><%= o.queue_name || o.target_extension || o.submenu_name || '—' %></td>
-    <td>
-        <form method="post" action="/admin/ivr/<%= m.id %>/options/<%= o.id %>/delete" style="display:inline">
-            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Remove</button>
+    <td colspan="5">
+        <form method="post" action="/admin/ivr/<%= m.id %>/options/<%= o.id %>/edit" class="tl-filters">
+            <div><label>Key</label>
+                <select name="dtmf_digit" required>
+                    <% ['1','2','3','4','5','6','7','8','9','0','*','#'].forEach(d => { %>
+                        <option value="<%= d %>" <%= o.dtmf_digit === d ? 'selected' : '' %>><%= d %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div><label>Label</label><input name="label" value="<%= o.label %>" maxlength="120" required></div>
+            <div><label>Action</label>
+                <select name="action_type" required>
+                    <% [['queue','Queue'],['extension','Extension/DID'],['submenu','Submenu'],['voicemail','Voicemail'],['hangup','Hang Up']].forEach(a => { %>
+                        <option value="<%= a[0] %>" <%= o.action_type === a[0] ? 'selected' : '' %>><%= a[1] %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div><label>Queue (for Queue action)</label>
+                <select name="target_queue_id">
+                    <option value="">—</option>
+                    <% queues.forEach(q => { %><option value="<%= q.id %>" <%= String(o.target_queue_id || '') === String(q.id) ? 'selected' : '' %>><%= q.name %></option><% }) %>
+                </select>
+            </div>
+            <div><label>Extension/DID (for Extension action)</label>
+                <input name="target_extension" value="<%= o.target_extension || '' %>" placeholder="1001">
+            </div>
+            <div><label>Submenu (for Submenu action)</label>
+                <select name="target_submenu_id">
+                    <option value="">—</option>
+                    <% menus.filter(x => x.id !== m.id).forEach(x => { %><option value="<%= x.id %>" <%= String(o.target_submenu_id || '') === String(x.id) ? 'selected' : '' %>><%= x.name %></option><% }) %>
+                </select>
+            </div>
+            <div>
+                <label>Wazo Voicemail ID (for Voicemail action)</label>
+                <input type="number" name="target_voicemail_id" min="1" step="1"
+                       value="<%= o.target_voicemail_id || '' %>">
+            </div>
+            <div><button class="tl-btn" type="submit">Save Option</button></div>
+        </form>
+        <form method="post" action="/admin/ivr/<%= m.id %>/options/<%= o.id %>/delete" style="display:inline" onsubmit="return confirm('Remove this IVR option?');">
+            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Remove option</button>
         </form>
     </td>
 </tr>

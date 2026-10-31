@@ -1,0 +1,104 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<h1>Callback Report</h1>
+<p class="tl-subtitle">Real scheduled callbacks grouped by due date, status, assigned agent, and campaign.</p>
+
+<div class="tl-card">
+    <form method="get" action="/mis/callback-report">
+        <div class="tl-filters">
+            <div>
+                <label for="from">Due from</label>
+                <input type="date" id="from" name="from" value="<%= from %>" required>
+            </div>
+            <div>
+                <label for="to">Due to</label>
+                <input type="date" id="to" name="to" value="<%= to %>" required>
+            </div>
+            <div>
+                <label for="status">Status</label>
+                <select id="status" name="status">
+                    <% ['all','scheduled','claimed','dialing','completed','cancelled','failed'].forEach(s => { %>
+                    <option value="<%= s %>" <%= status === s ? 'selected' : '' %>><%= s %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div>
+                <label for="agent">Agent</label>
+                <select id="agent" name="agent_id">
+                    <option value="">All agents</option>
+                    <% agents.forEach(a => { %>
+                    <option value="<%= a.id %>" <%= agentId === a.id ? 'selected' : '' %>>
+                        <%= a.agent_name %> (<%= a.extension || 'no extension' %>)
+                    </option>
+                    <% }) %>
+                </select>
+            </div>
+            <div>
+                <label for="campaign">Campaign</label>
+                <select id="campaign" name="campaign_id">
+                    <option value="">All campaigns</option>
+                    <% campaigns.forEach(c => { %>
+                    <option value="<%= c.id %>" <%= campaignId === c.id ? 'selected' : '' %>><%= c.name %></option>
+                    <% }) %>
+                </select>
+            </div>
+            <div><button class="tl-btn" type="submit">Run report</button></div>
+        </div>
+    </form>
+</div>
+
+<div class="tl-grid">
+    <% [
+        ['Callbacks', counts.total],
+        ['Scheduled', counts.scheduled],
+        ['Overdue', counts.overdue],
+        ['Claimed', counts.claimed],
+        ['Dialing', counts.dialing],
+        ['Completed', counts.completed],
+        ['Cancelled', counts.cancelled],
+        ['Failed', counts.failed]
+    ].forEach(item => { %>
+    <div class="tl-card">
+        <div class="tl-kpi-value"><%= item[1] %></div>
+        <div class="tl-kpi-label"><%= item[0] %></div>
+    </div>
+    <% }) %>
+</div>
+
+<h2>Callback detail</h2>
+<div class="tl-card" style="overflow-x:auto">
+    <table>
+        <thead>
+            <tr>
+                <th>Due date/time</th><th>Phone</th><th>Status</th><th>Agent</th>
+                <th>Campaign</th><th>Original call</th><th>Notes</th><th>Last updated</th>
+            </tr>
+        </thead>
+        <tbody>
+        <% rows.forEach(cb => { %>
+            <tr>
+                <td>
+                    <%= new Date(cb.due_at).toLocaleString() %>
+                    <% if (cb.status === 'scheduled' && new Date(cb.due_at) < new Date()) { %>
+                        <div class="tl-subtitle">Overdue</div>
+                    <% } %>
+                </td>
+                <td><%= cb.phone_number %></td>
+                <td><%= cb.status %></td>
+                <td><%= cb.agent_name %> (<%= cb.extension || '—' %>)</td>
+                <td><%= cb.campaign_name || '—' %></td>
+                <td><%= cb.original_call_direction || '—' %></td>
+                <td><%= cb.notes || '—' %></td>
+                <td><%= cb.updated_at ? new Date(cb.updated_at).toLocaleString() : '—' %></td>
+            </tr>
+        <% }) %>
+        <% if (!rows.length) { %>
+            <tr><td colspan="8">No callback records match these filters and dates.</td></tr>
+        <% } %>
+        </tbody>
+    </table>
+    <p class="tl-subtitle">Maximum 1,000 rows shown. Counts reflect the selected due-date range and agent/campaign filters; status filtering applies to detail rows.</p>
+</div>
+
+<%- include('../partials/foot') %>
