@@ -542,14 +542,15 @@ router.post('/agents/:id/status', async (req, res) => {
     }
 
     const client = await pool.connect();
-    let wazoMutation = null;
+    const wazoMutations = [];
     let agentForCompensation = null;
 
     try {
         await client.query('BEGIN');
 
         const agentResult = await client.query(
-            `SELECT a.id, a.agent_number, a.wazo_agent_id, a.is_active,
+            `SELECT a.id, a.agent_number, a.wazo_agent_id,
+                    a.wazo_line_id, a.extension, a.is_active,
                     t.wazo_tenant_uuid
              FROM agents a
              JOIN tenants t ON t.id = a.tenant_id
@@ -580,6 +581,27 @@ router.post('/agents/:id/status', async (req, res) => {
             [u.tenantId, agent.id]
         );
         const current = currentResult.rows[0] || null;
+
+        const campaignReservation = await client.query(
+            `SELECT reservation_status
+               FROM campaign_agent_reservations
+              WHERE tenant_id = $1
+                AND agent_id = $2
+                AND reservation_status IN ('reserved', 'dialing', 'connected')
+                AND expires_at > NOW()
+              ORDER BY reserved_at DESC
+              LIMIT 1
+              FOR UPDATE`,
+            [u.tenantId, agent.id]
+        );
+
+        if (campaignReservation.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                error: 'agent_has_campaign_reservation',
+                reservation_status: campaignReservation.rows[0].reservation_status
+            });
+        }
 
         let validatedQueueId = null;
         if (queue_id) {
@@ -638,7 +660,7 @@ router.post('/agents/:id/status', async (req, res) => {
                     return res.status(409).json({ error: 'wazo_agent_paused_for_another_reason' });
                 }
             } else {
-                wazoMutation = { action: 'pause', reason: pauseCode.code };
+                wazoMutations.push({ action: 'pause', reason: pauseCode.code });
                 await wazoAgentService.pauseAgent(
                     agent.wazo_tenant_uuid,
                     agent.agent_number,
@@ -646,7 +668,7 @@ router.post('/agents/:id/status', async (req, res) => {
                     pauseCode.code
                 );
             }
-        } else if (status === 'available') {
+        } else if (status === 'available' || status === 'login') {
             if (current?.status === 'after_call_work') {
                 await client.query('ROLLBACK');
                 return res.status(409).json({ error: 'after_call_work_not_expired' });
@@ -667,13 +689,23 @@ router.post('/agents/:id/status', async (req, res) => {
                 return res.status(409).json({ error: 'agent_has_active_call' });
             }
 
-            const existingAgent = await wazoAgentService.getAgent(
+            let existingAgent = await wazoAgentService.getAgent(
                 agent.wazo_tenant_uuid, agent.agent_number, agent.wazo_agent_id
             );
 
             if (!existingAgent.logged) {
-                await client.query('ROLLBACK');
-                return res.status(409).json({ error: 'wazo_agent_not_logged_in' });
+                const loginResult = await wazoAgentService.loginAgent(
+                    agent.wazo_tenant_uuid,
+                    agent.agent_number,
+                    agent.wazo_agent_id,
+                    agent.wazo_line_id,
+                    agent.extension
+                );
+                existingAgent = loginResult.agent;
+
+                if (loginResult.changed) {
+                    wazoMutations.push({ action: 'login' });
+                }
             }
 
             if (existingAgent.paused) {
@@ -683,13 +715,47 @@ router.post('/agents/:id/status', async (req, res) => {
                     return res.status(409).json({ error: 'wazo_pause_not_owned_by_current_status' });
                 }
 
-                wazoMutation = { action: 'unpause', reason: expectedReason };
+                wazoMutations.push({ action: 'unpause', reason: expectedReason });
                 await wazoAgentService.unpauseAgent(
                     agent.wazo_tenant_uuid,
                     agent.agent_number,
                     agent.wazo_agent_id,
                     expectedReason
                 );
+            }
+        } else if (status === 'offline' || status === 'logout') {
+            const activeCall = await client.query(
+                `SELECT 1
+                   FROM calls
+                  WHERE tenant_id = $1
+                    AND agent_id = $2
+                    AND status IN ('ringing','answered')
+                    AND end_time IS NULL
+                  LIMIT 1`,
+                [u.tenantId, agent.id]
+            );
+
+            if (activeCall.rowCount) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ error: 'agent_has_active_call' });
+            }
+
+            const existingAgent = await wazoAgentService.getAgent(
+                agent.wazo_tenant_uuid, agent.agent_number, agent.wazo_agent_id
+            );
+
+            if (existingAgent.logged) {
+                const logoffResult = await wazoAgentService.logoffAgent(
+                    agent.wazo_tenant_uuid,
+                    agent.agent_number,
+                    agent.wazo_agent_id,
+                    agent.wazo_line_id,
+                    agent.extension
+                );
+
+                if (logoffResult.changed) {
+                    wazoMutations.push({ action: 'logoff' });
+                }
             }
         }
 
@@ -718,27 +784,46 @@ router.post('/agents/:id/status', async (req, res) => {
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
 
-        // Compensate a successful Wazo pause/unpause if the database commit
-        // failed after the remote state changed.
-        if (wazoMutation) {
+        // Reverse remote Wazo changes if the database transaction fails.
+        for (const mutation of [...wazoMutations].reverse()) {
             try {
-                if (wazoMutation.action === 'pause') {
+                if (mutation.action === 'pause') {
                     await wazoAgentService.unpauseAgent(
                         agentForCompensation.wazo_tenant_uuid,
                         agentForCompensation.agent_number,
                         agentForCompensation.wazo_agent_id,
-                        wazoMutation.reason
+                        mutation.reason
                     );
-                } else {
+                } else if (mutation.action === 'unpause') {
                     await wazoAgentService.pauseAgent(
                         agentForCompensation.wazo_tenant_uuid,
                         agentForCompensation.agent_number,
                         agentForCompensation.wazo_agent_id,
-                        wazoMutation.reason
+                        mutation.reason
+                    );
+                } else if (mutation.action === 'login') {
+                    await wazoAgentService.logoffAgent(
+                        agentForCompensation.wazo_tenant_uuid,
+                        agentForCompensation.agent_number,
+                        agentForCompensation.wazo_agent_id,
+                        agentForCompensation.wazo_line_id,
+                        agentForCompensation.extension
+                    );
+                } else if (mutation.action === 'logoff') {
+                    await wazoAgentService.loginAgent(
+                        agentForCompensation.wazo_tenant_uuid,
+                        agentForCompensation.agent_number,
+                        agentForCompensation.wazo_agent_id,
+                        agentForCompensation.wazo_line_id,
+                        agentForCompensation.extension
                     );
                 }
             } catch (compensationError) {
-                console.error('Wazo status compensation failed:', compensationError.message);
+                console.error(
+                    'Wazo status compensation failed:',
+                    mutation.action,
+                    compensationError.message
+                );
             }
         }
 
@@ -925,5 +1010,258 @@ router.get('/calls', async (req, res) => {
     );
     res.json({ page, results: result.rows });
 });
+
+
+// ---- Tenant call handling settings (read-only for workspace users) ----
+router.get('/call-settings', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const u = req.session.user;
+
+    try {
+        const result = await pool.query(
+            `SELECT inbound_auto_answer_enabled
+               FROM tenant_call_settings
+              WHERE tenant_id = $1`,
+            [u.tenantId]
+        );
+
+        // Missing tenant row is deliberately treated as OFF.
+        return res.json({
+            inbound_auto_answer_enabled:
+                result.rows[0]?.inbound_auto_answer_enabled === true
+        });
+    } catch (err) {
+        console.error('Call settings lookup failed:', err.message);
+        return res.status(503).json({ error: 'call_settings_unavailable' });
+    }
+});
+
+
+// ---- Tenant/queue dial directory ----
+router.get('/dial-directory', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const u = req.session.user;
+    const roles = Array.isArray(u.roles) ? u.roles : [];
+    const isAdmin = hasAdminAccess(u);
+    const scopedSupervisor = isScopedSupervisor(u);
+    const isAgentUser = roles.includes('agent') && Boolean(u.agentId);
+
+    if (!isAdmin && !scopedSupervisor && !isAgentUser) {
+        return res.status(403).json({ error: 'forbidden' });
+    }
+
+    const tenantId = u.tenantId;
+    if (!tenantId) return res.status(403).json({ error: 'tenant_required' });
+
+    const requestedQueueId = String(req.query.queue_id || '').trim();
+    const uuidPattern =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    if (requestedQueueId && !uuidPattern.test(requestedQueueId)) {
+        return res.status(400).json({ error: 'invalid_queue_id' });
+    }
+
+    try {
+        let queues;
+
+        if (isAdmin) {
+            queues = (await pool.query(
+                `SELECT id, name
+                   FROM queues
+                  WHERE tenant_id = $1 AND is_active = TRUE
+                  ORDER BY name`,
+                [tenantId]
+            )).rows;
+        } else if (scopedSupervisor) {
+            const scope = agentAccessPredicate('ag', '$1', '$2');
+            queues = (await pool.query(
+                `SELECT DISTINCT q.id, q.name
+                   FROM queues q
+                  WHERE q.tenant_id = $1
+                    AND q.is_active = TRUE
+                    AND EXISTS (
+                        SELECT 1
+                          FROM queue_agents qa
+                          JOIN agents ag
+                            ON ag.id = qa.agent_id
+                           AND ag.tenant_id = qa.tenant_id
+                         WHERE qa.tenant_id = q.tenant_id
+                           AND qa.queue_id = q.id
+                           AND qa.is_active = TRUE
+                           AND ${scope}
+                    )
+                  ORDER BY q.name`,
+                [tenantId, u.id]
+            )).rows;
+        } else {
+            queues = (await pool.query(
+                `SELECT DISTINCT q.id, q.name
+                   FROM queues q
+                   JOIN queue_agents qa
+                     ON qa.queue_id = q.id
+                    AND qa.tenant_id = q.tenant_id
+                  WHERE q.tenant_id = $1
+                    AND qa.agent_id = $2
+                    AND qa.is_active = TRUE
+                    AND q.is_active = TRUE
+                  ORDER BY q.name`,
+                [tenantId, u.agentId]
+            )).rows;
+        }
+
+        const visibleQueueIds = queues.map(q => q.id);
+
+        if (requestedQueueId &&
+            !visibleQueueIds.some(id => String(id) === requestedQueueId)) {
+            return res.status(403).json({ error: 'queue_not_accessible' });
+        }
+
+        // Scoped supervisors see contacts associated with their assigned
+        // agents' queues only. Agents and tenant admins can browse all
+        // tenant contacts unless they select one of their visible queues.
+        const filterContactsByQueue =
+            Boolean(requestedQueueId) || scopedSupervisor;
+        const contactQueueIds = requestedQueueId
+            ? [requestedQueueId]
+            : visibleQueueIds;
+
+        let contactSql = `
+            SELECT ct.id, ct.full_name, ct.primary_phone, ct.alt_phone,
+                   ct.city, ct.state
+              FROM contacts ct
+             WHERE ct.tenant_id = $1
+               AND (
+                    NULLIF(BTRIM(ct.primary_phone), '') IS NOT NULL
+                    OR NULLIF(BTRIM(ct.alt_phone), '') IS NOT NULL
+               )`;
+
+        const contactParams = [tenantId];
+
+        if (filterContactsByQueue) {
+            contactParams.push(contactQueueIds);
+            contactSql += `
+               AND (
+                    EXISTS (
+                        SELECT 1
+                          FROM campaign_contacts cc
+                          JOIN campaigns c
+                            ON c.id = cc.campaign_id
+                           AND c.tenant_id = cc.tenant_id
+                         WHERE cc.tenant_id = ct.tenant_id
+                           AND cc.contact_id = ct.id
+                           AND c.queue_id = ANY($2::uuid[])
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                          FROM leads l
+                          JOIN campaigns c
+                            ON c.id = l.campaign_id
+                           AND c.tenant_id = l.tenant_id
+                         WHERE l.tenant_id = ct.tenant_id
+                           AND l.contact_id = ct.id
+                           AND c.queue_id = ANY($2::uuid[])
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                          FROM contact_list_members clm
+                          JOIN contact_lists cl
+                            ON cl.id = clm.list_id
+                           AND cl.tenant_id = clm.tenant_id
+                          JOIN campaigns c
+                            ON c.id = cl.campaign_id
+                           AND c.tenant_id = cl.tenant_id
+                         WHERE clm.tenant_id = ct.tenant_id
+                           AND clm.contact_id = ct.id
+                           AND c.queue_id = ANY($2::uuid[])
+                    )
+               )`;
+        }
+
+        contactSql += `
+             ORDER BY ct.full_name NULLS LAST, ct.primary_phone
+             LIMIT 300`;
+
+        const contacts = (await pool.query(
+            contactSql,
+            contactParams
+        )).rows;
+
+        const agentParams = [tenantId];
+        const agentWhere = [
+            'ag.tenant_id = $1',
+            'ag.is_active = TRUE',
+            "NULLIF(BTRIM(ag.extension), '') IS NOT NULL",
+            "ag.provisioning_status IN ('provisioned', 'manual')"
+        ];
+
+        if (requestedQueueId) {
+            agentParams.push(requestedQueueId);
+            const queueParam = `$${agentParams.length}`;
+            agentWhere.push(`
+                EXISTS (
+                    SELECT 1
+                      FROM queue_agents qa
+                     WHERE qa.tenant_id = ag.tenant_id
+                       AND qa.agent_id = ag.id
+                       AND qa.queue_id = ${queueParam}::uuid
+                       AND qa.is_active = TRUE
+                )
+            `);
+        }
+
+        if (scopedSupervisor) {
+            agentParams.push(u.id);
+            const supervisorParam = `$${agentParams.length}`;
+            agentWhere.push(
+                agentAccessPredicate('ag', '$1', supervisorParam)
+            );
+        }
+
+        if (isAgentUser && !isAdmin) {
+            agentParams.push(u.agentId);
+            agentWhere.push(`ag.id <> $${agentParams.length}::uuid`);
+        }
+
+        const agents = await pool.query(
+            `SELECT ag.id,
+                    COALESCE(NULLIF(usr.full_name, ''),
+                             NULLIF(ag.agent_number, ''),
+                             ag.extension) AS display_name,
+                    ag.agent_number,
+                    ag.extension,
+                    COALESCE(state.status, 'offline') AS status,
+                    (state.status = 'available') AS can_transfer
+               FROM agents ag
+               LEFT JOIN users usr ON usr.id = ag.user_id
+               LEFT JOIN LATERAL (
+                    SELECT ase.status::text AS status
+                      FROM agent_status_events ase
+                     WHERE ase.tenant_id = ag.tenant_id
+                       AND ase.agent_id = ag.id
+                       AND ase.ended_at IS NULL
+                     ORDER BY ase.started_at DESC
+                     LIMIT 1
+               ) state ON TRUE
+              WHERE ${agentWhere.join(' AND ')}
+              ORDER BY display_name
+              LIMIT 300`,
+            agentParams
+        );
+
+        return res.json({
+            queues,
+            contacts,
+            agents: agents.rows,
+            selected_queue_id: requestedQueueId || null,
+            contact_scope: scopedSupervisor
+                ? 'assigned_queues'
+                : 'tenant'
+        });
+    } catch (err) {
+        console.error('Dial directory lookup failed:', err.message);
+        return res.status(503).json({ error: 'dial_directory_unavailable' });
+    }
+});
+
 
 module.exports = router;

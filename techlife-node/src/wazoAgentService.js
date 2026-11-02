@@ -156,4 +156,179 @@ async function unpauseAgent(tenantUuid, agentNumber, expectedAgentId, expectedRe
     return { changed: true, agent: verified };
 }
 
-module.exports = { getAgent, pauseAgent, unpauseAgent };
+
+async function getAgentLoginTarget(tenantUuid, lineId, extension) {
+    if (!lineId || !extension) {
+        throw new Error('Wazo line ID and extension are required for agent login');
+    }
+
+    const response = await wazoFetch(
+        `${config.wazo.confdUrl.replace(/\/$/, '')}/lines/${encodeURIComponent(lineId)}`,
+        {
+            headers: {
+                'X-Auth-Token': await getToken(),
+                'Wazo-Tenant': tenantUuid,
+                Accept: 'application/json'
+            }
+        }
+    );
+
+    const raw = await response.text();
+    let payload = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch (_) {}
+
+    if (!response.ok) {
+        const error = new Error(
+            `Wazo line lookup failed (HTTP ${response.status})`
+        );
+        error.status = response.status;
+        throw error;
+    }
+
+    const line = payload?.data?.data ?? payload?.data ?? payload;
+
+    if (
+        Number(line.id) !== Number(lineId) ||
+        String(line.tenant_uuid || '').toLowerCase() !==
+            String(tenantUuid).toLowerCase()
+    ) {
+        throw new Error('Wazo line identity or tenant verification failed');
+    }
+
+    if (String(line.protocol || '').toLowerCase() !== 'sip') {
+        throw new Error('Wazo agent line is not a supported SIP line');
+    }
+
+    const endpointName = String(line.endpoint_sip?.name || '').trim();
+    if (!endpointName || /[\s/@;]/.test(endpointName)) {
+        throw new Error('Wazo SIP endpoint name is missing or invalid');
+    }
+
+    const extensionRecord = (line.extensions || []).find(
+        item => String(item.exten) === String(extension)
+    );
+
+    if (
+        !extensionRecord ||
+        !extensionRecord.context ||
+        String(extensionRecord.context) !== String(line.context)
+    ) {
+        throw new Error('Wazo line extension/context relationship is invalid');
+    }
+
+    return {
+        extension: String(extensionRecord.exten),
+        context: String(extensionRecord.context),
+        endpoint: `PJSIP/${endpointName}`
+    };
+}
+
+function verifyAgentLoginBinding(agent, target) {
+    if (
+        String(agent.extension) !== target.extension ||
+        String(agent.context) !== target.context
+    ) {
+        const error = new Error(
+            'Wazo agent is logged on a different extension or context'
+        );
+        error.status = 409;
+        throw error;
+    }
+}
+
+async function loginAgent(
+    tenantUuid, agentNumber, expectedAgentId, lineId, extension
+) {
+    const target = await getAgentLoginTarget(
+        tenantUuid, lineId, extension
+    );
+
+    const current = await getAgent(
+        tenantUuid, agentNumber, expectedAgentId
+    );
+
+    if (current.logged) {
+        verifyAgentLoginBinding(current, target);
+        return { changed: false, agent: current };
+    }
+
+    try {
+        await request(
+            'POST',
+            `/agents/by-id/${encodeURIComponent(expectedAgentId)}/login`,
+            tenantUuid,
+            target
+        );
+    } catch (err) {
+        // A concurrent login is safe only if it is this same agent
+        // on this same verified extension and context.
+        if (err.status !== 409) throw err;
+
+        const latest = await getAgent(
+            tenantUuid, agentNumber, expectedAgentId
+        );
+
+        if (!latest.logged) throw err;
+        verifyAgentLoginBinding(latest, target);
+        return { changed: false, agent: latest };
+    }
+
+    const verified = await getAgent(
+        tenantUuid, agentNumber, expectedAgentId
+    );
+
+    if (!verified.logged) {
+        throw new Error('Wazo did not confirm agent login');
+    }
+
+    verifyAgentLoginBinding(verified, target);
+    return { changed: true, agent: verified };
+}
+
+async function logoffAgent(
+    tenantUuid, agentNumber, expectedAgentId, lineId, extension
+) {
+    const target = await getAgentLoginTarget(
+        tenantUuid, lineId, extension
+    );
+
+    const current = await getAgent(
+        tenantUuid, agentNumber, expectedAgentId
+    );
+
+    if (!current.logged) {
+        return { changed: false, agent: current };
+    }
+
+    verifyAgentLoginBinding(current, target);
+
+    try {
+        await request(
+            'POST',
+            `/agents/by-id/${encodeURIComponent(expectedAgentId)}/logoff`,
+            tenantUuid
+        );
+    } catch (err) {
+        if (err.status !== 409) throw err;
+
+        const latest = await getAgent(
+            tenantUuid, agentNumber, expectedAgentId
+        );
+
+        if (latest.logged) throw err;
+        return { changed: false, agent: latest };
+    }
+
+    const verified = await getAgent(
+        tenantUuid, agentNumber, expectedAgentId
+    );
+
+    if (verified.logged) {
+        throw new Error('Wazo did not confirm agent logoff');
+    }
+
+    return { changed: true, agent: verified };
+}
+
+
+module.exports = { getAgent, pauseAgent, unpauseAgent, loginAgent, logoffAgent };

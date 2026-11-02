@@ -61,11 +61,13 @@ CREATE TABLE IF NOT EXISTS campaign_dial_claims (
         REFERENCES leads (tenant_id, campaign_id, id)
         ON DELETE CASCADE,
 
-    -- A non-null agent must be assigned to this exact tenant and campaign.
+    -- Preserve tenant-scoped agent identity without tying historical claims
+    -- to a mutable campaign assignment. Membership is checked at claim time.
     -- A null agent is allowed for Robo/voice-blast claims.
-    CONSTRAINT fk_campaign_dial_claim_assignment
-        FOREIGN KEY (tenant_id, campaign_id, agent_id)
-        REFERENCES campaign_agents (tenant_id, campaign_id, agent_id),
+    CONSTRAINT fk_campaign_dial_claim_agent
+        FOREIGN KEY (tenant_id, agent_id)
+        REFERENCES agents (tenant_id, id)
+        ON DELETE RESTRICT,
 
     -- A linked call must belong to the same tenant.
     CONSTRAINT fk_campaign_dial_claim_call
@@ -93,9 +95,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_dial_claim_active_lead
     WHERE claim_status IN (
         'claimed', 'originating', 'ringing', 'in_flight'
     );
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_dial_claim_attempt
-    ON campaign_dial_claims (tenant_id, lead_id, attempt_number);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_dial_claim_wazo_call
     ON campaign_dial_claims (tenant_id, wazo_call_id)
@@ -134,9 +133,10 @@ CREATE TABLE IF NOT EXISTS campaign_agent_reservations (
         REFERENCES campaigns (tenant_id, id)
         ON DELETE CASCADE,
 
-    CONSTRAINT fk_campaign_agent_reservation_assignment
-        FOREIGN KEY (tenant_id, campaign_id, agent_id)
-        REFERENCES campaign_agents (tenant_id, campaign_id, agent_id),
+    CONSTRAINT fk_campaign_agent_reservation_agent
+        FOREIGN KEY (tenant_id, agent_id)
+        REFERENCES agents (tenant_id, id)
+        ON DELETE RESTRICT,
 
     -- The reservation must point to a claim for this exact agent/campaign.
     CONSTRAINT fk_campaign_agent_reservation_claim
@@ -159,6 +159,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_agent_active_reservation
 CREATE INDEX IF NOT EXISTS idx_campaign_agent_reservation_expiry
     ON campaign_agent_reservations
        (tenant_id, reservation_status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_agent_reservation_agent_fk
+    ON campaign_agent_reservations (tenant_id, agent_id);
 
 
 -- Link each lead attempt to at most one originating claim.

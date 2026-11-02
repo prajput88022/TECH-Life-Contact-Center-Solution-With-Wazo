@@ -12,15 +12,34 @@
  * reachable over the public internet).
  */
 const { Agent } = require('undici');
+const fs = require('fs');
 const config = require('../config/config');
 
-const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
+const systemCaPath = '/etc/ssl/certs/ca-certificates.crt';
+const techLifeCaPath = process.env.WAZO_CA_CERT_FILE ||
+    '/etc/ssl/techlife/private-ca/ca.crt';
+
+if (!fs.existsSync(techLifeCaPath)) {
+    throw new Error('Wazo CA certificate not found: ' + techLifeCaPath);
+}
+
+const trustedCa = [
+    fs.readFileSync(systemCaPath),
+    fs.readFileSync(techLifeCaPath)
+];
+
+const secureAgent = new Agent({
+    connect: {
+        rejectUnauthorized: true,
+        ca: trustedCa
+    }
+});
 
 async function wazoFetch(url, options = {}) {
-    const fetchOptions = { ...options };
-    if (!config.wazo.tlsRejectUnauthorized) {
-        fetchOptions.dispatcher = insecureAgent;
-    }
+    const fetchOptions = {
+        ...options,
+        dispatcher: secureAgent
+    };
     try {
         return await fetch(url, fetchOptions);
     } catch (e) {
@@ -31,7 +50,7 @@ async function wazoFetch(url, options = {}) {
         } else if (causeCode === 'ENOTFOUND' || causeCode === 'EAI_AGAIN') {
             hint = ' -- DNS lookup failed: check the hostname in your .env is correct and resolvable from this server.';
         } else if (String(causeCode || '').includes('CERT') || String(causeCode || '').includes('SELF_SIGNED')) {
-            hint = ' -- TLS certificate could not be verified. If this Wazo host uses a self-signed certificate (common for on-prem installs), set WAZO_TLS_REJECT_UNAUTHORIZED=false in .env.';
+            hint = ' -- TLS certificate could not be verified. If this Wazo host uses a self-signed certificate (common for on-prem installs), configure the verified WAZO_CA_CERT_FILE certificate.';
         } else if (causeCode) {
             hint = ` (${causeCode})`;
         }

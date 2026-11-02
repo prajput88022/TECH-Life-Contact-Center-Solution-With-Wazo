@@ -24,6 +24,9 @@ const { startTrunkReconciler } = require('../src/wazoTrunkProvisioningService');
 const { startTenantContextReconciler } = require('../src/wazoTenantProvisioningService');
 const { startInboundDidReconciler } = require('../src/wazoInboundRoutingService');
 const { startQueueReconciler } = require('../src/wazoQueueProvisioningService');
+const { startRecordingPolicyReconciler } = require('../src/recordingPolicyService');
+const { startRecordingIngestionWorker } = require('../src/recordingIngestionService');
+const { startRecordingStorageWorker } = require('../src/recordingStorageWorker');
 const { startEventPartitionMaintenance } = require('../src/eventPartitionMaintenanceService');
 
 function log(msg) {
@@ -364,6 +367,26 @@ async function main() {
         log('Wazo queue reconciler started (60-second interval; mode=' +
             (apply ? 'APPLY' : 'DRY RUN') + ').');
     }
+
+    if (process.env.RECORDING_POLICY_RECONCILER_ENABLED === 'true') {
+        const apply = process.env.RECORDING_POLICY_RECONCILE_APPLY === 'true';
+        const interval = Number(process.env.RECORDING_POLICY_RECONCILE_INTERVAL_MS) || 60000;
+        startRecordingPolicyReconciler(interval);
+        log('Recording policy reconciler started (' + interval +
+            'ms interval; mode=' + (apply ? 'APPLY' : 'DRY RUN') + ').');
+    }
+
+    // The worker is always safe to start: it processes only tenants that
+    // explicitly enable recording_ingestion_enabled in recording_settings.
+    startRecordingIngestionWorker(
+        Number(process.env.RECORDING_INGESTION_POLL_MS) || 30000
+    );
+    log('Tenant recording ingestion scheduler started (tenant settings control execution).');
+
+    startRecordingStorageWorker(
+        Number(process.env.RECORDING_STORAGE_POLL_MS) || 30000
+    );
+    log('Tenant recording storage scheduler started (remote-upload setting controls execution).');
 
     startPrefixReconciler(60000);
     log('Outbound prefix reconciler started (60-second interval).');

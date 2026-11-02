@@ -14,6 +14,27 @@ const { pool } = require('./db');
 
 const STANDARD_ROLES = ['admin', 'supervisor', 'agent', 'mis_agent'];
 
+async function createStandardDispositions(client, tenantId) {
+    const defaults = [
+        ['DND', 'Do Not Call', 10],
+        ['FOLLOW_UP', 'Follow Up', 20],
+        ['TRANSFER', 'Transfer', 30],
+        ['NORMAL', 'Normal', 40],
+        ['OTHERS', 'Others', 50]
+    ];
+
+    for (const [code, label, sortOrder] of defaults) {
+        await client.query(
+            `INSERT INTO dispositions
+                (tenant_id, code, label, is_conversion, channel,
+                 is_active, parent_id, hierarchy_level, sort_order)
+             VALUES ($1, $2, $3, false, 'voice', true, NULL, 1, $4)
+             ON CONFLICT (tenant_id, code) DO NOTHING`,
+            [tenantId, code, label, sortOrder]
+        );
+    }
+}
+
 async function createStandardRoles(client, tenantId) {
     const roleIds = {};
     for (const roleType of STANDARD_ROLES) {
@@ -37,6 +58,7 @@ async function provisionNewTenant(tenantId, adminCreds = null) {
     try {
         await client.query('BEGIN');
         const roleIds = await createStandardRoles(client, tenantId);
+        await createStandardDispositions(client, tenantId);
 
         let adminUserId = null;
         if (adminCreds && adminCreds.username && adminCreds.password) {

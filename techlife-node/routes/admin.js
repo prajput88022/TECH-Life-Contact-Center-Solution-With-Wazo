@@ -21,7 +21,9 @@ const { audioUpload, leadsUpload } = require('../src/uploadMiddleware');
 const { parse } = require('csv-parse/sync');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { convertToWav } = require('../src/audioConversionService');
+const { getSftpConfigurationFingerprint } = require('../src/recordingStorageWorker');
 
 router.use((req, res, next) => {
     const roles = req.session?.user?.roles || [];
@@ -53,17 +55,33 @@ function deleteBlockedMessage(err, entityLabel) {
 // ---------------- Dashboard ----------------
 
 
-// ---------------- Recording Storage Settings ----------------
+
+// ---------------- Tenant Recording Storage Settings ----------------
+
+function decodeRecordingSecretMap(secretRef) {
+    if (!secretRef) return {};
+    const value = JSON.parse(trunkCredentialCrypto.decrypt(secretRef));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Invalid encrypted recording credentials.');
+    }
+    return value;
+}
+
 router.get('/recording-settings', async (req, res, next) => {
     try {
         const t = req.effectiveTenant.id;
         const result = await pool.query(
-            'SELECT * FROM recording_settings WHERE tenant_id = $1', [t]
+            'SELECT * FROM recording_settings WHERE tenant_id = $1',
+            [t]
         );
+
         const settings = result.rows[0] || {
-            storage_provider: 's3',
+            storage_provider: 'local',
             destination_name: '',
             destination_prefix: 'recordings',
+            endpoint_url: '',
+            region: '',
+            provider_config: {},
             keep_local_copy: true,
             keep_remote_copy: true,
             local_base_path: '/var/lib/techlife/recordings',
@@ -73,88 +91,755 @@ router.get('/recording-settings', async (req, res, next) => {
             mp3_bitrate_kbps: 128,
             retention_days: '',
             download_enabled: true,
-            remote_upload_enabled: false
+            remote_upload_enabled: false,
+            upload_interval_minutes: 5,
+            upload_batch_size: 20,
+            auto_upload_existing: true,
+            recording_enabled: false,
+            record_incoming_external: false,
+            record_outgoing_external: false,
+            record_incoming_internal: false,
+            record_outgoing_internal: false,
+            recording_policy_sync_status: 'pending',
+            recording_ingestion_enabled: false,
+            recording_ingestion_interval_minutes: 5,
+            recording_ingestion_history_days: 7,
+            recording_ingestion_status: 'paused',
+            upload_schedule_mode: 'interval',
+            upload_schedule_time: '02:00'
         };
+
+        settings.provider_config = settings.provider_config || {};
+        const secretMap = decodeRecordingSecretMap(settings.secret_ref);
+        const activeSecrets = secretMap[settings.storage_provider] || {};
+        settings.credentials_configured = Object.values(activeSecrets)
+            .some(value => typeof value === 'string' && value.length > 0);
+
+        // Never pass decrypted credentials or secret_ref to the browser.
+        delete settings.secret_ref;
+
+        const tenantInfo = await pool.query(
+            'SELECT timezone FROM tenants WHERE id = $1',
+            [t]
+        );
+
         res.render('admin/recording-settings', {
-            pageTitle: 'Admin — Recording Settings', settings,
-            saved: req.query.saved === '1'
+            pageTitle: 'Admin — Recording Settings',
+            settings,
+            tenantTimezone: tenantInfo.rows[0]?.timezone || 'UTC',
+            saved: req.query.saved === '1',
+            asTenant: req.query.as_tenant || '',
+            sftpTest: req.query.sftp_test || '',
+            remoteSync: req.query.remote_sync || ''
         });
-    } catch (err) { next(err); }
+    } catch (err) {
+        next(err);
+    }
 });
 
 router.post('/recording-settings', async (req, res, next) => {
     try {
         const t = req.effectiveTenant.id;
-        const b = req.body;
-        const allowedProviders = ['s3','azure','gcs','sftp','s3compatible'];
-        const allowedFormats = ['wav','mp3','ogg','flac'];
-        const provider = String(b.storage_provider || '');
-        const format = String(b.audio_format || '');
+        const b = req.body || {};
+
+        const providers = [
+            'local', 's3', 's3compatible', 'azure', 'gcs', 'ftp', 'sftp'
+        ];
+        const formats = ['wav', 'mp3', 'ogg', 'flac'];
+        const provider = String(b.storage_provider || 'local');
+        const format = String(b.audio_format || 'wav');
         const bitrate = Number(b.mp3_bitrate_kbps);
         const retention = String(b.retention_days || '').trim();
         const prefix = String(b.destination_prefix || 'recordings').trim();
         const destination = String(b.destination_name || '').trim();
+        const endpoint = String(b.endpoint_url || '').trim();
+        const region = String(b.region || '').trim();
         const localPath = String(b.local_base_path || '').trim();
         const folder = String(b.folder_template || '').trim();
         const filename = String(b.filename_template || '').trim();
 
-        if (!allowedProviders.includes(provider) ||
-            !allowedFormats.includes(format) ||
-            ![64,96,128,160,192,256,320].includes(bitrate) ||
+        const interval = Number(b.upload_interval_minutes || 5);
+        const batchSize = Number(b.upload_batch_size || 20);
+
+        const ingestionEnabled = b.recording_ingestion_enabled === '1';
+        const ingestionInterval = Number(b.recording_ingestion_interval_minutes || 5);
+        const ingestionHistoryDays = Number(b.recording_ingestion_history_days || 7);
+        const uploadScheduleMode = String(b.upload_schedule_mode || 'interval');
+        const uploadScheduleTime = String(b.upload_schedule_time || '02:00');
+
+        const portText = String(b.provider_port || '').trim();
+        const port = portText ? Number(portText) :
+            (provider === 'sftp' ? 22 : 21);
+
+        if (!providers.includes(provider) ||
+            !formats.includes(format) ||
+            ![64, 96, 128, 160, 192, 256, 320].includes(bitrate) ||
             (retention && (!/^\d+$/.test(retention) ||
                 Number(retention) < 1 || Number(retention) > 36500)) ||
-            !localPath.startsWith('/') || localPath.includes('\\0') ||
+            !localPath.startsWith('/') || localPath.includes('\0') ||
             !prefix || prefix.startsWith('/') || prefix.includes('..') ||
             !folder || folder.length > 255 ||
             !filename || filename.length > 255 ||
             !filename.includes('{recording_id}') ||
-            destination.length > 255) {
-            return res.status(400).send(
-                'Invalid settings. Filename template must include {recording_id}; path and template values must be valid.'
-            );
+            destination.length > 255 ||
+            !Number.isInteger(interval) || interval < 1 || interval > 1440 ||
+            !Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100 ||
+            !Number.isInteger(ingestionInterval) ||
+            ingestionInterval < 1 || ingestionInterval > 1440 ||
+            !Number.isInteger(ingestionHistoryDays) ||
+            ingestionHistoryDays < 1 || ingestionHistoryDays > 3650 ||
+            !['interval', 'daily'].includes(uploadScheduleMode) ||
+            !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(uploadScheduleTime) ||
+            !Number.isInteger(port) || port < 1 || port > 65535 ||
+            region.length > 120) {
+            return res.status(400).send('Invalid recording storage settings.');
         }
 
-        // Remote upload stays disabled until a real provider adapter is installed.
+        const providerConfig = {
+            host: String(b.provider_host || '').trim(),
+            port,
+            username: String(b.provider_username || '').trim(),
+            remote_path: String(b.provider_path || '').trim(),
+            account_name: String(b.azure_account_name || '').trim(),
+            project_id: String(b.gcs_project_id || '').trim(),
+            protocol: String(b.ftp_protocol || 'ftps'),
+            passive_mode: b.ftp_passive !== '0'
+        };
+
+        if (providerConfig.host.length > 255 ||
+            providerConfig.username.length > 255 ||
+            providerConfig.remote_path.length > 1024 ||
+            !['ftp', 'ftps'].includes(providerConfig.protocol)) {
+            return res.status(400).send('Invalid remote server configuration.');
+        }
+
+        if (['s3compatible'].includes(provider) &&
+            endpoint && !/^https:\/\//i.test(endpoint)) {
+            return res.status(400).send('S3-compatible endpoint must use HTTPS.');
+        }
+
+        if (['ftp', 'sftp'].includes(provider) &&
+            (!providerConfig.host || !providerConfig.username ||
+             !providerConfig.remote_path)) {
+            return res.status(400).send('Remote host, username and directory are required.');
+        }
+
+        if (provider === 'azure' && !providerConfig.account_name) {
+            return res.status(400).send('Azure storage account name is required.');
+        }
+
+        if (provider === 'gcs' && !destination) {
+            return res.status(400).send('Google Cloud bucket name is required.');
+        }
+
+        const hostKey = String(b.host_key_sha256 || '').trim();
+        if (hostKey && !/^[A-Za-z0-9:+/_=-]{32,100}$/.test(hostKey)) {
+            return res.status(400).send('Invalid SFTP host-key fingerprint.');
+        }
+
+        const current = await pool.query(
+            'SELECT * FROM recording_settings WHERE tenant_id = $1',
+            [t]
+        );
+
+        const secretMap = decodeRecordingSecretMap(
+            current.rows[0]?.secret_ref
+        );
+
+        const secretFields = {
+            s3: ['access_key_id', 'secret_access_key'],
+            s3compatible: ['access_key_id', 'secret_access_key'],
+            azure: ['azure_account_key', 'azure_connection_string'],
+            gcs: ['gcs_service_account_json'],
+            ftp: ['ftp_password'],
+            sftp: ['sftp_password', 'sftp_private_key', 'sftp_passphrase']
+        };
+
+        const inputFields = secretFields[provider] || [];
+        const providerSecrets = {
+            ...(secretMap[provider] || {})
+        };
+
+        if (b.clear_provider_credentials === '1') {
+            for (const key of inputFields) delete providerSecrets[key];
+        } else {
+            for (const key of inputFields) {
+                const value = String(b[key] || '');
+                if (value) {
+                    if (value.length > 50000) {
+                        return res.status(400).send('A credential field is too large.');
+                    }
+                    providerSecrets[key] = value;
+                }
+            }
+        }
+
+        if (provider === 'gcs' && providerSecrets.gcs_service_account_json) {
+            let serviceAccount;
+            try {
+                serviceAccount = JSON.parse(providerSecrets.gcs_service_account_json);
+            } catch {
+                return res.status(400).send('Google service-account JSON is invalid.');
+            }
+            if (!serviceAccount.client_email || !serviceAccount.private_key) {
+                return res.status(400).send(
+                    'Google service-account JSON must include client_email and private_key.'
+                );
+            }
+        }
+
+        if (Object.keys(providerSecrets).length) {
+            secretMap[provider] = providerSecrets;
+        } else {
+            delete secretMap[provider];
+        }
+
+        const secretRef = Object.keys(secretMap).length
+            ? trunkCredentialCrypto.encrypt(JSON.stringify(secretMap))
+            : null;
+
+        // Retain a valid SFTP test and active schedule when the admin edits
+        // only unrelated settings. Any SFTP auth/host/root change invalidates it.
+        let preserveSftpTest = false;
+        const existingSettings = current.rows[0] || null;
+
+        if (provider === 'sftp' &&
+            existingSettings?.storage_provider === 'sftp' &&
+            existingSettings.connection_test_fingerprint &&
+            !existingSettings.connection_test_error &&
+            existingSettings.connection_tested_at) {
+            try {
+                const testedAt = new Date(existingSettings.connection_tested_at);
+                const ageMs = Date.now() - testedAt.getTime();
+
+                const proposedFingerprint = getSftpConfigurationFingerprint({
+                    provider_config: providerConfig,
+                    secret_ref: secretRef,
+                    host_key_sha256: hostKey || null
+                });
+
+                preserveSftpTest =
+                    Number.isFinite(ageMs) &&
+                    ageMs >= 0 &&
+                    ageMs <= 7 * 24 * 60 * 60 * 1000 &&
+                    proposedFingerprint === existingSettings.connection_test_fingerprint;
+            } catch {
+                preserveSftpTest = false;
+            }
+        }
+
+        const policyEnabled = b.recording_enabled === '1';
+
         await pool.query(`
             INSERT INTO recording_settings (
                 tenant_id, storage_provider, destination_name,
-                destination_prefix, keep_local_copy, keep_remote_copy,
-                local_base_path, folder_template, filename_template,
-                audio_format, mp3_bitrate_kbps, retention_days,
-                download_enabled, remote_upload_enabled, updated_at
+                destination_prefix, secret_ref, keep_local_copy,
+                keep_remote_copy, local_base_path, folder_template,
+                filename_template, audio_format, mp3_bitrate_kbps,
+                retention_days, download_enabled, remote_upload_enabled,
+                endpoint_url, region, provider_config,
+                upload_interval_minutes, upload_batch_size,
+                auto_upload_existing, host_key_sha256,
+                recording_enabled, record_incoming_external,
+                record_outgoing_external, record_incoming_internal,
+                record_outgoing_internal, recording_policy_sync_status,
+                recording_policy_sync_error, recording_policy_updated_at,
+                connection_tested_at, connection_test_error,
+                connection_test_fingerprint, updated_at,
+                recording_ingestion_enabled,
+                recording_ingestion_interval_minutes,
+                recording_ingestion_history_days,
+                recording_ingestion_status,
+                recording_ingestion_next_run_at,
+                upload_schedule_mode,
+                upload_schedule_time,
+                upload_next_run_at
             ) VALUES (
-                $1,$2,$3,$4,TRUE,TRUE,$5,$6,$7,$8,$9,$10,$11,FALSE,NOW()
+                $1,$2,$3,$4,$5,TRUE,TRUE,$6,$7,$8,$9,$10,$11,$12,
+                FALSE,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21,
+                $22,$23,$24,'pending',NULL,NOW(),NULL,NULL,NULL,NOW(),
+                $25,$26,$27,
+                CASE WHEN $25 THEN 'idle' ELSE 'paused' END,
+                CASE WHEN $25 THEN NOW() ELSE NULL END,
+                $28,$29,NULL
             )
             ON CONFLICT (tenant_id) DO UPDATE SET
-                storage_provider=EXCLUDED.storage_provider,
-                destination_name=EXCLUDED.destination_name,
-                destination_prefix=EXCLUDED.destination_prefix,
-                keep_local_copy=TRUE, keep_remote_copy=TRUE,
-                local_base_path=EXCLUDED.local_base_path,
-                folder_template=EXCLUDED.folder_template,
-                filename_template=EXCLUDED.filename_template,
-                audio_format=EXCLUDED.audio_format,
-                mp3_bitrate_kbps=EXCLUDED.mp3_bitrate_kbps,
-                retention_days=EXCLUDED.retention_days,
-                download_enabled=EXCLUDED.download_enabled,
-                remote_upload_enabled=FALSE, updated_at=NOW()
+                storage_provider = EXCLUDED.storage_provider,
+                destination_name = EXCLUDED.destination_name,
+                destination_prefix = EXCLUDED.destination_prefix,
+                secret_ref = EXCLUDED.secret_ref,
+                keep_local_copy = TRUE,
+                keep_remote_copy = TRUE,
+                local_base_path = EXCLUDED.local_base_path,
+                folder_template = EXCLUDED.folder_template,
+                filename_template = EXCLUDED.filename_template,
+                audio_format = EXCLUDED.audio_format,
+                mp3_bitrate_kbps = EXCLUDED.mp3_bitrate_kbps,
+                retention_days = EXCLUDED.retention_days,
+                download_enabled = EXCLUDED.download_enabled,
+                remote_upload_enabled = CASE
+                    WHEN $30 THEN recording_settings.remote_upload_enabled
+                    ELSE FALSE
+                END,
+                endpoint_url = EXCLUDED.endpoint_url,
+                region = EXCLUDED.region,
+                provider_config = EXCLUDED.provider_config,
+                upload_interval_minutes = EXCLUDED.upload_interval_minutes,
+                upload_batch_size = EXCLUDED.upload_batch_size,
+                auto_upload_existing = EXCLUDED.auto_upload_existing,
+                host_key_sha256 = EXCLUDED.host_key_sha256,
+                recording_enabled = EXCLUDED.recording_enabled,
+                record_incoming_external = EXCLUDED.record_incoming_external,
+                record_outgoing_external = EXCLUDED.record_outgoing_external,
+                record_incoming_internal = EXCLUDED.record_incoming_internal,
+                record_outgoing_internal = EXCLUDED.record_outgoing_internal,
+                recording_policy_sync_status = 'pending',
+                recording_policy_sync_error = NULL,
+                recording_policy_updated_at = NOW(),
+                connection_tested_at = CASE
+                    WHEN $30 THEN recording_settings.connection_tested_at
+                    ELSE NULL
+                END,
+                connection_test_error = CASE
+                    WHEN $30 THEN recording_settings.connection_test_error
+                    ELSE NULL
+                END,
+                connection_test_fingerprint = CASE
+                    WHEN $30 THEN recording_settings.connection_test_fingerprint
+                    ELSE NULL
+                END,
+                recording_ingestion_enabled = EXCLUDED.recording_ingestion_enabled,
+                recording_ingestion_interval_minutes = EXCLUDED.recording_ingestion_interval_minutes,
+                recording_ingestion_history_days = EXCLUDED.recording_ingestion_history_days,
+                recording_ingestion_status = CASE
+                    WHEN EXCLUDED.recording_ingestion_enabled THEN
+                        CASE WHEN recording_settings.recording_ingestion_enabled
+                             THEN recording_settings.recording_ingestion_status
+                             ELSE 'idle' END
+                    ELSE 'paused'
+                END,
+                recording_ingestion_next_run_at = CASE
+                    WHEN EXCLUDED.recording_ingestion_enabled THEN
+                        COALESCE(recording_settings.recording_ingestion_next_run_at, NOW())
+                    ELSE NULL
+                END,
+                recording_ingestion_last_error = NULL,
+                upload_schedule_mode = EXCLUDED.upload_schedule_mode,
+                upload_schedule_time = EXCLUDED.upload_schedule_time,
+                upload_next_run_at = CASE
+                    WHEN $30 THEN recording_settings.upload_next_run_at
+                    ELSE NULL
+                END,
+                updated_at = NOW()
         `, [
-            t, provider, destination || null, prefix, localPath,
-            folder, filename, format, bitrate,
+            t, provider, destination || null, prefix, secretRef,
+            localPath, folder, filename, format, bitrate,
             retention ? Number(retention) : null,
-            b.download_enabled === '1'
+            b.download_enabled === '1',
+            endpoint || null, region || null,
+            JSON.stringify(providerConfig),
+            interval, batchSize, b.auto_upload_existing === '1',
+            hostKey || null, policyEnabled,
+            policyEnabled && b.record_incoming_external === '1',
+            policyEnabled && b.record_outgoing_external === '1',
+            policyEnabled && b.record_incoming_internal === '1',
+            policyEnabled && b.record_outgoing_internal === '1',
+            ingestionEnabled, ingestionInterval, ingestionHistoryDays,
+            uploadScheduleMode, uploadScheduleTime,
+            preserveSftpTest
         ]);
 
-        await writeAuditLog(t, req.session.user.id,
-            'RECORDING_SETTINGS_UPDATED', 'tenant', t, null, {
+        await writeAuditLog(
+            t, req.session.user.id,
+            'RECORDING_SETTINGS_UPDATED', 'tenant', t, null,
+            {
                 storage_provider: provider,
                 destination_name: destination || null,
-                audio_format: format,
-                remote_upload_enabled: false
+                remote_upload_enabled: false,
+                recording_enabled: policyEnabled,
+                upload_interval_minutes: interval
+            }
+        );
+
+        const suffix = req.query.as_tenant
+            ? '&as_tenant=' + encodeURIComponent(req.query.as_tenant)
+            : '';
+        res.redirect('/admin/recording-settings?saved=1' + suffix);
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// SFTP test: reads saved tenant credentials and lists the configured directory.
+// It never uploads, modifies or deletes remote files.
+router.post('/recording-settings/test-sftp', async (req, res, next) => {
+    const tenantId = req.effectiveTenant.id;
+    let tempDir = null;
+
+    const redirect = result => {
+        const suffix = req.query.as_tenant
+            ? '&as_tenant=' + encodeURIComponent(req.query.as_tenant)
+            : '';
+        return res.redirect(
+            '/admin/recording-settings?sftp_test=' +
+            encodeURIComponent(result) + suffix
+        );
+    };
+
+    function curlQuote(value) {
+        const text = String(value);
+        if (/[\r\n\0]/.test(text)) {
+            throw new Error('SFTP credential contains an invalid control character.');
+        }
+        return '"' + text.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+    }
+
+    function normalizeFingerprint(value) {
+        let raw = String(value || '').trim();
+        raw = raw.replace(/^SHA256:/i, '').replace(/-/g, '+').replace(/_/g, '/');
+
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) {
+            throw new Error('Enter the SFTP host fingerprint in OpenSSH SHA256 format.');
+        }
+
+        raw = raw.replace(/=+$/, '');
+        raw += '='.repeat((4 - (raw.length % 4)) % 4);
+
+        const decoded = Buffer.from(raw, 'base64');
+        if (decoded.length !== 32 || decoded.toString('base64') !== raw) {
+            throw new Error('The SFTP SHA256 fingerprint must decode to exactly 32 bytes.');
+        }
+        return raw;
+    }
+
+    function runCurl(args) {
+        return new Promise((resolve, reject) => {
+            const child = spawn('curl', args, {
+                stdio: ['ignore', 'ignore', 'pipe']
             });
 
-        res.redirect('/admin/recording-settings?saved=1');
-    } catch (err) { next(err); }
+            let stderr = '';
+            let settled = false;
+
+            const timer = setTimeout(() => {
+                child.kill('SIGKILL');
+            }, 35000);
+
+            child.stderr.on('data', chunk => {
+                if (stderr.length < 3000) {
+                    stderr += chunk.toString().slice(0, 3000 - stderr.length);
+                }
+            });
+
+            child.on('error', error => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+            });
+
+            child.on('close', code => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+
+                if (code === 0) return resolve();
+                reject(new Error(
+                    `SFTP directory check failed (curl exit ${code}). ` +
+                    (stderr.trim().slice(0, 1200) || 'No diagnostic was returned.')
+                ));
+            });
+        });
+    }
+
+    try {
+        const result = await pool.query(`
+            SELECT storage_provider, secret_ref, provider_config,
+                   host_key_sha256, connection_test_fingerprint
+            FROM recording_settings
+            WHERE tenant_id = $1
+        `, [tenantId]);
+
+        const settings = result.rows[0];
+        if (!settings || settings.storage_provider !== 'sftp') {
+            return redirect('provider-not-sftp');
+        }
+
+        const cfg = settings.provider_config || {};
+        const secrets = decodeRecordingSecretMap(settings.secret_ref);
+        const sftp = secrets.sftp || {};
+
+        const host = String(cfg.host || '').trim();
+        const port = Number(cfg.port || 22);
+        const username = String(cfg.username || '').trim();
+        const remotePath = String(cfg.remote_path || '').trim();
+
+        if (!host || /[\/@?#\s\r\n]/.test(host) ||
+            !Number.isInteger(port) || port < 1 || port > 65535 ||
+            !username || !remotePath || /[\r\n\0]/.test(remotePath)) {
+            throw new Error('Saved SFTP host, port, username or directory is invalid.');
+        }
+
+        const pinnedFingerprint = normalizeFingerprint(settings.host_key_sha256);
+
+        const privateKey = String(sftp.sftp_private_key || '');
+        const password = String(sftp.sftp_password || '');
+        const passphrase = String(sftp.sftp_passphrase || '');
+
+        if (!privateKey && !password) {
+            throw new Error('Save an SFTP password or private key before testing.');
+        }
+
+        const remoteUrl = new URL(`sftp://${host}:${port}/`);
+        const segments = remotePath.split('/').filter(Boolean);
+        remoteUrl.pathname = '/' + segments.map(encodeURIComponent).join('/') + '/';
+
+        tempDir = fs.mkdtempSync(
+            path.join(require('os').tmpdir(), 'techlife-sftp-test-')
+        );
+        fs.chmodSync(tempDir, 0o700);
+
+        const configLines = [
+            'silent',
+            'show-error',
+            'fail',
+            'connect-timeout = 10',
+            'max-time = 30',
+            'hostpubsha256 = ' + curlQuote(pinnedFingerprint)
+        ];
+
+        if (privateKey) {
+            const keyPath = path.join(tempDir, 'identity');
+            fs.writeFileSync(keyPath, privateKey, {
+                encoding: 'utf8',
+                mode: 0o600,
+                flag: 'wx'
+            });
+            fs.chmodSync(keyPath, 0o600);
+            configLines.push('key = ' + curlQuote(keyPath));
+            if (passphrase) {
+                configLines.push('pass = ' + curlQuote(passphrase));
+            }
+            configLines.push('user = ' + curlQuote(username));
+        } else {
+            configLines.push('user = ' + curlQuote(username + ':' + password));
+        }
+
+        const configPath = path.join(tempDir, 'curl.conf');
+        fs.writeFileSync(configPath, configLines.join('\n') + '\n', {
+            encoding: 'utf8',
+            mode: 0o600,
+            flag: 'wx'
+        });
+        fs.chmodSync(configPath, 0o600);
+
+        await runCurl([
+            '--config', configPath,
+            '--list-only',
+            remoteUrl.toString()
+        ]);
+
+        const fingerprint = crypto.createHash('sha256').update(
+            JSON.stringify({
+                host,
+                port,
+                username,
+                remotePath,
+                hostKey: pinnedFingerprint,
+                secrets: sftp
+            })
+        ).digest('hex');
+
+        await pool.query(`
+            UPDATE recording_settings
+            SET connection_tested_at = NOW(),
+                connection_test_error = NULL,
+                connection_test_fingerprint = $2,
+                updated_at = NOW()
+            WHERE tenant_id = $1
+        `, [tenantId, fingerprint]);
+
+        await writeAuditLog(
+            tenantId, req.session.user.id,
+            'RECORDING_SFTP_TEST_SUCCEEDED', 'tenant', tenantId,
+            null, { host, port, remote_path: remotePath, host_key_pinned: true }
+        );
+
+        return redirect('success');
+    } catch (error) {
+        const message = String(error.message || error).slice(0, 1800);
+
+        await pool.query(`
+            UPDATE recording_settings
+            SET connection_tested_at = NOW(),
+                connection_test_error = $2,
+                connection_test_fingerprint = NULL,
+                updated_at = NOW()
+            WHERE tenant_id = $1
+        `, [tenantId, message]).catch(() => {});
+
+        await writeAuditLog(
+            tenantId, req.session.user.id,
+            'RECORDING_SFTP_TEST_FAILED', 'tenant', tenantId,
+            null, { error: message }
+        ).catch(() => {});
+
+        return redirect('failed');
+    } finally {
+        if (tempDir) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    }
+});
+
+
+// Tenant administrator explicitly enables or pauses remote synchronization.
+router.post('/recording-settings/remote-sync', async (req, res, next) => {
+    const tenantId = req.effectiveTenant.id;
+    const action = String((req.body || {}).action || '');
+
+    const redirect = result => {
+        const suffix = req.query.as_tenant
+            ? '&as_tenant=' + encodeURIComponent(req.query.as_tenant)
+            : '';
+        return res.redirect(
+            '/admin/recording-settings?remote_sync=' +
+            encodeURIComponent(result) + suffix
+        );
+    };
+
+    try {
+        if (action === 'pause') {
+            await pool.query(`
+                UPDATE recording_settings
+                SET remote_upload_enabled = FALSE,
+                    upload_next_run_at = NULL,
+                    updated_at = NOW()
+                WHERE tenant_id = $1
+            `, [tenantId]);
+
+            await writeAuditLog(
+                tenantId, req.session.user.id,
+                'RECORDING_REMOTE_SYNC_PAUSED', 'tenant', tenantId,
+                null, { provider: 'sftp' }
+            );
+
+            return redirect('paused');
+        }
+
+        if (action !== 'enable') {
+            return res.status(400).send('Invalid remote synchronization action.');
+        }
+
+        const result = await pool.query(`
+            SELECT *
+            FROM recording_settings
+            WHERE tenant_id = $1
+        `, [tenantId]);
+
+        const settings = result.rows[0];
+        if (!settings) return redirect('not-configured');
+
+        if (settings.storage_provider !== 'sftp') {
+            return redirect('sftp-only');
+        }
+
+        if (!settings.connection_tested_at ||
+            settings.connection_test_error ||
+            !settings.connection_test_fingerprint) {
+            return redirect('test-required');
+        }
+
+        const testedAt = new Date(settings.connection_tested_at);
+        if (Number.isNaN(testedAt.getTime()) ||
+            Date.now() - testedAt.getTime() > 7 * 24 * 60 * 60 * 1000) {
+            return redirect('test-expired');
+        }
+
+        const currentFingerprint =
+            getSftpConfigurationFingerprint(settings);
+
+        if (currentFingerprint !== settings.connection_test_fingerprint) {
+            return redirect('test-required');
+        }
+
+        await pool.query(`
+            UPDATE recording_settings
+            SET remote_upload_enabled = TRUE,
+                upload_next_run_at = NOW(),
+                upload_last_error = NULL,
+                updated_at = NOW()
+            WHERE tenant_id = $1
+        `, [tenantId]);
+
+        let queued = 0;
+
+        if (settings.auto_upload_existing === true) {
+            const queueResult = await pool.query(`
+                INSERT INTO recording_storage_jobs (
+                    id, tenant_id, recording_id, job_type,
+                    job_status, attempts, max_attempts,
+                    available_at, created_at, updated_at
+                )
+                SELECT
+                    gen_random_uuid(), r.tenant_id, r.id,
+                    'remote_upload', 'pending', 0, 8,
+                    NOW(), NOW(), NOW()
+                FROM recordings r
+                WHERE r.tenant_id = $1
+                  AND r.storage_backend = 'local'
+                  AND starts_with(
+                      r.file_path,
+                      rtrim($2, '/') || '/'
+                  )
+                  AND lower(r.file_path) NOT LIKE '%/demo-recordings/%'
+                  AND upper(r.file_path) NOT LIKE '%SYNTHETIC_DEMO_ONLY.WAV%'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM recording_storage_copies c
+                      WHERE c.recording_id = r.id
+                        AND c.copy_type = 'remote'
+                        AND c.copy_status = 'available'
+                  )
+                ON CONFLICT (tenant_id, recording_id, job_type)
+                DO UPDATE SET
+                    job_status = 'pending',
+                    attempts = 0,
+                    available_at = NOW(),
+                    locked_at = NULL,
+                    last_error = NULL,
+                    updated_at = NOW()
+                WHERE recording_storage_jobs.job_status
+                    NOT IN ('running','succeeded')
+            `, [tenantId, settings.local_base_path]);
+
+            queued = queueResult.rowCount;
+        }
+
+        await writeAuditLog(
+            tenantId, req.session.user.id,
+            'RECORDING_REMOTE_SYNC_ENABLED', 'tenant', tenantId,
+            null, {
+                provider: 'sftp',
+                queued_historical_recordings: queued,
+                schedule_mode: settings.upload_schedule_mode,
+                daily_time: settings.upload_schedule_time
+            }
+        );
+
+        return redirect('enabled');
+    } catch (error) {
+        await pool.query(`
+            UPDATE recording_settings
+            SET upload_last_error = $2,
+                updated_at = NOW()
+            WHERE tenant_id = $1
+        `, [tenantId, String(error.message || error).slice(0, 1500)])
+            .catch(() => {});
+
+        return next(error);
+    }
 });
 
 // Recordings are not listed or played in the Admin portal.
@@ -543,30 +1228,40 @@ function parseQueueRequiredSkills(raw) {
     return requirements;
 }
 
+
+function optionalQueueUuid(value, label) {
+    const id = String(value || '').trim();
+    if (!id) return null;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+        throw new Error(label + ' is invalid.');
+    }
+    return id;
+}
+
 function validateQueueBody(body) {
     const name = String(body.name || '').trim();
     const queueNumber = String(body.queue_number || '').trim();
     const strategy = String(body.strategy || 'ringall');
     const fallback = String(body.skill_fallback_action || 'leave');
+    const timeoutAction = String(body.wait_timeout_action || 'hangup');
 
     if (!name || name.length > 120) {
         throw new Error('Queue name is required and must be at most 120 characters.');
     }
-
-    if (!/^[a-zA-Z0-9*#+_-]{1,40}$/.test(queueNumber)) {
-        throw new Error('Queue number must be 1–40 characters and contain only letters, digits, *, #, +, _ or -.');
+    if (!/^[a-zA-Z0-9*#+_-]{1,20}$/.test(queueNumber)) {
+        throw new Error('Queue number must be 1–20 characters.');
     }
-
     if (!QUEUE_STRATEGIES.has(strategy)) {
         throw new Error('Invalid queue strategy.');
     }
-
     if (!QUEUE_FALLBACK_ACTIONS.has(fallback)) {
         throw new Error('Invalid skill fallback setting.');
     }
+    if (!['hangup', 'queue', 'ivr', 'agent'].includes(timeoutAction)) {
+        throw new Error('Invalid queue wait-timeout action.');
+    }
 
     const requiredSkills = parseQueueRequiredSkills(body.required_skills);
-
     if (strategy === 'skillbased' && requiredSkills.length === 0) {
         throw new Error('Skill Based queues require at least one required skill.');
     }
@@ -575,16 +1270,28 @@ function validateQueueBody(body) {
         if (value === undefined || value === null || String(value).trim() === '') {
             return defaultValue;
         }
-
         if (!/^\d+$/.test(String(value).trim())) {
             throw new Error(label + ' must be a whole number.');
         }
-
         const n = Number(value);
         if (n < min || n > max) {
             throw new Error(label + ' must be between ' + min + ' and ' + max + '.');
         }
         return n;
+    }
+
+    const waitQueueId = optionalQueueUuid(body.wait_timeout_queue_id, 'Overflow queue');
+    const waitIvrId = optionalQueueUuid(body.wait_timeout_ivr_id, 'Overflow IVR');
+    const waitAgentId = optionalQueueUuid(body.wait_timeout_agent_id, 'Overflow agent');
+
+    if (timeoutAction === 'queue' && !waitQueueId) {
+        throw new Error('Select a queue for the timeout destination.');
+    }
+    if (timeoutAction === 'ivr' && !waitIvrId) {
+        throw new Error('Select an IVR for the timeout destination.');
+    }
+    if (timeoutAction === 'agent' && !waitAgentId) {
+        throw new Error('Select an agent for the timeout destination.');
     }
 
     return {
@@ -596,8 +1303,84 @@ function validateQueueBody(body) {
         wrapup: integerField(body.wrapup_seconds, 'Wrap-up', 0, 86400, 0),
         isActive: body.is_active === '1',
         requiredSkills,
-        fallback
+        fallback,
+        mohAssetId: optionalQueueUuid(body.moh_asset_id, 'Hold music asset'),
+        welcomeAssetId: optionalQueueUuid(body.welcome_asset_id, 'Welcome audio asset'),
+        periodicAssetId: optionalQueueUuid(body.periodic_announce_asset_id, 'Periodic announcement asset'),
+        periodicInterval: integerField(body.periodic_announce_interval_seconds, 'Announcement interval', 10, 3600, 60),
+        periodicStartDelay: integerField(body.periodic_announce_start_delay_seconds, 'Announcement start delay', 0, 3600, 30),
+        announcePosition: body.announce_position === '1',
+        announceHoldTime: body.announce_hold_time === '1',
+        retryOnTimeout: body.retry_on_timeout === '1',
+        ringOnHold: body.ring_on_hold === '1',
+        waitTimeoutAction: timeoutAction,
+        waitTimeoutQueueId: timeoutAction === 'queue' ? waitQueueId : null,
+        waitTimeoutIvrId: timeoutAction === 'ivr' ? waitIvrId : null,
+        waitTimeoutAgentId: timeoutAction === 'agent' ? waitAgentId : null
     };
+}
+
+
+async function validateQueueReferences(tenantId, q, editingQueueId = null) {
+    const assets = [
+        ['hold music', q.mohAssetId],
+        ['welcome audio', q.welcomeAssetId],
+        ['periodic announcement', q.periodicAssetId]
+    ];
+
+    for (const [label, id] of assets) {
+        if (!id) continue;
+        const result = await pool.query(
+            `SELECT id FROM media_assets
+              WHERE id = $1 AND tenant_id = $2
+                AND media_type = 'audio' AND is_active = TRUE`,
+            [id, tenantId]
+        );
+        if (!result.rowCount) {
+            throw new Error(`Selected ${label} is inactive or does not belong to this tenant.`);
+        }
+    }
+
+    if (q.waitTimeoutAction === 'queue') {
+        const result = await pool.query(
+            `SELECT id FROM queues
+              WHERE id = $1 AND tenant_id = $2
+                AND is_active = TRUE AND wazo_queue_id IS NOT NULL
+                AND ($3::uuid IS NULL OR id <> $3::uuid)`,
+            [q.waitTimeoutQueueId, tenantId, editingQueueId]
+        );
+        if (!result.rowCount) {
+            throw new Error('Timeout destination queue must be another active, provisioned queue in this tenant.');
+        }
+    }
+
+    if (q.waitTimeoutAction === 'ivr') {
+        const result = await pool.query(
+            `SELECT id FROM ivr_menus
+              WHERE id = $1 AND tenant_id = $2
+                AND is_active = TRUE AND wazo_ivr_id IS NOT NULL`,
+            [q.waitTimeoutIvrId, tenantId]
+        );
+        if (!result.rowCount) {
+            throw new Error('Timeout destination IVR is inactive or not provisioned for this tenant.');
+        }
+    }
+
+    if (q.waitTimeoutAction === 'agent') {
+        const result = await pool.query(
+            `SELECT id FROM agents
+              WHERE id = $1 AND tenant_id = $2
+                AND is_active = TRUE AND wazo_user_id IS NOT NULL`,
+            [q.waitTimeoutAgentId, tenantId]
+        );
+        if (!result.rowCount) {
+            throw new Error('Timeout destination agent is inactive or not provisioned for this tenant.');
+        }
+    }
+
+    if (q.maxWait === null && q.waitTimeoutAction !== 'hangup') {
+        throw new Error('Set a maximum queue wait time before choosing an overflow destination.');
+    }
 }
 
 function queueFormRedirect(req) {
@@ -609,17 +1392,126 @@ function sendQueueValidationError(res, error) {
     return res.status(400).send(error.message || 'Invalid queue settings.');
 }
 
+
+
+router.post('/queues/call-behavior', async (req, res, next) => {
+    const tenantId = req.effectiveTenant.id;
+    const user = req.session.user;
+    const enabled = String(req.body.inbound_auto_answer_enabled || '') === '1';
+
+    try {
+        const previousResult = await pool.query(
+            `SELECT inbound_auto_answer_enabled
+               FROM tenant_call_settings
+              WHERE tenant_id = $1`,
+            [tenantId]
+        );
+        const previous = previousResult.rows[0]
+            ? previousResult.rows[0].inbound_auto_answer_enabled === true
+            : false;
+
+        await pool.query(
+            `INSERT INTO tenant_call_settings
+                (tenant_id, inbound_auto_answer_enabled, updated_by, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (tenant_id)
+             DO UPDATE SET
+                inbound_auto_answer_enabled = EXCLUDED.inbound_auto_answer_enabled,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()`,
+            [tenantId, enabled, user.id]
+        );
+
+        try {
+            await writeAuditLog(
+                tenantId,
+                user.id,
+                'INBOUND_AUTO_ANSWER_UPDATED',
+                'telephony',
+                null,
+                { inbound_auto_answer_enabled: previous },
+                { inbound_auto_answer_enabled: enabled },
+                req.ip
+            );
+        } catch (auditError) {
+            console.error(
+                'Could not audit inbound auto-answer setting:',
+                auditError.message
+            );
+        }
+
+        return res.redirect(queueFormRedirect(req));
+    } catch (err) {
+        return next(err);
+    }
+});
+
+
 router.get('/queues', async (req, res) => {
     const t = req.effectiveTenant.id;
-    const queues = (await pool.query(
-        'SELECT * FROM queues WHERE tenant_id = $1 ORDER BY name',
+    const editId = /^[0-9a-f-]{36}$/i.test(String(req.query.edit || ''))
+        ? req.query.edit : null;
+
+    const [queues, audioAssets, overflowQueues, overflowIvrs, overflowAgents] =
+        await Promise.all([
+            pool.query(
+                'SELECT * FROM queues WHERE tenant_id = $1 ORDER BY name',
+                [t]
+            ),
+            pool.query(
+                `SELECT id, name, duration_seconds
+                   FROM media_assets
+                  WHERE tenant_id = $1 AND media_type = 'audio'
+                    AND is_active = TRUE
+                  ORDER BY name`,
+                [t]
+            ),
+            pool.query(
+                `SELECT id, name, queue_number
+                   FROM queues
+                  WHERE tenant_id = $1 AND is_active = TRUE
+                    AND wazo_queue_id IS NOT NULL
+                    AND ($2::uuid IS NULL OR id <> $2::uuid)
+                  ORDER BY name`,
+                [t, editId]
+            ),
+            pool.query(
+                `SELECT id, name
+                   FROM ivr_menus
+                  WHERE tenant_id = $1 AND is_active = TRUE
+                    AND wazo_ivr_id IS NOT NULL
+                  ORDER BY name`,
+                [t]
+            ),
+            pool.query(
+                `SELECT id, agent_number
+                   FROM agents
+                  WHERE tenant_id = $1 AND is_active = TRUE
+                    AND wazo_user_id IS NOT NULL
+                  ORDER BY agent_number`,
+                [t]
+            )
+        ]);
+
+    const callSettingsResult = await pool.query(
+        `SELECT inbound_auto_answer_enabled
+           FROM tenant_call_settings
+          WHERE tenant_id = $1`,
         [t]
-    )).rows;
+    );
+    const inboundAutoAnswerEnabled =
+        callSettingsResult.rows[0]?.inbound_auto_answer_enabled === true;
 
     res.render('admin/queues', {
         pageTitle: 'Admin — Queues',
-        queues,
-        editId: req.query.edit || null
+        queues: queues.rows,
+        audioAssets: audioAssets.rows,
+        overflowQueues: overflowQueues.rows,
+        overflowIvrs: overflowIvrs.rows,
+        overflowAgents: overflowAgents.rows,
+        editId,
+        inboundAutoAnswerEnabled,
+        asTenant: req.query.as_tenant || ''
     });
 });
 
@@ -629,6 +1521,7 @@ router.post('/queues/create', async (req, res) => {
 
     try {
         q = validateQueueBody(req.body);
+        await validateQueueReferences(t, q);
     } catch (error) {
         return sendQueueValidationError(res, error);
     }
@@ -638,13 +1531,30 @@ router.post('/queues/create', async (req, res) => {
             `INSERT INTO queues
                 (tenant_id, name, queue_number, strategy,
                  max_wait_seconds, sla_seconds, wrapup_seconds,
-                 required_skills_json, skill_fallback_action)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+                 required_skills_json, skill_fallback_action,
+                 moh_asset_id, welcome_asset_id, periodic_announce_asset_id,
+                 periodic_announce_interval_seconds,
+                 periodic_announce_start_delay_seconds,
+                 announce_position, announce_hold_time,
+                 retry_on_timeout, ring_on_hold,
+                 wait_timeout_action, wait_timeout_queue_id,
+                 wait_timeout_ivr_id, wait_timeout_agent_id)
+             VALUES (
+                 $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,
+                 $10,$11,$12,$13,$14,$15,$16,$17,$18,
+                 $19,$20,$21,$22
+             )
              RETURNING id`,
             [
                 t, q.name, q.queueNumber, q.strategy,
                 q.maxWait, q.sla, q.wrapup,
-                JSON.stringify(q.requiredSkills), q.fallback
+                JSON.stringify(q.requiredSkills), q.fallback,
+                q.mohAssetId, q.welcomeAssetId, q.periodicAssetId,
+                q.periodicInterval, q.periodicStartDelay,
+                q.announcePosition, q.announceHoldTime,
+                q.retryOnTimeout, q.ringOnHold,
+                q.waitTimeoutAction, q.waitTimeoutQueueId,
+                q.waitTimeoutIvrId, q.waitTimeoutAgentId
             ]
         );
 
@@ -666,6 +1576,7 @@ router.post('/queues/:id/edit', async (req, res) => {
 
     try {
         q = validateQueueBody(req.body);
+        await validateQueueReferences(t, q, req.params.id);
     } catch (error) {
         return sendQueueValidationError(res, error);
     }
@@ -677,13 +1588,29 @@ router.post('/queues/:id/edit', async (req, res) => {
                     max_wait_seconds = $4, sla_seconds = $5,
                     wrapup_seconds = $6, is_active = $7,
                     required_skills_json = $8::jsonb,
-                    skill_fallback_action = $9
-              WHERE id = $10 AND tenant_id = $11
+                    skill_fallback_action = $9,
+                    moh_asset_id = $10, welcome_asset_id = $11,
+                    periodic_announce_asset_id = $12,
+                    periodic_announce_interval_seconds = $13,
+                    periodic_announce_start_delay_seconds = $14,
+                    announce_position = $15, announce_hold_time = $16,
+                    retry_on_timeout = $17, ring_on_hold = $18,
+                    wait_timeout_action = $19,
+                    wait_timeout_queue_id = $20,
+                    wait_timeout_ivr_id = $21,
+                    wait_timeout_agent_id = $22
+              WHERE id = $23 AND tenant_id = $24
               RETURNING id`,
             [
                 q.name, q.queueNumber, q.strategy,
                 q.maxWait, q.sla, q.wrapup, q.isActive,
                 JSON.stringify(q.requiredSkills), q.fallback,
+                q.mohAssetId, q.welcomeAssetId, q.periodicAssetId,
+                q.periodicInterval, q.periodicStartDelay,
+                q.announcePosition, q.announceHoldTime,
+                q.retryOnTimeout, q.ringOnHold,
+                q.waitTimeoutAction, q.waitTimeoutQueueId,
+                q.waitTimeoutIvrId, q.waitTimeoutAgentId,
                 req.params.id, t
             ]
         );
@@ -2324,6 +3251,42 @@ router.post('/campaigns/:id/agents', async (req, res, next) => {
             await client.query('ROLLBACK');
             return res.status(409).send(
                 'Agent assignments cannot change while campaign calls are active.'
+            );
+        }
+
+        const activeReservations = await client.query(
+            `SELECT 1
+               FROM campaign_agent_reservations
+              WHERE tenant_id = $1
+                AND campaign_id = $2
+                AND reservation_status IN ('reserved', 'dialing', 'connected')
+              LIMIT 1`,
+            [tenantId, campaign.id]
+        );
+
+        if (activeReservations.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).send(
+                'Agent assignments cannot change while campaign reservations are active.'
+            );
+        }
+
+        const activeClaims = await client.query(
+            `SELECT 1
+               FROM campaign_dial_claims
+              WHERE tenant_id = $1
+                AND campaign_id = $2
+                AND claim_status IN (
+                    'claimed', 'originating', 'ringing', 'in_flight'
+                )
+              LIMIT 1`,
+            [tenantId, campaign.id]
+        );
+
+        if (activeClaims.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).send(
+                'Agent assignments cannot change while campaign claims are active.'
             );
         }
 

@@ -1,125 +1,441 @@
 <%- include('../partials/head') %>
 <%- include('../partials/nav') %>
-<h1>Queues</h1>
 
-<form method="post" action="/admin/queues/create" class="tl-card">
-    <div class="tl-filters">
-        <div><label>Name</label><input name="name" maxlength="120" required></div>
-        <div><label>Queue Number</label><input name="queue_number" maxlength="40" required></div>
-        <div><label>Strategy</label>
-            <select name="strategy">
-                <option value="ringall">Ring All</option>
-                <option value="roundrobin">Round Robin</option>
-                <option value="leastrecent">Least Recent</option>
-                <option value="leastcalls">Least Calls</option>
-                <option value="random">Random</option>
-                <option value="skillbased">Skill Based</option>
-            </select>
-        </div>
-        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" min="1" max="86400"></div>
-        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" min="1" max="86400" value="20"></div>
-        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" min="0" max="86400" value="0"></div>
-        <div>
-            <label>Required Skills</label>
-            <input name="required_skills" placeholder="sales:3,support:2">
-            <small>For Skill Based queues, enter comma-separated skill names with optional minimum level (1–5).</small>
-        </div>
-        <div><label>No-match fallback setting</label>
-            <select name="skill_fallback_action">
-                <option value="leave">Leave in current queue / no action</option>
-                <option value="next_queue">Next queue (not yet wired)</option>
-                <option value="callback">Callback (not yet wired)</option>
-                <option value="voicemail">Voicemail (not yet wired)</option>
-            </select>
-        </div>
-    </div>
-    <button class="tl-btn" type="submit">Create Queue</button>
-</form>
+<%
+const queueList = Array.isArray(queues) ? queues : [];
+const editingQueue = editId
+    ? queueList.find(item => String(item.id) === String(editId))
+    : null;
 
-<h2>All Queues</h2>
-<table>
-<tr><th>Name</th><th>Number</th><th>Strategy</th><th>Required Skills</th><th>SLA Target</th><th>Status</th><th></th></tr>
-<% queues.forEach(q => {
-    let reqSkills = [];
+// Shared page: safely support normal tenant and reseller tenant context.
+const tenantContext = (typeof asTenant !== 'undefined' && asTenant)
+    ? String(asTenant)
+    : '';
+
+const tenantQuery = tenantContext
+    ? '?as_tenant=' + encodeURIComponent(tenantContext)
+    : '';
+
+const strategies = [
+    ['ringall', 'Ring All'],
+    ['roundrobin', 'Round Robin'],
+    ['leastrecent', 'Least Recent'],
+    ['leastcalls', 'Least Calls'],
+    ['random', 'Random'],
+    ['skillbased', 'Skill Based']
+];
+
+const fallbackOptions = [
+    ['leave', 'Leave in current queue'],
+    ['next_queue', 'Next queue (not yet wired)'],
+    ['callback', 'Callback (not yet wired)'],
+    ['voicemail', 'Voicemail (not yet wired)']
+];
+
+function queueSkills(value) {
     try {
-        reqSkills = Array.isArray(q.required_skills_json)
-            ? q.required_skills_json
-            : JSON.parse(q.required_skills_json || '[]');
-    } catch (_) { reqSkills = []; }
-%>
-<tr>
-    <td><%= q.name %></td>
-    <td><%= q.queue_number %></td>
-    <td><%= q.strategy %></td>
-    <td><%= reqSkills.map(s => (s.name || s.skill) + ':' + (s.min_proficiency || 1)).join(', ') || '—' %></td>
-    <td><%= q.sla_seconds %>s</td>
-    <td><%= q.is_active ? 'Active' : 'Disabled' %></td>
-    <td>
-        <a href="?edit=<%= q.id %>">Edit</a> &middot;
-        <form method="post" action="/admin/queues/<%= q.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this queue?');">
-            <button type="submit" style="background:none;border:none;color:var(--tl-bad);cursor:pointer;text-decoration:underline;padding:0">Delete</button>
-        </form>
-    </td>
-</tr>
-<% }) %>
-<% if (queues.length === 0) { %><tr><td colspan="7">No queues yet.</td></tr><% } %>
-</table>
+        const items = Array.isArray(value)
+            ? value
+            : JSON.parse(value || '[]');
 
-<% if (editId) {
-    const q = queues.find(x => x.id === editId);
-    if (q) {
-        let reqSkills = [];
-        try {
-            reqSkills = Array.isArray(q.required_skills_json)
-                ? q.required_skills_json
-                : JSON.parse(q.required_skills_json || '[]');
-        } catch (_) { reqSkills = []; }
-        const skillInput = reqSkills.map(s =>
-            (s.name || s.skill) + ':' + (s.min_proficiency || 1)
-        ).join(',');
+        return Array.isArray(items)
+            ? items.map(item =>
+                (item.name || item.skill || '') + ':' +
+                (item.min_proficiency || 1)
+              ).filter(item => item !== ':1').join(',')
+            : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function queueSkillLabel(value) {
+    const text = queueSkills(value);
+    return text ? text.replace(/,/g, ', ') : '—';
+}
+
+function strategyLabel(value) {
+    const item = strategies.find(option => option[0] === value);
+    return item ? item[1] : value;
+}
+
+const activeCount = queueList.filter(q => q.is_active).length;
+const disabledCount = queueList.length - activeCount;
+const skillCount = queueList.filter(q => q.strategy === 'skillbased').length;
+
+const formAction = editingQueue
+    ? '/admin/queues/' + encodeURIComponent(editingQueue.id) + '/edit' + tenantQuery
+    : '/admin/queues/create' + tenantQuery;
 %>
-<h2>Edit Queue — <%= q.name %></h2>
-<form method="post" action="/admin/queues/<%= q.id %>/edit" class="tl-card">
-    <div class="tl-filters">
-        <div><label>Name</label><input name="name" maxlength="120" value="<%= q.name %>" required></div>
-        <div><label>Queue Number</label><input name="queue_number" maxlength="40" value="<%= q.queue_number %>" required></div>
-        <div><label>Strategy</label>
-            <select name="strategy">
-                <% ['ringall','roundrobin','leastrecent','leastcalls','random','skillbased'].forEach(s => { %>
-                <option value="<%= s %>" <%= q.strategy === s ? 'selected' : '' %>><%= s %></option>
-                <% }) %>
-            </select>
-        </div>
-        <div><label>Max Wait (s)</label><input type="number" name="max_wait_seconds" min="1" max="86400" value="<%= q.max_wait_seconds || '' %>"></div>
-        <div><label>SLA Target (s)</label><input type="number" name="sla_seconds" min="1" max="86400" value="<%= q.sla_seconds %>"></div>
-        <div><label>Wrap-up (s)</label><input type="number" name="wrapup_seconds" min="0" max="86400" value="<%= q.wrapup_seconds %>"></div>
+
+<style>
+.q-page { max-width: 1500px; margin: 0 auto; padding-bottom: 30px; }
+.q-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin:8px 0 20px; }
+.q-eyebrow { color:var(--acc2); font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+.q-heading h1 { font-size:25px; font-weight:800; margin-top:3px; }
+.q-subtitle { color:var(--t1); font-size:12px; margin-top:4px; }
+.q-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+.q-stat { background:var(--c2); border:1px solid var(--bd); border-radius:var(--r12); padding:15px 17px; min-width:0; }
+.q-stat-label { color:var(--t1); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.07em; }
+.q-stat-value { font-family:var(--fm); font-size:25px; font-weight:700; margin-top:5px; color:var(--t0); }
+.q-stat-note { color:var(--t2); font-size:10px; margin-top:3px; }
+.q-layout { display:grid; grid-template-columns:minmax(300px, .85fr) minmax(0, 1.65fr); gap:15px; align-items:start; }
+.q-panel { background:var(--c2); border:1px solid var(--bd); border-radius:var(--r12); overflow:hidden; min-width:0; }
+.q-panel-head { padding:16px 18px; border-bottom:1px solid var(--bd); display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.q-panel-head h2 { font-size:14px; font-weight:800; }
+.q-panel-head p { color:var(--t1); font-size:10px; margin-top:3px; }
+.q-panel-body { padding:17px; }
+.q-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:13px 11px; }
+.q-field { min-width:0; }
+.q-field.full { grid-column:1 / -1; }
+.q-field label { display:block; margin-bottom:5px; }
+.q-field input, .q-field select { width:100%; min-width:0; min-height:37px; }
+.q-field small { display:block; color:var(--t2); font-size:10px; line-height:1.5; margin-top:5px; }
+.q-section-label { grid-column:1 / -1; padding-top:7px; border-top:1px solid var(--bd); color:var(--acc2); font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.q-form-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; }
+.q-toolbar { padding:13px 16px; display:flex; gap:9px; flex-wrap:wrap; border-bottom:1px solid var(--bd); }
+.q-toolbar input { flex:1 1 180px; min-width:150px; }
+.q-toolbar select { flex:0 1 150px; }
+.q-results { color:var(--t2); font-size:10px; margin-left:auto; align-self:center; }
+.q-table-wrap { width:100%; overflow-x:auto; }
+.q-table { min-width:760px; border:0; border-radius:0; }
+.q-table th { padding:11px 12px; }
+.q-table td { padding:12px; vertical-align:middle; }
+.q-name { color:var(--t0); font-weight:700; }
+.q-number { color:var(--acc2); font-family:var(--fm); font-size:11px; }
+.q-muted { color:var(--t2); font-size:10px; }
+.q-strategy { display:inline-block; border:1px solid var(--bdl); background:var(--c3); border-radius:6px; padding:3px 7px; color:var(--t1); font-size:10px; white-space:nowrap; }
+.q-pill { display:inline-flex; border-radius:30px; padding:3px 9px; font-size:9px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }
+.q-pill.active { color:#34d399; background:rgba(16,185,129,.13); border:1px solid rgba(16,185,129,.25); }
+.q-pill.disabled { color:#a1a1aa; background:rgba(148,163,184,.09); border:1px solid rgba(148,163,184,.18); }
+.q-actions { display:flex; gap:9px; align-items:center; white-space:nowrap; }
+.q-actions a { color:var(--acc2); text-decoration:none; font-size:11px; font-weight:700; }
+.q-actions a:hover { text-decoration:underline; }
+.q-delete { background:none; border:0; padding:0; color:var(--red); cursor:pointer; font:700 11px var(--fu); }
+.q-empty { text-align:center; padding:35px 15px !important; color:var(--t1); }
+.q-hint { color:var(--t2); font-size:10px; line-height:1.6; margin-top:13px; }
+.q-mobile-note { display:none; }
+@media(max-width:1050px) {
+    .q-layout { grid-template-columns:1fr; }
+    .q-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:600px) {
+    .q-heading h1 { font-size:21px; }
+    .q-stats { gap:8px; }
+    .q-stat { padding:12px; }
+    .q-stat-value { font-size:21px; }
+    .q-form-grid { grid-template-columns:1fr; }
+    .q-field.full, .q-section-label { grid-column:1; }
+    .q-panel-body { padding:13px; }
+    .q-toolbar select { flex:1 1 120px; }
+}
+</style>
+
+<div class="q-page">
+    <header class="q-heading">
         <div>
-            <label>Required Skills</label>
-            <input name="required_skills" value="<%= skillInput %>" placeholder="sales:3,support:2">
-            <small>Skill Based queues require at least one skill. Levels are 1–5.</small>
+            <div class="q-eyebrow">Call Center / Administration</div>
+            <h1>Queue Management</h1>
+            <p class="q-subtitle">Configure call queues, agent distribution strategies and service targets.</p>
         </div>
-        <div><label>No-match fallback setting</label>
-            <select name="skill_fallback_action">
-                <% [
-                    ['leave','Leave in current queue / no action'],
-                    ['next_queue','Next queue (not yet wired)'],
-                    ['callback','Callback (not yet wired)'],
-                    ['voicemail','Voicemail (not yet wired)']
-                ].forEach(item => { %>
-                <option value="<%= item[0] %>" <%= (q.skill_fallback_action || 'leave') === item[0] ? 'selected' : '' %>><%= item[1] %></option>
-                <% }) %>
-            </select>
+        <a class="tl-btn" href="#queue-form">
+            <span class="material-icons-round" style="font-size:16px">add</span>
+            Add Queue
+        </a>
+    </header>
+
+    <section class="q-stats">
+        <div class="q-stat">
+            <div class="q-stat-label">Total Queues</div>
+            <div class="q-stat-value"><%= queueList.length %></div>
+            <div class="q-stat-note">Configured for this tenant</div>
         </div>
-        <div><label>Status</label>
-            <select name="is_active">
-                <option value="1" <%= q.is_active ? 'selected' : '' %>>Active</option>
-                <option value="0" <%= !q.is_active ? 'selected' : '' %>>Disabled</option>
-            </select>
+        <div class="q-stat">
+            <div class="q-stat-label">Active Queues</div>
+            <div class="q-stat-value" style="color:var(--grn)"><%= activeCount %></div>
+            <div class="q-stat-note">Enabled queue configurations</div>
         </div>
+        <div class="q-stat">
+            <div class="q-stat-label">Disabled Queues</div>
+            <div class="q-stat-value"><%= disabledCount %></div>
+            <div class="q-stat-note">Not enabled for routing</div>
+        </div>
+        <div class="q-stat">
+            <div class="q-stat-label">Skill Based</div>
+            <div class="q-stat-value" style="color:var(--acc2)"><%= skillCount %></div>
+            <div class="q-stat-note">Queues with skill strategy</div>
+        </div>
+    </section>
+
+
+    <section class="q-panel" style="margin-bottom:16px">
+        <div class="q-panel-head">
+            <div>
+                <h2>Inbound Call Handling</h2>
+                <p>Tenant-wide setting for inbound calls delivered to agent browsers.</p>
+            </div>
+            <span class="q-pill <%= inboundAutoAnswerEnabled ? 'active' : 'disabled' %>">
+                <%= inboundAutoAnswerEnabled ? 'Auto-answer ON' : 'Manual answer' %>
+            </span>
+        </div>
+        <div class="q-panel-body">
+            <form method="post" action="/admin/queues/call-behavior<%= tenantQuery %>"
+                  style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+                <div style="min-width:240px;flex:1">
+                    <label for="inbound-auto-answer"
+                           style="display:flex;align-items:center;gap:10px;font-weight:700">
+                        <input id="inbound-auto-answer" type="checkbox"
+                               name="inbound_auto_answer_enabled" value="1"
+                               <%= inboundAutoAnswerEnabled ? 'checked' : '' %>>
+                        Automatically answer inbound agent calls
+                    </label>
+                    <p class="q-hint" style="margin-top:7px">
+                        OFF: agents hear the ring and click Answer. ON: inbound calls are
+                        answered automatically. Agents can still hang up, dispose of calls,
+                        and transfer to an available agent.
+                    </p>
+                </div>
+                <button class="tl-btn" type="submit">Save Call Handling</button>
+            </form>
+        </div>
+    </section>
+
+    <div class="q-layout">
+        <section class="q-panel" id="queue-form">
+            <div class="q-panel-head">
+                <div>
+                    <h2><%= editingQueue ? 'Edit Queue' : 'Create New Queue' %></h2>
+                    <p><%= editingQueue ? 'Update the selected queue configuration.' : 'Add a queue to this tenant.' %></p>
+                </div>
+                <% if (editingQueue) { %>
+                    <span class="q-pill active">Editing</span>
+                <% } %>
+            </div>
+
+            <div class="q-panel-body">
+                <form method="post" action="<%= formAction %>">
+                    <div class="q-form-grid">
+                        <div class="q-section-label">Queue Identity</div>
+
+                        <div class="q-field full">
+                            <label for="q-name">Queue Name</label>
+                            <input id="q-name" name="name" maxlength="120"
+                                value="<%= editingQueue ? editingQueue.name : '' %>"
+                                placeholder="e.g. Customer Support" required>
+                        </div>
+
+                        <div class="q-field">
+                            <label for="q-number">Queue Number</label>
+                            <input id="q-number" name="queue_number" maxlength="20"
+                                value="<%= editingQueue ? editingQueue.queue_number : '' %>"
+                                placeholder="e.g. 6001" required>
+                            <small>Letters, digits, *, #, +, _ and - are accepted.</small>
+                        </div>
+
+                        <div class="q-field">
+                            <label for="q-strategy">Distribution Strategy</label>
+                            <select id="q-strategy" name="strategy">
+                                <% strategies.forEach(option => { %>
+                                    <option value="<%= option[0] %>"
+                                        <%= (editingQueue ? editingQueue.strategy : 'ringall') === option[0] ? 'selected' : '' %>>
+                                        <%= option[1] %>
+                                    </option>
+                                <% }) %>
+                            </select>
+                        </div>
+
+                        <div class="q-section-label">Service Level & Timing</div>
+
+                        <div class="q-field">
+                            <label for="q-max-wait">Maximum Wait (seconds)</label>
+                            <input id="q-max-wait" type="number" name="max_wait_seconds"
+                                min="1" max="86400"
+                                value="<%= editingQueue ? (editingQueue.max_wait_seconds || '') : '' %>"
+                                placeholder="No limit">
+                            <small>Leave blank to use no configured maximum.</small>
+                        </div>
+
+                        <div class="q-field">
+                            <label for="q-sla">SLA Target (seconds)</label>
+                            <input id="q-sla" type="number" name="sla_seconds"
+                                min="1" max="86400"
+                                value="<%= editingQueue ? editingQueue.sla_seconds : 20 %>" required>
+                        </div>
+
+                        <div class="q-field">
+                            <label for="q-wrapup">Agent Wrap-up (seconds)</label>
+                            <input id="q-wrapup" type="number" name="wrapup_seconds"
+                                min="0" max="86400"
+                                value="<%= editingQueue ? editingQueue.wrapup_seconds : 0 %>" required>
+                        </div>
+
+                        <div class="q-section-label">Skill Routing</div>
+
+                        <div class="q-field full">
+                            <label for="q-skills">Required Skills</label>
+                            <input id="q-skills" name="required_skills"
+                                value="<%= editingQueue ? queueSkills(editingQueue.required_skills_json) : '' %>"
+                                placeholder="sales:3,support:2">
+                            <small>Enter comma-separated skill names with optional minimum proficiency from 1 to 5. Required for Skill Based strategy.</small>
+                        </div>
+
+                        <div class="q-field full">
+                            <label for="q-fallback">No-match Fallback</label>
+                            <select id="q-fallback" name="skill_fallback_action">
+                                <% fallbackOptions.forEach(option => { %>
+                                    <option value="<%= option[0] %>"
+                                        <%= (editingQueue ? (editingQueue.skill_fallback_action || 'leave') : 'leave') === option[0] ? 'selected' : '' %>>
+                                        <%= option[1] %>
+                                    </option>
+                                <% }) %>
+                            </select>
+                            <small>Next queue, callback and voicemail are configuration choices only; their execution is not yet wired.</small>
+                        </div>
+
+                        <% if (editingQueue) { %>
+                            <div class="q-field full">
+                                <label for="q-active">Queue Status</label>
+                                <select id="q-active" name="is_active">
+                                    <option value="1" <%= editingQueue.is_active ? 'selected' : '' %>>Active</option>
+                                    <option value="0" <%= !editingQueue.is_active ? 'selected' : '' %>>Disabled</option>
+                                </select>
+                            </div>
+                        <% } %>
+                    </div>
+
+                    <div class="q-form-actions">
+                        <button class="tl-btn" type="submit">
+                            <span class="material-icons-round" style="font-size:16px">
+                                <%= editingQueue ? 'save' : 'add' %>
+                            </span>
+                            <%= editingQueue ? 'Save Changes' : 'Create Queue' %>
+                        </button>
+                        <% if (editingQueue) { %>
+                            <a class="tl-btn secondary" href="/admin/queues<%= tenantQuery %>">Cancel</a>
+                        <% } %>
+                    </div>
+                </form>
+
+                <p class="q-hint">
+                    Queue membership and agent penalties are managed separately under
+                    <a href="/admin/skill-routing<%= tenantQuery %>" style="color:var(--acc2)">Skill Routing</a>.
+                    Wazo provisioning requirements remain unchanged.
+                </p>
+            </div>
+        </section>
+
+        <section class="q-panel">
+            <div class="q-panel-head">
+                <div>
+                    <h2>Configured Queues</h2>
+                    <p>Review and manage queues belonging to the selected tenant.</p>
+                </div>
+                <span class="q-pill active"><%= activeCount %> active</span>
+            </div>
+
+            <div class="q-toolbar">
+                <input type="search" id="queue-search" placeholder="Search name, number, skill or strategy..." aria-label="Search queues">
+                <select id="queue-status" aria-label="Filter queue status">
+                    <option value="all">All statuses</option>
+                    <option value="active">Active</option>
+                    <option value="disabled">Disabled</option>
+                </select>
+                <span class="q-results" id="queue-results"><%= queueList.length %> queues</span>
+            </div>
+
+            <div class="q-table-wrap">
+                <table class="q-table">
+                    <thead>
+                        <tr>
+                            <th>Queue</th>
+                            <th>Number</th>
+                            <th>Strategy</th>
+                            <th>Required Skills</th>
+                            <th>Wait / SLA</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queue-table-body">
+                        <% queueList.forEach(q => { %>
+                            <tr data-queue-row
+                                data-status="<%= q.is_active ? 'active' : 'disabled' %>"
+                                data-search="<%= [q.name, q.queue_number, q.strategy, queueSkills(q.required_skills_json)].join(' ').toLowerCase() %>">
+                                <td>
+                                    <div class="q-name"><%= q.name %></div>
+                                    <div class="q-muted">SLA target: <%= q.sla_seconds %> sec</div>
+                                </td>
+                                <td><span class="q-number"><%= q.queue_number %></span></td>
+                                <td><span class="q-strategy"><%= strategyLabel(q.strategy) %></span></td>
+                                <td><%= queueSkillLabel(q.required_skills_json) %></td>
+                                <td>
+                                    <div><%= q.max_wait_seconds ? q.max_wait_seconds + 's' : 'No limit' %></div>
+                                    <div class="q-muted">Wrap-up: <%= q.wrapup_seconds || 0 %>s</div>
+                                </td>
+                                <td>
+                                    <span class="q-pill <%= q.is_active ? 'active' : 'disabled' %>">
+                                        <%= q.is_active ? 'Active' : 'Disabled' %>
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="q-actions">
+                                        <a href="/admin/queues?edit=<%= encodeURIComponent(q.id) %><%= tenantContext ? '&as_tenant=' + encodeURIComponent(tenantContext) : '' %>">Edit</a>
+                                        <form method="post"
+                                            action="/admin/queues/<%= encodeURIComponent(q.id) %>/delete<%= tenantQuery %>"
+                                            onsubmit="return confirm('Delete this queue?');">
+                                            <button class="q-delete" type="submit">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        <% }) %>
+                        <tr id="queue-no-results" style="<%= queueList.length ? 'display:none' : '' %>">
+                            <td class="q-empty" colspan="7">
+                                <span class="material-icons-round" style="font-size:25px;display:block;margin-bottom:7px">queue</span>
+                                No queues found. Create your first queue using the form.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
     </div>
-    <button class="tl-btn" type="submit">Save Changes</button>
-    <a class="tl-btn secondary" href="/admin/queues">Cancel</a>
-</form>
-<% } } %>
+</div>
+
+<script>
+(function () {
+    const search = document.getElementById('queue-search');
+    const status = document.getElementById('queue-status');
+    const rows = Array.from(document.querySelectorAll('[data-queue-row]'));
+    const empty = document.getElementById('queue-no-results');
+    const results = document.getElementById('queue-results');
+
+    function filterQueues() {
+        const term = (search.value || '').trim().toLowerCase();
+        const selectedStatus = status.value;
+        let visible = 0;
+
+        rows.forEach(row => {
+            const matchesText = (row.dataset.search || '').includes(term);
+            const matchesStatus = selectedStatus === 'all' ||
+                row.dataset.status === selectedStatus;
+            const show = matchesText && matchesStatus;
+
+            row.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+
+        empty.style.display = visible ? 'none' : '';
+        empty.querySelector('td').textContent = rows.length
+            ? 'No queues match the selected search or status filter.'
+            : 'No queues found. Create your first queue using the form.';
+
+        results.textContent = visible + ' of ' + rows.length + ' queues';
+    }
+
+    search.addEventListener('input', filterQueues);
+    status.addEventListener('change', filterQueues);
+})();
+</script>
 
 <%- include('../partials/foot') %>

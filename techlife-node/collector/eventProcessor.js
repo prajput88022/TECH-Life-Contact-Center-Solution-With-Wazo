@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const { pool } = require('../src/db');
 const crmNotifier = require('../src/crmNotifier');
+const campaignDialCorrelation = require('../src/campaignDialCorrelation');
 
 async function process(envelope) {
     if (!envelope.tenant_id || !envelope.event_type) {
@@ -273,6 +274,14 @@ async function handleCallEvent(client, e) {
         return;
     }
     await appendCallEventRow(client, e, callRef);
+
+    // If the campaign origination response was saved before this event,
+    // advance its claim/reservation from the canonical calls row.
+    // If the event arrived first, recordAcceptedOrigination performs
+    // this same reconciliation after it receives the Wazo call ID.
+    await campaignDialCorrelation.syncClaimForWazoCall(
+        client, e.tenant_id, callRef
+    );
 }
 
 async function appendCallEventRow(client, e, callRef) {

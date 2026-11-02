@@ -4,11 +4,14 @@ const { pool } = require('./db');
 const { wazoFetch } = require('./wazoFetch');
 const config = require('../config/config');
 const { provisionWazoAgent } = require('./wazoProvisioningService');
+const { syncQueueAudio } = require('./wazoQueueAudioService');
 
 const LOCK_ID = 7241906202610301n;
 const PAGE_SIZE = 100;
 const MANAGED_OPTIONS = new Set([
-    'wrapuptime', 'ringinuse', 'strategy', 'maxlen'
+    'wrapuptime', 'ringinuse', 'strategy', 'maxlen', 'servicelevel',
+    'periodic-announce', 'periodic-announce-frequency',
+    'periodic-announce-startdelay', 'announce-position', 'announce-holdtime'
 ]);
 
 const STRATEGIES = {
@@ -129,22 +132,50 @@ async function listAllQueues(token, tenantUuid) {
     return result;
 }
 
-function mergedOptions(existing, queue) {
+
+function mergedOptions(existing, queue, audio = { ready: false }) {
     const strategy = STRATEGIES[queue.strategy] || 'ringall';
+    const audioKeys = new Set([
+        'periodic-announce', 'periodic-announce-frequency',
+        'periodic-announce-startdelay', 'announce-position',
+        'announce-holdtime'
+    ]);
+
+    const preserved = Array.isArray(existing)
+        ? existing.filter(item => {
+            if (!Array.isArray(item) || item.length !== 2) return false;
+            const key = String(item[0]).toLowerCase();
+            return !MANAGED_OPTIONS.has(key) ||
+                (audio.ready !== true && audioKeys.has(key));
+        })
+        : [];
+
     const desired = [
         ['wrapuptime', String(Math.max(0, Number(queue.wrapup_seconds) || 0))],
         ['ringinuse', 'no'],
         ['strategy', strategy],
-        ['maxlen', String(Math.max(0, Number(queue.max_queue_size) || 0))]
+        ['maxlen', String(Math.max(0, Number(queue.max_queue_size) || 0))],
+        ['servicelevel', String(Math.max(0, Number(queue.sla_seconds) || 0))]
     ];
 
-    const preserved = Array.isArray(existing)
-        ? existing.filter(item =>
-            Array.isArray(item) &&
-            item.length === 2 &&
-            !MANAGED_OPTIONS.has(String(item[0]).toLowerCase())
-        )
-        : [];
+    if (audio.ready === true) {
+        desired.push(
+            ['announce-position', queue.announce_position === true ? 'yes' : 'no'],
+            ['announce-holdtime', queue.announce_hold_time === true ? 'yes' : 'no'],
+            ['periodic-announce-frequency',
+                audio.periodicAnnounce
+                    ? String(Math.max(10, Number(queue.periodic_announce_interval_seconds) || 60))
+                    : '0'],
+            ['periodic-announce-startdelay',
+                audio.periodicAnnounce
+                    ? String(Math.max(0, Number(queue.periodic_announce_start_delay_seconds) || 0))
+                    : '0']
+        );
+
+        if (audio.periodicAnnounce) {
+            desired.push(['periodic-announce', audio.periodicAnnounce]);
+        }
+    }
 
     return [...preserved, ...desired];
 }
@@ -243,14 +274,16 @@ async function findOrCreateQueue(queue, token, tenantUuid, apply) {
     return { id, remote };
 }
 
-async function applyQueueSettings(queue, remote, queueId, token, tenantUuid, apply) {
+
+async function applyQueueSettings(
+    queue, remote, queueId, token, tenantUuid, apply, audio = { ready: false }
+) {
     const strategySupported = Object.prototype.hasOwnProperty.call(
         STRATEGIES, queue.strategy
     );
-
     const enabled = queue.is_active === true && strategySupported;
     const label = `TECH-Life: ${String(queue.name).slice(0, 100)}`;
-    const options = mergedOptions(remote.options, queue);
+    const options = mergedOptions(remote.options, queue, audio);
 
     if (!strategySupported && queue.is_active) {
         console.error(
@@ -259,22 +292,37 @@ async function applyQueueSettings(queue, remote, queueId, token, tenantUuid, app
         );
     }
 
+    const timeout = queue.max_wait_seconds === null ||
+        queue.max_wait_seconds === undefined
+        ? null : Number(queue.max_wait_seconds);
+
+    const queueBody = {
+        enabled,
+        label,
+        options,
+        retry_on_timeout: queue.retry_on_timeout === true,
+        ring_on_hold: queue.ring_on_hold === true,
+        timeout,
+        announce_hold_time_on_entry: queue.announce_hold_time === true,
+        music_on_hold: audio.ready === true
+            ? audio.musicOnHold
+            : (remote.music_on_hold || null)
+    };
+
     if (!apply) {
         console.log(
             `[queue-reconcile][dry-run] ${queue.slug}/${queue.name}: ` +
             `Wazo queue ${queueId}, enabled=${enabled}, ` +
-            `wrapuptime=${queue.wrapup_seconds || 0}, ringinuse=no, ` +
-            `strategy=${strategySupported ? STRATEGIES[queue.strategy] : 'unsupported/disabled'}`
+            `timeout=${timeout}, retry=${queueBody.retry_on_timeout}, ` +
+            `ring_on_hold=${queueBody.ring_on_hold}, ` +
+            `moh=${queueBody.music_on_hold || 'default'}, ` +
+            `audio_ready=${audio.ready === true}`
         );
         return { enabled, strategySupported };
     }
 
     await confd(
-        'PUT',
-        `/queues/${queueId}`,
-        token,
-        tenantUuid,
-        { enabled, label, options }
+        'PUT', `/queues/${queueId}`, token, tenantUuid, queueBody
     );
 
     const verified = await confd(
@@ -292,11 +340,19 @@ async function applyQueueSettings(queue, remote, queueId, token, tenantUuid, app
         Boolean(verified.enabled) !== enabled ||
         actualOptions.get('ringinuse') !== 'no' ||
         actualOptions.get('wrapuptime') !==
-            String(Math.max(0, Number(queue.wrapup_seconds) || 0))
+            String(Math.max(0, Number(queue.wrapup_seconds) || 0)) ||
+        Number(verified.timeout ?? 0) !== Number(timeout ?? 0) ||
+        Boolean(verified.retry_on_timeout) !== queueBody.retry_on_timeout ||
+        Boolean(verified.ring_on_hold) !== queueBody.ring_on_hold
     ) {
         throw new Error(
             `Wazo queue ${queueId} did not retain the required queue settings`
         );
+    }
+
+    if (audio.ready === true &&
+        (verified.music_on_hold || null) !== (audio.musicOnHold || null)) {
+        throw new Error(`Wazo queue ${queueId} did not retain its MOH category.`);
     }
 
     console.log(
@@ -437,8 +493,18 @@ async function reconcileQueue(queue, token, apply) {
 
     if (!resolved) return { skipped: true };
 
+    let audio = { ready: false };
+    try {
+        audio = await syncQueueAudio(queue, tenantUuid, token, apply);
+    } catch (error) {
+        console.error(
+            `[queue-audio] ${queue.slug}/${queue.name}: ` +
+            String(error.message || error).slice(0, 400)
+        );
+    }
+
     const settings = await applyQueueSettings(
-        queue, resolved.remote, resolved.id, token, tenantUuid, apply
+        queue, resolved.remote, resolved.id, token, tenantUuid, apply, audio
     );
 
     await syncLocalMembers(

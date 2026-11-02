@@ -1,0 +1,48 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Recording Settings</h1>
+<p class="tl-subtitle">Configure recording storage and naming. Cloud uploads remain disabled until provider integration is installed and tested.</p>
+<% if (saved) { %><p role="status">Settings saved. Remote uploads remain disabled.</p><% } %>
+<form method="post" action="/admin/recording-settings">
+  <h2>Storage destination</h2>
+  <label>Provider</label>
+  <select name="storage_provider">
+    <% [['s3','Amazon S3'],['azure','Azure Blob Storage'],['gcs','Google Cloud Storage'],['sftp','SFTP'],['s3compatible','S3-compatible']].forEach(p => { %>
+      <option value="<%= p[0] %>" <%= settings.storage_provider === p[0] ? 'selected' : '' %>><%= p[1] %></option>
+    <% }) %>
+  </select>
+  <label>Destination / bucket / container name</label>
+  <input name="destination_name" maxlength="255" value="<%= settings.destination_name || '' %>">
+  <label>Remote prefix</label>
+  <input name="destination_prefix" required value="<%= settings.destination_prefix %>">
+  <label>Local recording directory</label>
+  <input name="local_base_path" required value="<%= settings.local_base_path %>">
+  <h2>Organization and format</h2>
+  <label>Folder template</label>
+  <input name="folder_template" required maxlength="255" value="<%= settings.folder_template %>">
+  <p>Tokens planned: {yyyy}, {mm}, {dd}. Actual path generation is not enabled yet.</p>
+  <label>Filename template (must include {recording_id})</label>
+  <input name="filename_template" required maxlength="255" value="<%= settings.filename_template %>">
+  <p>Available planned tokens: {timestamp}, {call_id}, {recording_id}.</p>
+  <label>Audio format</label>
+  <select name="audio_format">
+    <% ['wav','mp3','ogg','flac'].forEach(f => { %>
+      <option value="<%= f %>" <%= settings.audio_format === f ? 'selected' : '' %>><%= f.toUpperCase() %></option>
+    <% }) %>
+  </select>
+  <label>MP3 bitrate (kbps)</label>
+  <select name="mp3_bitrate_kbps">
+    <% [64,96,128,160,192,256,320].forEach(n => { %>
+      <option value="<%= n %>" <%= Number(settings.mp3_bitrate_kbps) === n ? 'selected' : '' %>><%= n %></option>
+    <% }) %>
+  </select>
+  <label>Retention days (blank = no configured limit)</label>
+  <input type="number" min="1" max="36500" name="retention_days" value="<%= settings.retention_days || '' %>">
+  <h2>Copy and download policy</h2>
+  <p>Keep local copy: <strong>Always on</strong></p>
+  <p>Keep remote copy: <strong>Policy on; upload integration pending</strong></p>
+  <label><input type="checkbox" name="download_enabled" value="1" <%= settings.download_enabled ? 'checked' : '' %>> Allow downloads where recording permissions permit</label>
+  <p><strong>Remote uploads are currently disabled.</strong> Saving a provider here does not connect or upload files.</p>
+  <button class="tl-btn" type="submit">Save Recording Settings</button>
+</form>
+<%- include('../partials/foot') %>

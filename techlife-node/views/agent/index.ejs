@@ -25,6 +25,14 @@
 
 <h2>WebRTC Phone <span id="sipRegStatus" class="tl-status-pill status-offline" style="margin-left:8px">registering…</span></h2>
 <div class="tl-card" style="max-width:340px">
+    <div id="incomingCallPanel" style="display:none;margin-bottom:12px;padding:12px;border:1px solid var(--acc2);border-radius:var(--r8);background:var(--c3)">
+        <strong>Incoming call</strong>
+        <div id="incomingCallFrom" style="margin:6px 0 10px">Unknown caller</div>
+        <div style="display:flex;gap:8px">
+            <button type="button" class="tl-btn" style="flex:1" onclick="answerIncomingCall()">Answer</button>
+            <button type="button" class="tl-btn bad" style="flex:1" onclick="rejectIncomingCall()">Reject</button>
+        </div>
+    </div>
     <div class="tl-call-status" id="callStatusCard" style="display:none">
         <div class="tl-call-status-state" id="callStatusState">In Call</div>
         <div class="tl-call-status-who" id="callStatusWho">—</div>
@@ -61,7 +69,7 @@
     </div>
     <p id="callState" class="tl-subtitle" style="margin-top:10px;margin-bottom:0">Idle</p>
 </div>
-<audio id="remoteAudio" autoplay></audio>
+<audio id="remoteAudio" autoplay playsinline></audio>
 
 <!-- Completed-call disposition panel -->
 <div class="tl-card" id="dispositionPanel" style="margin-top:20px">
@@ -152,12 +160,45 @@
 <script src="/vendor/sip.js"></script>
 <script>
 const AGENT_ID = <%- JSON.stringify(agentId) %>;
+const AUTO_ANSWER_ENABLED = <%- JSON.stringify(inboundAutoAnswerEnabled === true) %>;
 let userAgent = null;
 let registerer = null;
+let sipRegistered = false;
 let currentSession = null;
 let isMuted = false;
 let isHeld = false;
 let crmConfig = null;
+
+let inboundAlertContext = null;
+let inboundAlertTimer = null;
+
+function stopInboundRinging() {
+    if (inboundAlertTimer) clearInterval(inboundAlertTimer);
+    inboundAlertTimer = null;
+}
+
+function startInboundRinging() {
+    stopInboundRinging();
+    function ringOnce() {
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            if (!inboundAlertContext) inboundAlertContext = new AC();
+            const c = inboundAlertContext;
+            if (c.state === 'suspended') c.resume().catch(() => {});
+            const o = c.createOscillator();
+            const g = c.createGain();
+            o.frequency.value = 440;
+            g.gain.setValueAtTime(0.06, c.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.3);
+            o.connect(g); g.connect(c.destination);
+            o.start(); o.stop(c.currentTime + 0.31);
+        } catch (e) { console.warn('Ring audio unavailable', e); }
+    }
+    ringOnce();
+    inboundAlertTimer = setInterval(ringOnce, 1400);
+}
+
 
 // ---------------- Agent status ----------------
 async function loadStatus() {
@@ -168,6 +209,11 @@ async function loadStatus() {
     document.querySelectorAll('#statusButtons button').forEach(b => b.classList.toggle('active', b.dataset.status === res.status));
 }
 async function setStatus(status) {
+    if ((status === 'available' || status === 'login') && !sipRegistered) {
+        alert('Your WebRTC phone is not registered. Please wait until SIP status shows registered, then select Available.');
+        return;
+    }
+
     const pauseStatuses = [
         'break','lunch','tea','training','meeting',
         'system_issue','personal_break','custom'
@@ -399,6 +445,29 @@ function setRegStatus(text, statusClass) {
     el.className = 'tl-status-pill ' + statusClass;
 }
 
+function waitForSipRegistration(registerer, timeoutMs = 20000) {
+    return new Promise((resolve, reject) => {
+        if (registerer.state === SIP.RegistererState.Registered) {
+            resolve();
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            reject(new Error(
+                'No successful REGISTER response within ' +
+                (timeoutMs / 1000) + ' seconds; state=' + registerer.state
+            ));
+        }, timeoutMs);
+
+        registerer.stateChange.addListener((state) => {
+            if (state === SIP.RegistererState.Registered) {
+                clearTimeout(timer);
+                resolve();
+            }
+        });
+    });
+}
+
 async function initSip() {
     setRegStatus('fetching credentials…', 'status-break');
     let creds;
@@ -438,33 +507,95 @@ async function initSip() {
 
     userAgent.delegate = {
         onInvite: (invitation) => {
+            if (currentSession && currentSession.state !== SIP.SessionState.Terminated) {
+                invitation.reject().catch(() => {});
+                return;
+            }
+
             currentSession = invitation;
             wireSessionEvents(invitation);
-            document.getElementById('callState').textContent = 'Incoming call — answering…';
 
-            // Trigger a 'ringing'-mode CRM screen-pop before we even
-            // accept, so the agent sees customer context immediately.
             const callerNumber = invitation.remoteIdentity && invitation.remoteIdentity.uri
                 ? invitation.remoteIdentity.uri.user : null;
+
+            document.getElementById('incomingCallFrom').textContent = callerNumber || 'Unknown caller';
+            document.getElementById('incomingCallPanel').style.display = 'block';
+            document.getElementById('callState').textContent = AUTO_ANSWER_ENABLED
+                ? 'Auto-answer enabled — connecting…'
+                : 'Incoming call — please answer.';
+
             loadCustomerProfile(callerNumber);
 
             if (crmConfig && crmConfig.trigger_event === 'ringing') {
                 fireCrmScreenPop({ customer_number: callerNumber, direction: 'inbound', agent_extension: creds.extension });
             }
 
-            invitation.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
-            showInCallUI();
+            startInboundRinging();
+            if (AUTO_ANSWER_ENABLED) answerIncomingCall();
         },
     };
 
     try {
         await userAgent.start();
         registerer = new Registerer(userAgent);
+
+        registerer.stateChange.addListener((state) => {
+            sipRegistered = state === SIP.RegistererState.Registered;
+
+            if (!sipRegistered) {
+                setRegStatus('phone not registered', 'status-offline');
+            }
+        });
+
+        // register() sends REGISTER; wait separately for the server's
+        // successful response and the RegistererState.Registered transition.
         await registerer.register();
+        await waitForSipRegistration(registerer);
+
+        sipRegistered = true;
         setRegStatus(`registered as ${creds.extension}`, 'status-available');
     } catch (e) {
-        console.error(e);
-        setRegStatus('registration failed', 'status-offline');
+        sipRegistered = false;
+        console.error('Agent SIP registration failed:', e);
+        setRegStatus(
+            'registration failed: ' + String(e.message || e).slice(0, 100),
+            'status-offline'
+        );
+    }
+}
+
+async function answerIncomingCall() {
+    const invitation = currentSession;
+    if (!invitation) return;
+
+    stopInboundRinging();
+    document.getElementById('incomingCallPanel').style.display = 'none';
+    document.getElementById('callState').textContent = 'Answering…';
+
+    try {
+        await invitation.accept({
+            sessionDescriptionHandlerOptions: {
+                constraints: { audio: true, video: false }
+            }
+        });
+        showInCallUI();
+    } catch (err) {
+        console.error('Could not answer incoming Agent call:', err);
+        document.getElementById('callState').textContent = 'Could not answer call';
+    }
+}
+
+async function rejectIncomingCall() {
+    const invitation = currentSession;
+    if (!invitation) return;
+
+    stopInboundRinging();
+    document.getElementById('incomingCallPanel').style.display = 'none';
+
+    try {
+        await invitation.reject();
+    } catch (err) {
+        console.warn('Could not reject incoming Agent call:', err);
     }
 }
 
@@ -473,6 +604,8 @@ function wireSessionEvents(session) {
     session.stateChange.addListener((state) => {
         if (state === SessionState.Established) {
             stopRingback();
+            stopInboundRinging();
+            document.getElementById('incomingCallPanel').style.display = 'none';
             document.getElementById('callState').textContent = 'In call';
             attachRemoteAudio(session);
             showInCallUI();
@@ -489,6 +622,8 @@ function wireSessionEvents(session) {
             }
         } else if (state === SessionState.Terminated) {
             stopRingback();
+            stopInboundRinging();
+            document.getElementById('incomingCallPanel').style.display = 'none';
             document.getElementById('callState').textContent = 'Idle';
             document.getElementById('callStatusCard').style.display = 'none';
             currentSession = null;
@@ -677,14 +812,34 @@ async function placeCall() {
     }
 }
 
-function hangupCall() {
+async function hangupCall() {
     stopRingback();
-    if (!currentSession) return;
+    stopInboundRinging();
+
+    const session = currentSession;
+    if (!session) return;
+
     const { SessionState } = SIP;
-    if (currentSession.state === SessionState.Established) currentSession.bye();
-    else if (currentSession.state === SessionState.Establishing) currentSession.cancel();
-    else currentSession.reject && currentSession.reject();
-    showIdleUI();
+    document.getElementById('callState').textContent = 'Ending call…';
+
+    try {
+        if (session.state === SessionState.Established) {
+            await session.bye();
+        } else if (session.state === SessionState.Establishing) {
+            if (typeof session.cancel === 'function') await session.cancel();
+            else if (typeof session.reject === 'function') await session.reject();
+        } else if (session.state === SessionState.Initial) {
+            if (typeof session.reject === 'function') await session.reject();
+            else if (typeof session.cancel === 'function') await session.cancel();
+        }
+    } catch (err) {
+        console.warn('Agent hang-up request failed:', err);
+        document.getElementById('callState').textContent = 'Hang up failed — retry';
+        return;
+    }
+
+    // The SIP.js Terminated event resets the phone after the PBX confirms
+    // that this call leg has ended.
 }
 
 // ---------------- Transfer (blind + attended) ----------------
@@ -1022,5 +1177,133 @@ loadCompletedDispositionCalls();
 setInterval(loadCompletedDispositionCalls, 10000);
 
 initSip();
+
+function agentDirectoryRow(title, detail, buttonText, disabled, callback) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;margin:6px 0;border:1px solid var(--bd);border-radius:8px';
+    row.dataset.directoryRow = '1';
+    row.dataset.search = (title + ' ' + detail).toLowerCase();
+
+    const info = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = title || 'Unknown';
+    const sub = document.createElement('small');
+    sub.textContent = detail || '';
+    sub.style.cssText = 'display:block;color:var(--t2);margin-top:3px';
+    info.append(name, sub);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tl-btn secondary';
+    btn.textContent = buttonText;
+    btn.disabled = Boolean(disabled);
+    btn.addEventListener('click', callback);
+
+    row.append(info, btn);
+    return row;
+}
+
+function filterAgentDirectory() {
+    const term = (document.getElementById('agentDirectorySearch').value || '').toLowerCase().trim();
+    document.querySelectorAll('#agentDirectoryContacts [data-directory-row], #agentDirectoryAgents [data-directory-row]').forEach(row => {
+        row.style.display = !term || row.dataset.search.includes(term) ? '' : 'none';
+    });
+}
+
+async function loadAgentDialDirectory() {
+    const contactsBox = document.getElementById('agentDirectoryContacts');
+    const agentsBox = document.getElementById('agentDirectoryAgents');
+    const queueSelect = document.getElementById('agentDirectoryQueue');
+    const message = document.getElementById('agentDirectoryMessage');
+
+    message.textContent = 'Loading directory…';
+
+    try {
+        const suffix = queueSelect.value
+            ? '?queue_id=' + encodeURIComponent(queueSelect.value)
+            : '';
+        const response = await fetch('/api/v1/dial-directory' + suffix, {
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Directory request failed');
+
+        if (queueSelect.dataset.loaded !== '1') {
+            queueSelect.replaceChildren(new Option('All tenant contacts and agents', ''));
+            (data.queues || []).forEach(q => {
+                queueSelect.add(new Option(q.name, q.id));
+            });
+            queueSelect.dataset.loaded = '1';
+        }
+
+        contactsBox.replaceChildren();
+        agentsBox.replaceChildren();
+
+        (data.contacts || []).forEach(contact => {
+            const phone = contact.primary_phone || contact.alt_phone || '';
+            if (!phone) return;
+
+            const detail = [phone, contact.city, contact.state].filter(Boolean).join(' · ');
+            contactsBox.appendChild(agentDirectoryRow(
+                contact.full_name || 'Customer contact',
+                detail,
+                'Dial',
+                false,
+                () => {
+                    if (currentSession &&
+                        currentSession.state !== SIP.SessionState.Terminated) {
+                        alert('End the current call before dialing another contact.');
+                        return;
+                    }
+                    document.getElementById('dialInput').value = phone;
+                    placeCall();
+                }
+            ));
+        });
+
+        (data.agents || []).forEach(agent => {
+            const available = agent.can_transfer === true;
+            const activeCall = currentSession &&
+                currentSession.state === SIP.SessionState.Established;
+            const detail = 'Extension ' + agent.extension + ' · ' + agent.status;
+
+            agentsBox.appendChild(agentDirectoryRow(
+                agent.display_name || agent.agent_number || 'Agent',
+                detail,
+                available ? (activeCall ? 'Transfer' : 'Available') : 'Unavailable',
+                !available || !activeCall,
+                () => {
+                    showTransferBox('blind');
+                    document.getElementById('transferTarget').value = agent.extension;
+                    doTransfer();
+                }
+            ));
+        });
+
+        if (!contactsBox.children.length) {
+            contactsBox.textContent = 'No phone contacts found in this scope.';
+        }
+        if (!agentsBox.children.length) {
+            agentsBox.textContent = 'No other provisioned agents found.';
+        }
+
+        message.textContent =
+            (data.contacts || []).length + ' contacts · ' +
+            (data.agents || []).length + ' internal agents.';
+        filterAgentDirectory();
+    } catch (err) {
+        console.error('Agent directory load failed:', err);
+        contactsBox.textContent = 'Directory unavailable.';
+        agentsBox.textContent = 'Directory unavailable.';
+        message.textContent = 'Could not load directory: ' + err.message;
+    }
+}
+
+document.getElementById('agentDirectoryQueue')
+    .addEventListener('change', loadAgentDialDirectory);
+document.getElementById('agentDirectorySearch')
+    .addEventListener('input', filterAgentDirectory);
+loadAgentDialDirectory();
+
 </script>
 <%- include('../partials/foot') %>

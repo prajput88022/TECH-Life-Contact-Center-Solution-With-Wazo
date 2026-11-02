@@ -186,10 +186,12 @@
       </div>
     </div>
     <div id="supervisorIncomingControls" style="display:none">
+        <p id="supervisorIncomingCaller" class="tl-subtitle">Incoming monitoring call</p>
         <button class="tl-btn" type="button" onclick="answerSupervisorCall()">Answer monitoring call</button>
         <button class="tl-btn secondary" type="button" onclick="rejectSupervisorCall()">Reject</button>
     </div>
     <audio id="supervisorRemoteAudio" autoplay playsinline></audio>
+
 </div>
 <section class="tl-card" id="supervisorWallboard" style="margin:16px 0;min-width:0">
     <h2 style="margin-top:0">Live Wallboard</h2>
@@ -294,12 +296,74 @@ let supervisorRingbackTimer = null;
 let supervisorRingbackSecond = null;
 let supervisorRingbackNodes = [];
 let supervisorRingbackAudio = false;
+
+let supervisorInboundRingTimer = null;
+
+function stopSupervisorInboundRinging() {
+    if (supervisorInboundRingTimer) clearInterval(supervisorInboundRingTimer);
+    supervisorInboundRingTimer = null;
+}
+
+function startSupervisorInboundRinging() {
+    stopSupervisorInboundRinging();
+
+    function ringOnce() {
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            if (!supervisorToneContext) supervisorToneContext = new AC();
+
+            const ctx = supervisorToneContext;
+            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+
+            const oscillator = ctx.createOscillator();
+            const gain = ctx.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.value = 440;
+            gain.gain.setValueAtTime(0.055, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+            oscillator.connect(gain);
+            gain.connect(ctx.destination);
+            oscillator.start();
+            oscillator.stop(ctx.currentTime + 0.31);
+        } catch (err) {
+            console.warn('Supervisor ring audio unavailable:', err);
+        }
+    }
+
+    ringOnce();
+    supervisorInboundRingTimer = setInterval(ringOnce, 1400);
+}
+
 let allAgents = [];
 
 function setSupervisorSipStatus(text, cssClass) {
     const el = document.getElementById('supervisorSipStatus');
     el.textContent = text;
     el.className = 'tl-status-pill ' + cssClass;
+}
+
+function waitForSupervisorSipRegistration(registerer, timeoutMs = 20000) {
+    return new Promise((resolve, reject) => {
+        if (registerer.state === SIP.RegistererState.Registered) {
+            resolve();
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            reject(new Error(
+                'No successful REGISTER response within ' +
+                (timeoutMs / 1000) + ' seconds; state=' + registerer.state
+            ));
+        }, timeoutMs);
+
+        registerer.stateChange.addListener((state) => {
+            if (state === SIP.RegistererState.Registered) {
+                clearTimeout(timer);
+                resolve();
+            }
+        });
+    });
 }
 
 async function initSupervisorSip() {
@@ -373,13 +437,22 @@ async function initSupervisorSip() {
             supervisorIncomingSession = invitation;
             document.getElementById('supervisorCallState').textContent =
                 'Incoming call — answer to hear the monitoring audio.';
+            document.getElementById('supervisorIncomingCaller').textContent =
+                'Incoming monitoring call from ' +
+                ((invitation.remoteIdentity && invitation.remoteIdentity.uri &&
+                  invitation.remoteIdentity.uri.user) || 'unknown caller');
             document.getElementById('supervisorIncomingControls').style.display = 'block';
+            startSupervisorInboundRinging();
 
             invitation.stateChange.addListener((state) => {
                 if (state === SIP.SessionState.Established) {
+                    stopSupervisorInboundRinging();
                     document.getElementById('supervisorCallState').textContent =
                         'Monitoring call connected';
                     document.getElementById('supervisorIncomingControls').style.display = 'none';
+                    document.getElementById('supervisorCallBtn').style.display = 'none';
+                    document.getElementById('supervisorHangupBtn').style.display = 'block';
+                    supervisorUpdateCallControls();
 
                     const pc = invitation.sessionDescriptionHandler &&
                         invitation.sessionDescriptionHandler.peerConnection;
@@ -395,7 +468,10 @@ async function initSupervisorSip() {
                         });
                     }
                 } else if (state === SIP.SessionState.Terminated) {
+                    stopSupervisorInboundRinging();
                     supervisorIncomingSession = null;
+                    document.getElementById('supervisorHangupBtn').style.display = 'none';
+                    document.getElementById('supervisorCallBtn').style.display = 'block';
                     document.getElementById('supervisorRemoteAudio').srcObject = null;
                     document.getElementById('supervisorCallState').textContent =
                         'Monitoring call ended';
@@ -408,18 +484,28 @@ async function initSupervisorSip() {
     try {
         await supervisorUserAgent.start();
         supervisorRegisterer = new SIP.Registerer(supervisorUserAgent);
+
+        // Sending REGISTER is not the same as receiving registration success.
         await supervisorRegisterer.register();
+        await waitForSupervisorSipRegistration(supervisorRegisterer);
+
         setSupervisorSipStatus(`registered (${creds.extension})`, 'status-available');
         document.getElementById('supervisorCallState').textContent =
             'Phone ready. Listen/Whisper/Barge calls can ring this browser.';
     } catch (e) {
-        console.error('Supervisor SIP registration failed', e);
-        setSupervisorSipStatus('registration failed', 'status-offline');
+        console.error('Supervisor SIP registration failed:', e);
+        setSupervisorSipStatus(
+            'registration failed: ' + String(e.message || e).slice(0, 100),
+            'status-offline'
+        );
+        document.getElementById('supervisorCallState').textContent =
+            'SIP registration failed. Check the browser console for details.';
     }
 }
 
 async function answerSupervisorCall() {
     if (!supervisorIncomingSession) return;
+    stopSupervisorInboundRinging();
     try {
         await supervisorIncomingSession.accept({
             sessionDescriptionHandlerOptions: {
@@ -435,6 +521,7 @@ async function answerSupervisorCall() {
 
 async function rejectSupervisorCall() {
     if (!supervisorIncomingSession) return;
+    stopSupervisorInboundRinging();
     try {
         await supervisorIncomingSession.reject();
     } catch (e) {
@@ -862,15 +949,16 @@ async function toggleSupervisorHold() {
     }
 }
 
-async function transferSupervisorCall() {
+async function transferSupervisorCall(directoryExtension = null) {
     const session = supervisorCurrentSession();
     if (!session) return;
     if (typeof session.refer !== 'function') {
         alert('Transfer is not supported by this SIP.js session.');
         return;
     }
-    const number = prompt('Transfer this call to which extension or phone number?');
-    if (!number || !number.trim()) return;
+    const number = directoryExtension ||
+        prompt('Transfer this call to which extension or phone number?');
+    if (!number || !String(number).trim()) return;
     const selectedLine = supervisorLineInfo(supervisorActiveLine);
     if (!selectedLine || !selectedLine.creds || !selectedLine.creds.sip_domain) {
         alert('The selected SIP line has no SIP domain configured.');
@@ -898,13 +986,25 @@ async function conferenceSupervisorCall() {
 }
 
 async function hangupSupervisorCall() {
-    const session = supervisorOutgoingSession;
+    const session = supervisorOutgoingSession || supervisorIncomingSession;
     if (!session) return;
+
     supervisorStopRingback();
+    stopSupervisorInboundRinging();
+
     try {
-        if (session.state === SIP.SessionState.Established) await session.bye();
-        else if (session.state === SIP.SessionState.Establishing) await session.cancel();
-        else if (session.state === SIP.SessionState.Initial) await session.cancel();
+        if (session.state === SIP.SessionState.Established) {
+            await session.bye();
+        } else if (session.state === SIP.SessionState.Establishing) {
+            if (typeof session.cancel === 'function') await session.cancel();
+        } else if (session.state === SIP.SessionState.Initial) {
+            if (session === supervisorIncomingSession &&
+                typeof session.reject === 'function') {
+                await session.reject();
+            } else if (typeof session.cancel === 'function') {
+                await session.cancel();
+            }
+        }
     } catch (e) {
         console.warn('Supervisor hangup request failed', e);
     }
@@ -1103,5 +1203,140 @@ document.getElementById('filterCampaign').addEventListener('change', refresh);
 document.getElementById('filterSkill').addEventListener('change', refresh);
 refresh();
 setInterval(refresh, 10000);
+
+// ---------------- Supervisor tenant/queue dial directory ----------------
+function supervisorDirectoryRow(title, detail, buttonText, disabled, callback) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;margin:6px 0;border:1px solid var(--bd);border-radius:8px';
+    row.dataset.directoryRow = '1';
+    row.dataset.search = (title + ' ' + detail).toLowerCase();
+
+    const info = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = title || 'Unknown';
+    const sub = document.createElement('small');
+    sub.textContent = detail || '';
+    sub.style.cssText = 'display:block;color:var(--t2);margin-top:3px';
+    info.append(name, sub);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tl-btn secondary';
+    button.textContent = buttonText;
+    button.disabled = Boolean(disabled);
+    button.addEventListener('click', callback);
+
+    row.append(info, button);
+    return row;
+}
+
+function filterSupervisorDirectory() {
+    const term = (document.getElementById('supervisorDirectorySearch').value || '')
+        .toLowerCase().trim();
+
+    document.querySelectorAll('#supervisorDirectoryContacts [data-directory-row], #supervisorDirectoryAgents [data-directory-row]')
+        .forEach(row => {
+            row.style.display =
+                !term || row.dataset.search.includes(term) ? '' : 'none';
+        });
+}
+
+async function loadSupervisorDialDirectory() {
+    const contactsBox = document.getElementById('supervisorDirectoryContacts');
+    const agentsBox = document.getElementById('supervisorDirectoryAgents');
+    const queueSelect = document.getElementById('supervisorDirectoryQueue');
+    const message = document.getElementById('supervisorDirectoryMessage');
+
+    message.textContent = 'Loading directory…';
+
+    try {
+        const suffix = queueSelect.value
+            ? '?queue_id=' + encodeURIComponent(queueSelect.value)
+            : '';
+
+        const response = await fetch('/api/v1/dial-directory' + suffix, {
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Directory request failed');
+
+        if (queueSelect.dataset.loaded !== '1') {
+            queueSelect.replaceChildren(
+                new Option('All accessible contacts and agents', '')
+            );
+            (data.queues || []).forEach(q => {
+                queueSelect.add(new Option(q.name, q.id));
+            });
+            queueSelect.dataset.loaded = '1';
+        }
+
+        contactsBox.replaceChildren();
+        agentsBox.replaceChildren();
+
+        (data.contacts || []).forEach(contact => {
+            const phone = contact.primary_phone || contact.alt_phone || '';
+            if (!phone) return;
+
+            const detail = [
+                phone, contact.city, contact.state
+            ].filter(Boolean).join(' · ');
+
+            contactsBox.appendChild(supervisorDirectoryRow(
+                contact.full_name || 'Customer contact',
+                detail,
+                'Dial',
+                false,
+                () => {
+                    if (supervisorOutgoingSession || supervisorIncomingSession) {
+                        alert('End the current call before dialing another contact.');
+                        return;
+                    }
+                    document.getElementById('supervisorDialInput').value = phone;
+                    placeSupervisorCall();
+                }
+            ));
+        });
+
+        (data.agents || []).forEach(agent => {
+            const available = agent.can_transfer === true;
+            const activeSession = supervisorCurrentSession();
+            const detail = 'Extension ' + agent.extension + ' · ' + agent.status;
+
+            agentsBox.appendChild(supervisorDirectoryRow(
+                agent.display_name || agent.agent_number || 'Agent',
+                detail,
+                available && activeSession ? 'Transfer' :
+                    (available ? 'Available' : 'Unavailable'),
+                !available || !activeSession,
+                () => transferSupervisorCall(agent.extension)
+            ));
+        });
+
+        if (!contactsBox.children.length) {
+            contactsBox.textContent = 'No phone contacts in this accessible scope.';
+        }
+        if (!agentsBox.children.length) {
+            agentsBox.textContent = 'No other provisioned agents found.';
+        }
+
+        message.textContent =
+            (data.contacts || []).length + ' contacts · ' +
+            (data.agents || []).length + ' internal agents.';
+
+        filterSupervisorDirectory();
+    } catch (err) {
+        console.error('Supervisor directory load failed:', err);
+        contactsBox.textContent = 'Directory unavailable.';
+        agentsBox.textContent = 'Directory unavailable.';
+        message.textContent = 'Could not load directory: ' + err.message;
+    }
+}
+
+document.getElementById('supervisorDirectoryQueue')
+    .addEventListener('change', loadSupervisorDialDirectory);
+document.getElementById('supervisorDirectorySearch')
+    .addEventListener('input', filterSupervisorDirectory);
+loadSupervisorDialDirectory();
+
 </script>
 <%- include('../partials/foot') %>

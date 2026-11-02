@@ -142,6 +142,90 @@ const effTenant = typeof effectiveTenant !== 'undefined' ? effectiveTenant : nul
         <% }) %>
     </nav>
 
+    <% if (primaryRole === 'agent' && curPath === '/agent') { %>
+    <details class="tl-sidebar-directory">
+        <summary><span>Contacts & Agents</span><span class="tl-sidebar-dir-arrow">＋</span></summary>
+        <div class="tl-sidebar-dir-body">
+            <select id="agentDirectoryQueue" aria-label="Filter by queue">
+                <option value="">All tenant contacts and agents</option>
+            </select>
+            <input id="agentDirectorySearch" type="search" placeholder="Search contacts or agents">
+            <button type="button" class="tl-btn secondary" onclick="loadAgentDialDirectory()">Refresh</button>
+            <h4>Customer Contacts</h4>
+            <div id="agentDirectoryContacts">Loading contacts…</div>
+            <h4>Internal Agents</h4>
+            <div id="agentDirectoryAgents">Loading agents…</div>
+            <p id="agentDirectoryMessage" class="tl-sidebar-dir-message" aria-live="polite"></p>
+        </div>
+    </details>
+    <% } else if (primaryRole === 'supervisor' && curPath === '/supervisor') { %>
+    <details class="tl-sidebar-directory">
+        <summary><span>Contacts & Agents</span><span class="tl-sidebar-dir-arrow">＋</span></summary>
+        <div class="tl-sidebar-dir-body">
+            <select id="supervisorDirectoryQueue" aria-label="Filter by queue">
+                <option value="">All accessible contacts and agents</option>
+            </select>
+            <input id="supervisorDirectorySearch" type="search" placeholder="Search contacts or agents">
+            <button type="button" class="tl-btn secondary" onclick="loadSupervisorDialDirectory()">Refresh</button>
+            <h4>Customer Contacts</h4>
+            <div id="supervisorDirectoryContacts">Loading contacts…</div>
+            <h4>Internal Agents</h4>
+            <div id="supervisorDirectoryAgents">Loading agents…</div>
+            <p id="supervisorDirectoryMessage" class="tl-sidebar-dir-message" aria-live="polite"></p>
+        </div>
+    </details>
+    <% } %>
+
+    <style>
+    .tl-sidebar-directory {
+        margin: 12px;
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+        background: var(--c2);
+        overflow: hidden;
+    }
+    .tl-sidebar-directory summary {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 700;
+        list-style: none;
+    }
+    .tl-sidebar-directory summary::-webkit-details-marker { display: none; }
+    .tl-sidebar-directory[open] .tl-sidebar-dir-arrow { transform: rotate(45deg); }
+    .tl-sidebar-dir-body {
+        padding: 10px;
+        max-height: 48vh;
+        overflow-y: auto;
+        border-top: 1px solid var(--bd);
+    }
+    .tl-sidebar-dir-body select,
+    .tl-sidebar-dir-body input {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        margin: 5px 0;
+    }
+    .tl-sidebar-dir-body button.tl-btn { width: 100%; margin: 5px 0; }
+    .tl-sidebar-dir-body h4 {
+        margin: 13px 0 6px;
+        font-size: 11px;
+        color: var(--acc2);
+    }
+    .tl-sidebar-directory [data-directory-row] {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 5px !important;
+        padding: 8px !important;
+    }
+    .tl-sidebar-directory [data-directory-row] button { width: 100%; }
+    .tl-sidebar-directory [data-directory-row] > div { width: 100%; }
+    .tl-sidebar-dir-message { font-size: 10px; color: var(--t2); }
+    </style>
+
     <% if (currentUser) { %>
     <div class="tl-sidebar-user">
         <div class="tl-avatar"><%= initials %></div>

@@ -26,12 +26,23 @@ router.get('/', async (req, res) => {
          ORDER BY sort_order, code`,
         [u.tenantId]
     )).rows;
+
+    const callSettingsResult = await pool.query(
+        `SELECT inbound_auto_answer_enabled
+           FROM tenant_call_settings
+          WHERE tenant_id = $1`,
+        [u.tenantId]
+    );
+    const inboundAutoAnswerEnabled =
+        callSettingsResult.rows[0]?.inbound_auto_answer_enabled === true;
+
     res.render('agent/index', {
         pageTitle: 'Agent Workspace',
         callsToday,
         agentId: u.agentId,
         fullName: u.fullName,
         pauseCodes,
+        inboundAutoAnswerEnabled,
         statuses: ['available','break','lunch','tea','training','meeting','system_issue','personal_break','offline'],
     });
 });
