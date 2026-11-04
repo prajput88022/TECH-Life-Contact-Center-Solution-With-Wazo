@@ -298,7 +298,9 @@ router.post('/cdr', checkSecret, async (req, res) => {
     await pool.query(
         `INSERT INTO calls (tenant_id, wazo_call_id, wazo_cdr_id, direction, from_number, to_number, status, start_time, answer_time, end_time, hangup_cause)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-         ON CONFLICT (tenant_id, wazo_call_id) DO UPDATE SET
+         ON CONFLICT (tenant_id, wazo_call_id)
+                 WHERE wazo_call_id IS NOT NULL
+             DO UPDATE SET
             wazo_cdr_id = EXCLUDED.wazo_cdr_id, start_time = EXCLUDED.start_time,
             answer_time = EXCLUDED.answer_time, end_time = EXCLUDED.end_time,
             status = EXCLUDED.status, hangup_cause = COALESCE(NULLIF(EXCLUDED.hangup_cause, ''), calls.hangup_cause)`,

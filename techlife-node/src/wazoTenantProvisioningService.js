@@ -81,7 +81,11 @@ async function provisionWazoTenant(tenantId) {
             SET wazo_context_status = 'provisioning',
                 wazo_context_error = NULL,
                 wazo_outcall_context_status = 'provisioning',
-                wazo_outcall_context_error = NULL
+                wazo_outcall_context_error = NULL,
+                wazo_context_links_status = 'provisioning',
+                wazo_context_links_error = NULL,
+                wazo_context_links_updated_at = NOW(),
+                updated_at = NOW()
           WHERE id = $1`,
         [tenantId]
     );
@@ -248,6 +252,77 @@ async function provisionWazoTenant(tenantId) {
 
         mapped.internal = verifiedContext;
 
+        // Include this tenant's outcall context from its internal context.
+        // Wazo PUT replaces the relation list, so preserve every existing
+        // inclusion and add only the tenant-owned outcall context.
+        if (!Array.isArray(verifiedContext.contexts)) {
+            throw new Error(
+                `Wazo did not return included contexts for internal context ${internal.id}; refusing to overwrite unknown relations.`
+            );
+        }
+
+        const existingIncludedIds = verifiedContext.contexts.map((item) => {
+            const id = Number(item && item.id);
+            if (!Number.isSafeInteger(id) || id < 1) {
+                throw new Error('Wazo returned an invalid included-context ID.');
+            }
+            return id;
+        });
+
+        const internalContextId = Number(internal.id);
+        const outcallContextId = Number(mapped.outcall.id);
+
+        if (
+            !Number.isSafeInteger(internalContextId) ||
+            !Number.isSafeInteger(outcallContextId) ||
+            internalContextId < 1 ||
+            outcallContextId < 1 ||
+            internalContextId === outcallContextId
+        ) {
+            throw new Error('Invalid tenant internal/outcall context IDs.');
+        }
+
+        const desiredIncludedIds = [
+            ...new Set([...existingIncludedIds, outcallContextId])
+        ];
+
+        await requestJson(
+            confdBase,
+            `/contexts/${internalContextId}/contexts`,
+            token,
+            wazoTenantUuid,
+            'PUT',
+            { contexts: desiredIncludedIds.map((id) => ({ id })) }
+        );
+
+        // Read back the relation and verify both the new link and all
+        // previously included contexts survived the update.
+        const linkedContext = unwrap(await requestJson(
+            confdBase,
+            `/contexts/${internalContextId}`,
+            token,
+            wazoTenantUuid
+        ));
+
+        if (!Array.isArray(linkedContext.contexts)) {
+            throw new Error('Wazo did not return the saved context inclusions.');
+        }
+
+        const savedIncludedIds = linkedContext.contexts.map(
+            (item) => Number(item && item.id)
+        );
+
+        if (
+            !savedIncludedIds.includes(outcallContextId) ||
+            !existingIncludedIds.every((id) => savedIncludedIds.includes(id))
+        ) {
+            throw new Error(
+                `Wazo did not verify the outbound context link for tenant ${tenant.slug}.`
+            );
+        }
+
+        mapped.internal = linkedContext;
+
         await pool.query(
             `UPDATE tenants
                 SET wazo_tenant_uuid = $1,
@@ -260,6 +335,9 @@ async function provisionWazoTenant(tenantId) {
                     wazo_outcall_context_name = $6,
                     wazo_outcall_context_status = 'provisioned',
                     wazo_outcall_context_error = NULL,
+                    wazo_context_links_status = 'provisioned',
+                    wazo_context_links_error = NULL,
+                    wazo_context_links_updated_at = NOW(),
                     sip_domain = COALESCE(NULLIF(sip_domain, ''), $8),
                     sip_ws_uri = COALESCE(NULLIF(sip_ws_uri, ''), $9)
               WHERE id = $7`,
@@ -292,7 +370,11 @@ async function provisionWazoTenant(tenantId) {
                 SET wazo_context_status = 'failed',
                     wazo_context_error = $1,
                     wazo_outcall_context_status = 'failed',
-                    wazo_outcall_context_error = $1
+                    wazo_outcall_context_error = $1,
+                    wazo_context_links_status = 'failed',
+                    wazo_context_links_error = $1,
+                    wazo_context_links_updated_at = NOW(),
+                    updated_at = NOW()
               WHERE id = $2`,
             [String(error.message || error).slice(0, 2000), tenantId]
         );
@@ -311,10 +393,13 @@ async function reconcilePendingTenantContexts(batchSize = 5) {
             OR wazo_context_status IN ('pending', 'failed')
             OR wazo_outcall_context_status IS NULL
             OR wazo_outcall_context_status IN ('pending', 'failed')
+            OR wazo_context_links_status IS NULL
+            OR wazo_context_links_status IN ('pending', 'failed')
             OR (
                 (
                     wazo_context_status = 'provisioning'
                     OR wazo_outcall_context_status = 'provisioning'
+                    OR wazo_context_links_status = 'provisioning'
                 )
                 AND updated_at < NOW() - INTERVAL '5 minutes'
             )
@@ -339,6 +424,9 @@ async function reconcilePendingTenantContexts(batchSize = 5) {
                     wazo_context_error = NULL,
                     wazo_outcall_context_status = 'provisioning',
                     wazo_outcall_context_error = NULL,
+                    wazo_context_links_status = 'provisioning',
+                    wazo_context_links_error = NULL,
+                    wazo_context_links_updated_at = NOW(),
                     updated_at = NOW()
               WHERE id = $1 AND ${condition}
               RETURNING id`,

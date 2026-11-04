@@ -24,13 +24,36 @@
 <script>
 const CONV_ID = <%- JSON.stringify(conversation.id) %>;
 function renderMessages(messages) {
-    document.getElementById('thread').innerHTML = messages.map(m => `
-        <div style="align-self:${m.sender_type === 'agent' ? 'flex-end' : 'flex-start'};max-width:75%;
-             background:${m.sender_type === 'customer' ? '#f0f2f7' : (m.sender_type === 'agent' ? '#2563eb' : '#fef3d6')};
-             color:${m.sender_type === 'agent' ? '#fff' : '#1a2233'};padding:8px 12px;border-radius:10px;font-size:13px">
-            <div>${m.body}</div>
-            <div style="font-size:10px;opacity:.7;margin-top:2px">${m.sender_type} · ${new Date(m.sent_at).toLocaleTimeString()}</div>
-        </div>`).join('');
+    const thread = document.getElementById('thread');
+    thread.replaceChildren();
+
+    messages.forEach(m => {
+        const isAgent = m.sender_type === 'agent';
+        const isCustomer = m.sender_type === 'customer';
+
+        const bubble = document.createElement('div');
+        bubble.style.alignSelf = isAgent ? 'flex-end' : 'flex-start';
+        bubble.style.maxWidth = '75%';
+        bubble.style.background = isCustomer ? '#f0f2f7' : (isAgent ? '#2563eb' : '#fef3d6');
+        bubble.style.color = isAgent ? '#fff' : '#1a2233';
+        bubble.style.padding = '8px 12px';
+        bubble.style.borderRadius = '10px';
+        bubble.style.fontSize = '13px';
+
+        const body = document.createElement('div');
+        body.textContent = m.body || '';
+        bubble.appendChild(body);
+
+        const meta = document.createElement('div');
+        meta.style.fontSize = '10px';
+        meta.style.opacity = '.7';
+        meta.style.marginTop = '2px';
+        meta.textContent = (m.sender_type || 'message') + ' · ' +
+            (m.sent_at ? new Date(m.sent_at).toLocaleTimeString() : '');
+        bubble.appendChild(meta);
+
+        thread.appendChild(bubble);
+    });
 }
 async function poll() {
     const res = await fetch(`/agent/chat/${CONV_ID}/messages.json`);
@@ -40,4 +63,5 @@ async function poll() {
 poll();
 setInterval(poll, 4000);
 </script>
+<%- include('./digital_presence') %>
 <%- include('../partials/foot') %>

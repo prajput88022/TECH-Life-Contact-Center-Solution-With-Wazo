@@ -246,7 +246,35 @@ async function setStatus(status) {
         alert('Unable to update agent status. Please retry.');
     }
 }
+
 loadStatus();
+
+// Keep this browser session's digital presence fresh.
+// This does not change Wazo voice status.
+async function sendDigitalPresenceHeartbeat() {
+    if (!AGENT_ID) return;
+
+    try {
+        const response = await fetch(
+            `/api/v1/agents/${AGENT_ID}/digital-presence`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ status: 'active' })
+            }
+        );
+
+        if (!response.ok) {
+            console.warn('Digital presence heartbeat rejected:', response.status);
+        }
+    } catch (err) {
+        console.warn('Digital presence heartbeat failed:', err);
+    }
+}
+
+sendDigitalPresenceHeartbeat();
+setInterval(sendDigitalPresenceHeartbeat, 25000);
 
 // ---------------- CRM Screen-Pop / CTI ----------------
 async function loadCrmConfig() {

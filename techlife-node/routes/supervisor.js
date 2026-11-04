@@ -9,6 +9,7 @@ const { isScopedSupervisor, agentAccessPredicate, canAccessAgent } = require('..
 
 router.use(requireRole(['supervisor', 'admin', 'superadmin']));
 router.use(loadTenantAppearance);
+router.use('/staff-chat', require('./staffChat')('supervisor'));
 
 router.get('/', async (req, res) => {
     const t = req.session.user.tenantId;
@@ -131,8 +132,11 @@ router.get('/chat', async (req, res) => {
 
 router.get('/calls', async (req, res) => {
     const t = req.session.user.tenantId;
-    const from = req.query.from || new Date().toISOString().slice(0, 10) + ' 00:00:00';
-    const to = req.query.to || new Date().toISOString().slice(0, 10) + ' 23:59:59';
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .toISOString().slice(0, 10);
+    const from = req.query.from || defaultFrom + ' 00:00:00';
+    const to = req.query.to || today + ' 23:59:59';
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
 
     let rows = await callRecordService.search(t, 'supervisor', { from, to }, page);

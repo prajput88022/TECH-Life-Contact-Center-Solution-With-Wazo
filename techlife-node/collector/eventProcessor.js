@@ -240,7 +240,9 @@ async function handleCallEvent(client, e) {
             `INSERT INTO calls (tenant_id, wazo_call_id, agent_id, queue_id, campaign_id, did_id, contact_id,
                 direction, from_number, to_number, status, start_time)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ringing',$11)
-             ON CONFLICT (tenant_id, wazo_call_id) DO UPDATE
+             ON CONFLICT (tenant_id, wazo_call_id)
+                 WHERE wazo_call_id IS NOT NULL
+             DO UPDATE
                 SET contact_id = COALESCE(calls.contact_id, EXCLUDED.contact_id)`,
             [e.tenant_id, callRef, ids.agent_id || null, ids.queue_id || null, ids.campaign_id || null,
              ids.did_id || null, contactId, e.payload?.direction || 'inbound',

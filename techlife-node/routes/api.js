@@ -6,6 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../src/db');
+const { touchDigitalPresence } = require('../src/services/digitalPresenceService');
 const phoneMasker = require('../src/phoneMasker');
 const { requireAuth } = require('../src/auth');
 const agentReportService = require('../src/services/agentReportService');
@@ -492,6 +493,64 @@ router.get('/crm/config', async (req, res) => {
         [u.tenantId]
     );
     res.json(result.rows[0] || { popup_enabled: false });
+});
+
+
+// ---- Agent digital presence (separate from Wazo voice status) ----
+router.post('/agents/:id/digital-presence', async (req, res) => {
+    const u = req.session.user;
+    const agentId = req.params.id;
+    const status = req.body?.status || 'active';
+
+    if (!u || !u.agentId || u.agentId !== agentId) {
+        return res.status(403).json({ error: 'forbidden' });
+    }
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId)) {
+        return res.status(400).json({ error: 'invalid_agent_id' });
+    }
+
+    if (!['active', 'away'].includes(status)) {
+        return res.status(422).json({ error: 'invalid_digital_presence_status' });
+    }
+
+    try {
+        // Confirm the logged-in user owns this active agent in this tenant.
+        const ownership = await pool.query(
+            `SELECT 1
+               FROM agents a
+               JOIN users usr
+                 ON usr.id = a.user_id
+                AND usr.tenant_id = a.tenant_id
+              WHERE a.tenant_id = $1
+                AND a.id = $2
+                AND a.user_id = $3
+                AND a.is_active = TRUE
+                AND usr.is_active = TRUE
+              LIMIT 1`,
+            [u.tenantId, agentId, u.id]
+        );
+
+        if (!ownership.rowCount) {
+            return res.status(403).json({ error: 'agent_not_active_or_not_owned' });
+        }
+
+        const presence = await touchDigitalPresence(
+            u.tenantId,
+            agentId,
+            req.sessionID,
+            status
+        );
+
+        return res.json({
+            ok: true,
+            status: presence.status,
+            last_seen_at: presence.last_seen_at
+        });
+    } catch (err) {
+        console.error('Agent digital presence heartbeat failed:', err);
+        return res.status(500).json({ error: 'digital_presence_update_failed' });
+    }
 });
 
 // ---- Agent status ----

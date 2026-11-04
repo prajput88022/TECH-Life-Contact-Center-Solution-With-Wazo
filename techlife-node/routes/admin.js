@@ -35,6 +35,7 @@ router.use((req, res, next) => {
 router.use(requireRole(['admin']));
 router.use(resolveTenantContext);
 router.use(loadTenantAppearance);
+router.use('/staff-chat', require('./staffChat')('admin'));
 
 /**
  * Postgres raises error code 23503 (foreign_key_violation) when a
@@ -1854,6 +1855,101 @@ router.post('/trunks/:id/delete', async (req, res) => {
 // ---------------- Outbound Prefixes ----------------
 // PREFIX_SCOPE_PATCH_V1
 // ---------------- Outbound Prefixes ----------------
+async function provisionSavedPrefixAfterAdminSave(prefixId, tenantId, scopeType) {
+    // Do not widen agent/group/campaign routes into tenant-wide Wazo routes.
+    if (scopeType !== 'tenant') {
+        const reason =
+            'Scope-specific Wazo routing is not implemented yet. ' +
+            'This prefix remains inactive and must not be activated.';
+        await pool.query(
+            `UPDATE prefixes
+                SET provisioning_status = 'failed',
+                    provisioning_error = $3
+              WHERE id = $1 AND tenant_id = $2 AND is_active = FALSE`,
+            [prefixId, tenantId, reason]
+        );
+        return { ok: false, error: reason };
+    }
+
+    // Claim the row so the Admin request and collector cannot provision it
+    // concurrently. Only tenant-wide inactive routes are eligible here.
+    const claimed = await pool.query(
+        `UPDATE prefixes
+            SET provisioning_status = 'provisioning',
+                provisioning_error = NULL
+          WHERE id = $1
+            AND tenant_id = $2
+            AND is_active = FALSE
+            AND provisioning_status IN ('pending', 'failed')
+        RETURNING id`,
+        [prefixId, tenantId]
+    );
+
+    if (!claimed.rowCount) {
+        const current = await pool.query(
+            `SELECT provisioning_status, provisioning_error
+               FROM prefixes
+              WHERE id = $1 AND tenant_id = $2`,
+            [prefixId, tenantId]
+        );
+        return {
+            ok: current.rows[0]?.provisioning_status === 'provisioned',
+            skipped: true,
+            status: current.rows[0]?.provisioning_status || 'missing'
+        };
+    }
+
+    try {
+        const result = await provisionPrefixOutboundRoute(
+            prefixId,
+            tenantId,
+            { ensureDisabled: true }
+        );
+
+        const saved = await pool.query(
+            `UPDATE prefixes
+                SET provisioning_status = 'provisioned',
+                    provisioning_error = NULL,
+                    last_provisioned_at = NOW()
+              WHERE id = $1
+                AND tenant_id = $2
+                AND is_active = FALSE
+                AND provisioning_status = 'provisioning'
+            RETURNING id`,
+            [prefixId, tenantId]
+        );
+
+        if (!saved.rowCount) {
+            throw new Error(
+                'Prefix state changed during provisioning. The route was not activated.'
+            );
+        }
+
+        console.log(
+            `[admin-prefix] Prefix ${prefixId} provisioned disabled; ` +
+            `Wazo outcall ${result.outcall_id}.`
+        );
+        return result;
+    } catch (error) {
+        const message = String(error?.message || error).slice(0, 1500);
+
+        await pool.query(
+            `UPDATE prefixes
+                SET provisioning_status = 'failed',
+                    provisioning_error = $3
+              WHERE id = $1
+                AND tenant_id = $2
+                AND is_active = FALSE`,
+            [prefixId, tenantId, message]
+        );
+
+        console.error(
+            `[admin-prefix] Prefix ${prefixId} provisioning failed: ${message}`
+        );
+        return { ok: false, error: message };
+    }
+}
+
 router.get('/prefixes', async (req, res) => {
     const t = req.effectiveTenant.id;
     const [prefixResult, trunkResult, groupResult, agentResult, campaignResult] =
@@ -2047,6 +2143,8 @@ router.post('/prefixes/create', async (req, res) => {
     } finally {
         client.release();
     }
+
+    await provisionSavedPrefixAfterAdminSave(prefixId, t, scopeType);
 
     await writeAuditLog(t, req.session.user.id, 'PREFIX_CREATED', 'prefix',
         prefixId, null, {
@@ -2291,6 +2389,8 @@ router.post('/prefixes/:id/edit', async (req, res) => {
     } finally {
         client.release();
     }
+
+    await provisionSavedPrefixAfterAdminSave(old.id, tenantId, scopeType);
 
     await writeAuditLog(tenantId, req.session.user.id, 'PREFIX_EDITED',
         'prefix', old.id, null, {

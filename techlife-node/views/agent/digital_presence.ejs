@@ -1,0 +1,32 @@
+<script>
+(() => {
+    const AGENT_ID = <%- JSON.stringify(typeof agentId !== 'undefined' ? agentId : null) %>;
+
+    if (!AGENT_ID || window.__techlifeDigitalPresenceStarted) return;
+    window.__techlifeDigitalPresenceStarted = true;
+
+    async function sendDigitalPresenceHeartbeat() {
+        try {
+            const response = await fetch(
+                `/api/v1/agents/${AGENT_ID}/digital-presence`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ status: 'active' })
+                }
+            );
+
+            if (!response.ok) {
+                console.warn('Digital presence heartbeat rejected:', response.status);
+            }
+        } catch (err) {
+            console.warn('Digital presence heartbeat failed:', err);
+        }
+    }
+
+    sendDigitalPresenceHeartbeat();
+    window.__techlifeDigitalPresenceTimer =
+        setInterval(sendDigitalPresenceHeartbeat, 25000);
+})();
+</script>

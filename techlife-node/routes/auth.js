@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { attemptLogin, logout } = require('../src/auth');
+const { clearDigitalPresence } = require('../src/services/digitalPresenceService');
 
 router.get('/login', (req, res) => {
     res.render('login', { error: null, form: {} });
@@ -28,7 +29,24 @@ router.post('/login', async (req, res) => {
 });
 
 router.get('/logout', async (req, res) => {
-    await logout(req);
+    const u = req.session?.user;
+
+    try {
+        if (u?.agentId && req.sessionID) {
+            await clearDigitalPresence(u.tenantId, u.agentId, req.sessionID);
+        }
+    } catch (err) {
+        // Do not prevent logout if presence cleanup encounters a database error.
+        console.error('Digital presence logout cleanup failed:', err);
+    }
+
+    try {
+        await logout(req);
+    } catch (err) {
+        console.error('Logout audit failed:', err);
+    }
+
+    if (!req.session) return res.redirect('/login');
     req.session.destroy(() => res.redirect('/login'));
 });
 

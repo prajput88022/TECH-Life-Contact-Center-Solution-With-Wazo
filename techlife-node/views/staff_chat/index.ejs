@@ -1,0 +1,451 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<style>
+.staff-chat-layout {
+    display:grid;
+    grid-template-columns:minmax(245px, 320px) minmax(0, 1fr);
+    gap:16px;
+    min-height:560px;
+}
+.staff-chat-panel {
+    background:var(--c2);
+    border:1px solid var(--bd);
+    border-radius:12px;
+    overflow:hidden;
+    min-width:0;
+}
+.staff-chat-panel-head {
+    padding:15px;
+    border-bottom:1px solid var(--bd);
+}
+.staff-chat-panel-head h2 {
+    margin:0 0 5px;
+    font-size:16px;
+}
+.staff-chat-muted { color:var(--t2); font-size:12px; }
+.staff-chat-list {
+    max-height:410px;
+    overflow-y:auto;
+}
+.staff-chat-item {
+    display:block;
+    padding:12px 14px;
+    border-bottom:1px solid var(--bd);
+    color:inherit;
+    text-decoration:none;
+}
+.staff-chat-item:hover,.staff-chat-item.active {
+    background:var(--c3);
+}
+.staff-chat-item-title {
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+    font-weight:700;
+    font-size:13px;
+}
+.staff-chat-item-preview {
+    display:block;
+    margin-top:5px;
+    color:var(--t2);
+    font-size:11px;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+}
+.staff-chat-unread {
+    display:inline-block;
+    min-width:18px;
+    padding:2px 5px;
+    border-radius:12px;
+    text-align:center;
+    background:var(--acc);
+    color:white;
+    font-size:10px;
+}
+.staff-chat-new {
+    padding:14px;
+    border-top:1px solid var(--bd);
+}
+.staff-chat-new h3 { margin:0 0 10px; font-size:14px; }
+.staff-chat-new label {
+    display:block;
+    margin:9px 0 5px;
+    font-size:11px;
+    font-weight:700;
+}
+.staff-chat-new input,.staff-chat-new select,.staff-chat-new textarea {
+    box-sizing:border-box;
+    width:100%;
+    min-width:0;
+}
+.staff-chat-new select[multiple] { min-height:125px; }
+.staff-chat-thread {
+    display:flex;
+    flex-direction:column;
+    min-height:560px;
+}
+.staff-chat-messages {
+    flex:1;
+    padding:16px;
+    display:flex;
+    flex-direction:column;
+    gap:11px;
+    max-height:520px;
+    min-height:300px;
+    overflow-y:auto;
+}
+.staff-chat-message {
+    max-width:min(78%, 620px);
+    align-self:flex-start;
+}
+.staff-chat-message.own { align-self:flex-end; }
+.staff-chat-bubble {
+    padding:10px 13px;
+    border:1px solid var(--bd);
+    border-radius:12px;
+    background:var(--c3);
+    font-size:13px;
+    line-height:1.5;
+    overflow-wrap:anywhere;
+    white-space:pre-wrap;
+}
+.staff-chat-message.own .staff-chat-bubble {
+    background:var(--acc);
+    color:white;
+    border-color:transparent;
+}
+.staff-chat-meta {
+    margin-top:4px;
+    font-size:10px;
+    color:var(--t2);
+}
+.staff-chat-message.own .staff-chat-meta { text-align:right; }
+.staff-chat-send {
+    padding:13px;
+    border-top:1px solid var(--bd);
+    display:flex;
+    gap:9px;
+    align-items:flex-end;
+}
+.staff-chat-send textarea { flex:1; min-width:0; resize:vertical; }
+.staff-chat-empty {
+    padding:35px 20px;
+    text-align:center;
+    color:var(--t2);
+    font-size:13px;
+}
+@media(max-width:850px) {
+    .staff-chat-layout { grid-template-columns:1fr; }
+    .staff-chat-list { max-height:250px; }
+    .staff-chat-thread { min-height:440px; }
+}
+</style>
+
+<h1>Internal Staff Chat</h1>
+<p class="tl-subtitle">
+    Private team communication. Messages here are separate from customer conversations and call records.
+</p>
+
+<div class="staff-chat-layout">
+    <section class="staff-chat-panel">
+        <div class="staff-chat-panel-head">
+            <h2>Conversations</h2>
+            <div class="staff-chat-muted"><%= conversations.length %> recent conversations</div>
+        </div>
+
+        <div class="staff-chat-list">
+            <% conversations.forEach(c => { %>
+                <a class="staff-chat-item <%= selectedConversation && selectedConversation.id === c.id ? 'active' : '' %>"
+                   href="<%= basePath %>/<%= c.id %>">
+                    <span class="staff-chat-item-title">
+                        <span><%= c.display_title || 'Staff conversation' %></span>
+                        <% if (Number(c.unread_count) > 0) { %>
+                            <span class="staff-chat-unread"><%= c.unread_count %></span>
+                        <% } %>
+                    </span>
+                    <span class="staff-chat-muted">
+                        <%= c.conversation_type === 'announcement' ? 'Announcement' :
+                            (c.conversation_type === 'direct' ? 'Direct message' : 'Group chat') %>
+                    </span>
+                    <span class="staff-chat-item-preview"><%= c.last_message %></span>
+                </a>
+            <% }) %>
+
+            <% if (!conversations.length) { %>
+                <div class="staff-chat-empty">No staff conversations yet. Start one below.</div>
+            <% } %>
+        </div>
+
+        <div class="staff-chat-new">
+            <h3>Start a conversation</h3>
+
+            <form method="post" action="<%= basePath %>/new" id="staffChatNewForm">
+                <label for="staffConversationType">Conversation type</label>
+                <select name="conversation_type" id="staffConversationType">
+                    <option value="direct">Direct message</option>
+                    <option value="group">Group conversation</option>
+                    <% if (area === 'admin') { %>
+                        <option value="announcement">Admin announcement</option>
+                    <% } %>
+                </select>
+
+                <% if (area === 'admin') { %>
+                    <div id="staffAnnouncementTarget">
+                        <label for="staffTargetType">Announcement audience</label>
+                        <select name="target_type" id="staffTargetType">
+                            <option value="selected">Selected staff</option>
+                            <option value="group">User group</option>
+                            <option value="queue">Queue members</option>
+                            <option value="campaign">Campaign agents</option>
+                        </select>
+
+                        <label for="staffTargetId">Choose audience</label>
+                        <select name="target_id" id="staffTargetId">
+                            <option value="" data-type="">Choose an audience</option>
+                            <% audiences.groups.forEach(item => { %>
+                                <option value="<%= item.id %>" data-type="group">Group: <%= item.name %></option>
+                            <% }) %>
+                            <% audiences.queues.forEach(item => { %>
+                                <option value="<%= item.id %>" data-type="queue">Queue: <%= item.name %></option>
+                            <% }) %>
+                            <% audiences.campaigns.forEach(item => { %>
+                                <option value="<%= item.id %>" data-type="campaign">Campaign: <%= item.name %></option>
+                            <% }) %>
+                        </select>
+                    </div>
+                <% } %>
+
+                <div id="staffRecipientWrap">
+                    <label for="staffRecipients">Recipients</label>
+                    <select id="staffRecipients" name="recipient_user_ids" multiple size="6">
+                        <% directory.forEach(person => { %>
+                            <option value="<%= person.id %>">
+                                <%= person.display_name %>
+                                <% if (person.agent_number) { %> · Agent <%= person.agent_number %><% } %>
+                                (<%= person.roles.join(', ') || 'Staff' %>)
+                            </option>
+                        <% }) %>
+                    </select>
+                    <div class="staff-chat-muted">Use Ctrl or Shift to select multiple people.</div>
+                </div>
+
+                <label for="staffConversationTitle">Conversation title (optional)</label>
+                <input id="staffConversationTitle" name="title" type="text" maxlength="200"
+                       placeholder="Team discussion">
+
+                <button class="tl-btn" type="submit" style="width:100%;margin-top:12px">
+                    Create conversation
+                </button>
+            </form>
+        </div>
+    </section>
+
+    <section class="staff-chat-panel staff-chat-thread">
+        <% if (selectedConversation) { %>
+            <div class="staff-chat-panel-head">
+                <h2>
+                    <%= selectedConversation.title ||
+                        (selectedConversation.conversation_type === 'announcement'
+                            ? 'Announcement'
+                            : (selectedConversation.conversation_type === 'direct'
+                                ? 'Direct conversation' : 'Group conversation')) %>
+                </h2>
+                <div class="staff-chat-muted">
+                    <%= selectedConversation.conversation_type %>
+                    <% if (selectedConversation.audience_type) { %>
+                        · Audience: <%= selectedConversation.audience_type %>
+                    <% } %>
+                    <% if (selectedConversation.is_archived) { %> · Archived<% } %>
+                </div>
+            </div>
+
+            <div class="staff-chat-messages" id="staffChatMessages">
+                <% messages.forEach(m => { %>
+                    <article class="staff-chat-message <%= String(m.sender_user_id) === String(currentUserId) ? 'own' : '' %>">
+                        <div class="staff-chat-bubble"><%= m.body %></div>
+                        <div class="staff-chat-meta">
+                            <%= m.sender_name %> · <%= new Date(m.created_at).toLocaleString() %>
+                            <% if (String(m.sender_user_id) === String(currentUserId) && Number(m.read_count) > 0) { %>
+                                · Seen by <%= m.read_count %>
+                            <% } %>
+                        </div>
+                    </article>
+                <% }) %>
+                <% if (!messages.length) { %>
+                    <div class="staff-chat-empty">No messages yet. Send the first message.</div>
+                <% } %>
+            </div>
+
+            <% if (canSend) { %>
+                <form class="staff-chat-send" id="staffChatSendForm">
+                    <textarea id="staffChatBody" rows="2" maxlength="4000"
+                              placeholder="Write an internal staff message..." required></textarea>
+                    <button class="tl-btn" type="submit">Send</button>
+                </form>
+                <div id="staffChatStatus" class="staff-chat-muted" style="padding:0 14px 10px" aria-live="polite"></div>
+            <% } %>
+        <% } else { %>
+            <div class="staff-chat-empty" style="margin:auto">
+                <h2>Internal Staff Chat</h2>
+                <p>Select a conversation or start a new one.</p>
+                <p>Customer webchat and call history are not displayed here.</p>
+            </div>
+        <% } %>
+    </section>
+</div>
+
+<% if (area === 'agent') { %>
+    <%- include('../agent/digital_presence') %>
+<% } %>
+
+<% if (selectedConversation) { %>
+<script>
+(() => {
+    const BASE = <%- JSON.stringify(basePath) %>;
+    const CONVERSATION_ID = <%- JSON.stringify(selectedConversation.id) %>;
+    const CURRENT_USER_ID = <%- JSON.stringify(currentUserId) %>;
+    const messagesBox = document.getElementById('staffChatMessages');
+    const sendForm = document.getElementById('staffChatSendForm');
+    const statusBox = document.getElementById('staffChatStatus');
+
+    function renderMessages(messages) {
+        const wasNearBottom =
+            messagesBox.scrollHeight - messagesBox.scrollTop - messagesBox.clientHeight < 100;
+
+        messagesBox.replaceChildren();
+
+        for (const message of messages) {
+            const article = document.createElement('article');
+            article.className = 'staff-chat-message' +
+                (String(message.sender_user_id) === String(CURRENT_USER_ID) ? ' own' : '');
+
+            const bubble = document.createElement('div');
+            bubble.className = 'staff-chat-bubble';
+            bubble.textContent = message.body || '';
+
+            const meta = document.createElement('div');
+            meta.className = 'staff-chat-meta';
+
+            const time = message.created_at
+                ? new Date(message.created_at).toLocaleString()
+                : '';
+
+            meta.textContent = `${message.sender_name || 'Staff'} · ${time}`;
+
+            if (String(message.sender_user_id) === String(CURRENT_USER_ID) &&
+                Number(message.read_count) > 0) {
+                meta.textContent += ` · Seen by ${message.read_count}`;
+            }
+
+            article.appendChild(bubble);
+            article.appendChild(meta);
+            messagesBox.appendChild(article);
+        }
+
+        if (wasNearBottom) messagesBox.scrollTop = messagesBox.scrollHeight;
+    }
+
+    async function pollMessages() {
+        try {
+            const response = await fetch(
+                `${BASE}/${CONVERSATION_ID}/messages.json`,
+                { credentials: 'same-origin' }
+            );
+
+            if (!response.ok) return;
+
+            const data = await response.json();
+            if (Array.isArray(data.messages)) renderMessages(data.messages);
+        } catch (error) {
+            console.warn('Staff chat refresh failed:', error);
+        }
+    }
+
+    if (messagesBox) messagesBox.scrollTop = messagesBox.scrollHeight;
+    pollMessages();
+    setInterval(pollMessages, 5000);
+
+    if (sendForm) {
+        sendForm.addEventListener('submit', async event => {
+            event.preventDefault();
+
+            const input = document.getElementById('staffChatBody');
+            const body = input.value.trim();
+            if (!body) return;
+
+            const button = sendForm.querySelector('button[type="submit"]');
+            button.disabled = true;
+            statusBox.textContent = 'Sending...';
+
+            try {
+                const response = await fetch(`${BASE}/${CONVERSATION_ID}/send`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ body })
+                });
+
+                const result = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Message could not be sent.');
+                }
+
+                input.value = '';
+                statusBox.textContent = 'Message sent.';
+                await pollMessages();
+            } catch (error) {
+                statusBox.textContent = error.message;
+            } finally {
+                button.disabled = false;
+                input.focus();
+            }
+        });
+    }
+})();
+</script>
+<% } %>
+
+<% if (area === 'admin') { %>
+<script>
+(() => {
+    const mode = document.getElementById('staffConversationType');
+    const targetType = document.getElementById('staffTargetType');
+    const targetId = document.getElementById('staffTargetId');
+    const targetWrap = document.getElementById('staffAnnouncementTarget');
+    const recipientWrap = document.getElementById('staffRecipientWrap');
+    const recipients = document.getElementById('staffRecipients');
+
+    function updateComposer() {
+        const isAnnouncement = mode.value === 'announcement';
+        targetWrap.style.display = isAnnouncement ? '' : 'none';
+        recipientWrap.style.display =
+            (!isAnnouncement || targetType.value === 'selected') ? '' : 'none';
+
+        targetId.required = isAnnouncement && targetType.value !== 'selected';
+        recipients.required = !isAnnouncement || targetType.value === 'selected';
+
+        for (const option of targetId.options) {
+            if (option.value) {
+                option.hidden = option.dataset.type !== targetType.value;
+            }
+        }
+
+        if (!isAnnouncement || targetType.value === 'selected') {
+            targetId.value = '';
+        } else if (targetId.selectedOptions.length &&
+                   targetId.selectedOptions[0].dataset.type !== targetType.value) {
+            targetId.value = '';
+        }
+    }
+
+    mode.addEventListener('change', updateComposer);
+    targetType.addEventListener('change', updateComposer);
+    updateComposer();
+})();
+</script>
+<% } %>
+
+<%- include('../partials/foot') %>
