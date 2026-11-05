@@ -35,6 +35,23 @@ router.post('/reply', async (req, res) => {
     }
     const tenantId = linkRes.rows[0].tenant_id;
 
+    // Public webhook: check the conversation owner's tenant directly.
+    // No authenticated-session Superadmin bypass applies here.
+    let featureRes;
+    try {
+        featureRes = await pool.query(
+            'SELECT is_enabled FROM tenant_features WHERE tenant_id = $1 AND feature_key = $2',
+            [tenantId, 'mattermost']
+        );
+    } catch (err) {
+        console.error('Mattermost tenant feature check failed:', err.message);
+        return res.json({ text: 'Mattermost integration is unavailable.' });
+    }
+
+    if (featureRes.rows[0]?.is_enabled !== true) {
+        return res.json({ text: 'Mattermost integration is unavailable.' });
+    }
+
     const integrationRes = await pool.query(
         'SELECT reply_shared_secret FROM mattermost_integrations WHERE tenant_id = $1 AND is_active = TRUE',
         [tenantId]

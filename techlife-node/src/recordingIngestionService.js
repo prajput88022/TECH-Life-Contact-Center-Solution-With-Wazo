@@ -577,6 +577,13 @@ async function reconcileRecordingIngestion() {
             FROM recording_settings s
             JOIN tenants t ON t.id = s.tenant_id
             WHERE s.recording_ingestion_enabled = TRUE
+              AND EXISTS (
+                  SELECT 1
+                    FROM tenant_features tf
+                   WHERE tf.tenant_id = s.tenant_id
+                     AND tf.feature_key = 'call_recording'
+                     AND tf.is_enabled = TRUE
+              )
               AND (
                   s.recording_ingestion_status <> 'running'
                   OR s.recording_ingestion_last_run_at IS NULL
@@ -602,6 +609,20 @@ async function reconcileRecordingIngestion() {
         const token = await getWazoToken();
 
         for (const settings of due.rows) {
+            // Recheck after scheduler selection so a recently disabled
+            // tenant is not started by a stale due-list entry.
+            const featureCheck = await pool.query(
+                `SELECT is_enabled
+                   FROM tenant_features
+                  WHERE tenant_id = $1
+                    AND feature_key = 'call_recording'`,
+                [settings.tenant_id]
+            );
+
+            if (featureCheck.rows[0]?.is_enabled !== true) {
+                continue;
+            }
+
             const tenant = {
                 id: settings.tenant_id,
                 name: settings.tenant_name,

@@ -30,7 +30,7 @@
     <p><strong>Features enabled at creation:</strong></p>
     <div class="tl-grid">
     <% featureKeys.forEach(fk => { %>
-        <label><input type="checkbox" name="feature[<%= fk %>]"> <%= fk.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) %></label>
+        <label><input type="checkbox" name="feature[<%= fk %>]" value="1" <% if (defaultFeatureKeys.has(fk)) { %>checked<% } %>> <%= fk.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) %></label>
     <% }) %>
     </div>
     <button class="tl-btn" type="submit">Create Tenant</button>
@@ -77,20 +77,54 @@
 
 <% if (editId) {
     const editTenant = tenants.find(t => t.id === editId);
+    const featureLabel = fk => fk.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const featureGroups = [
+        { title: 'Core Calling', keys: ['voice', 'inbound', 'outbound', 'internal_calling', 'webrtc', 'video_calling'] },
+        { title: 'Telephony & Recording', keys: ['sip_trunks', 'call_recording', 'caller_id'] },
+        { title: 'Call Center', keys: ['queues', 'skills', 'skill_routing', 'dispositions', 'user_groups', 'pause_codes', 'call_monitoring', 'barge', 'whisper', 'call_listening'] },
+        { title: 'Campaigns & Automation', keys: ['campaigns', 'auto_dialer', 'robo_agents', 'list_management', 'callback_management'] },
+        { title: 'IVR & Inbound', keys: ['ivr'] },
+        { title: 'Chat & Integrations', keys: ['omnichannel', 'webchat', 'staff_chat', 'mattermost', 'crm_integration'] },
+        { title: 'Compliance & Administration', keys: ['dnc_management', 'privacy_masking', 'audit_logs', 'media_assets'] },
+        { title: 'Reports', keys: ['mis_reports'] }
+    ];
 %>
-<h2>Feature Flags — <%= editTenant ? editTenant.name : '' %></h2>
-<div class="tl-grid">
-<% featureKeys.forEach(fk => {
-    const enabled = editFeatures[fk] || false;
-%>
-    <form method="post" action="/superadmin/tenants/toggle-feature" class="tl-card">
-        <input type="hidden" name="tenant_id" value="<%= editId %>">
-        <input type="hidden" name="feature_key" value="<%= fk %>">
-        <input type="hidden" name="enabled" value="<%= enabled ? '0' : '1' %>">
-        <div class="tl-kpi-label"><%= fk.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) %></div>
-        <button class="tl-btn <%= enabled ? '' : 'secondary' %>" type="submit"><%= enabled ? 'Enabled — click to disable' : 'Disabled — click to enable' %></button>
-    </form>
-<% }) %>
-</div>
+<h2>Tenant Features — <%= editTenant ? editTenant.name : '' %></h2>
+<p class="tl-subtitle">
+    Checked modules are enabled for this tenant. Unchecked modules are disabled.
+    Changes take effect after saving. Existing settings are not changed until you submit this form.
+</p>
+<form method="post" action="/superadmin/tenants/save-features" class="tl-card">
+    <input type="hidden" name="tenant_id" value="<%= editId %>">
+    <input type="hidden" name="feature_form_submitted" value="1">
+
+    <% featureGroups.forEach(group => { %>
+        <h3><%= group.title %></h3>
+        <div class="tl-grid">
+            <% group.keys.forEach(fk => {
+                const enabled = editFeatures[fk] === true;
+            %>
+                <label class="tl-card" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                    <input
+                        type="checkbox"
+                        name="feature[<%= fk %>]"
+                        value="1"
+                        <%= enabled ? 'checked' : '' %>
+                        style="width:18px;height:18px;flex:0 0 auto"
+                    >
+                    <span><%= featureLabel(fk) %></span>
+                    <span class="tl-status-pill <%= enabled ? 'status-available' : 'status-offline' %>">
+                        <%= enabled ? 'Enabled' : 'Disabled' %>
+                    </span>
+                </label>
+            <% }) %>
+        </div>
+    <% }) %>
+
+    <button class="tl-btn" type="submit"
+        onclick="return confirm('Save these feature settings for this tenant? Unchecked modules will be disabled.');">
+        Save Features
+    </button>
+</form>
 <% } %>
 <%- include('../partials/foot') %>

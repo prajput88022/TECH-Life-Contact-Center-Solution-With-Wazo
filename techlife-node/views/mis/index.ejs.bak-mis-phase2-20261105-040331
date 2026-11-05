@@ -1,0 +1,21 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>MIS Reports</h1>
+<p class="tl-subtitle">Every report on this platform reads from the same reporting services — numbers are always consistent across pages.</p>
+<div class="tl-grid">
+    <div class="tl-card"><div class="tl-kpi-value"><%= kpis.calls_today %></div><div class="tl-kpi-label">Calls Today</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= kpis.answered_today %></div><div class="tl-kpi-label">Answered Today</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= kpis.abandoned_today %></div><div class="tl-kpi-label">Abandoned Today</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= kpis.conversations_today %></div><div class="tl-kpi-label">Chat/Email Today</div></div>
+</div>
+<h2>Available Reports</h2>
+<ul>
+    <li><a href="/mis/agent-hourly">Agent Hourly / Daily / Weekly Report</a></li>
+    <li><a href="/mis/login-activity">Agent Login/Logout Report</a></li>
+    <li><a href="/mis/queue-report">Queue Performance Report</a></li>
+    <li><a href="/mis/campaign-report">Campaign Report (incl. Robo/Survey results)</a></li>
+    <li><a href="/mis/did-report">DID Performance Report</a></li>
+    <li><a href="/mis/ivr-journey">IVR Journey Viewer</a></li>
+    <li><a href="/mis/recordings">Recordings</a></li>
+</ul>
+<%- include('../partials/foot') %>

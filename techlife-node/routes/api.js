@@ -20,6 +20,107 @@ const wazoAgentService = require('../src/wazoAgentService');
 const { isScopedSupervisor, hasAdminAccess, agentAccessPredicate, canAccessAgent } = require('../src/supervisorScope');
 
 router.use(requireAuth);
+const {
+    requireFeature,
+    requireAllFeatures,
+    requireAnyFeature,
+    isSuperadmin
+} = require('../src/tenantFeatures');
+
+router.use('/dnd/check', requireFeature('dnc_management'));
+router.use('/agents/:id/sip-credentials', requireAllFeatures('webrtc', 'voice'));
+router.use('/agents/:id/completed-calls', requireFeature('voice'));
+router.use('/agents/:id/status', requireFeature('voice'));
+
+// Digital presence is shared by the phone and chat workspaces.
+router.use(
+    '/agents/:id/digital-presence',
+    requireAnyFeature('voice', 'omnichannel')
+);
+router.use('/crm/config', requireFeature('crm_integration'));
+
+router.use('/reports', requireFeature('mis_reports'));
+router.use('/reports/queues', requireFeature('queues'));
+router.use('/reports/campaigns', requireFeature('campaigns'));
+router.use('/reports/dids', requireFeature('inbound'));
+router.use('/reports/ivr', requireFeature('ivr'));
+router.use('/ivr-sessions', requireFeature('ivr'));
+
+router.use('/calls/:id/monitor', requireFeature('call_monitoring'));
+router.use('/calls/:id/monitor', async (req, res, next) => {
+    const mode = String(req.body?.mode || '').trim();
+    const modeFeature = {
+        listen: 'call_listening',
+        whisper: 'whisper',
+        barge: 'barge'
+    }[mode];
+
+    // Let the existing monitoring service return its normal validation
+    // error for unsupported modes.
+    if (!modeFeature) return next();
+
+    // Keep the Superadmin bypass consistent with requireFeature().
+    if (isSuperadmin(req)) return next();
+
+    const tenantId = req.session?.user?.tenantId ||
+        req.session?.user?.tenant_id;
+
+    if (!tenantId) {
+        return res.status(403).json({
+            error: 'tenant_context_required'
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT is_enabled
+               FROM tenant_features
+              WHERE tenant_id = $1 AND feature_key = $2`,
+            [tenantId, modeFeature]
+        );
+
+        if (result.rows[0]?.is_enabled === true) return next();
+
+        return res.status(403).json({
+            error: 'feature_disabled',
+            message: 'This monitoring mode is not enabled for your tenant.',
+            features: [modeFeature]
+        });
+    } catch (err) {
+        return next(err);
+    }
+});
+router.use('/monitoring-sessions', requireFeature('call_monitoring'));
+router.use('/calls', requireFeature('voice'));
+router.use('/call-settings', requireFeature('voice'));
+router.use('/dial-directory', requireFeature('internal_calling'));
+
+router.use('/agents/:id/disposition',
+    requireFeature('dispositions'),
+    async (req, res, next) => {
+        const code = String(req.body?.code || '').trim().toUpperCase();
+        const key = code === 'DND' ? 'dnc_management'
+            : code === 'FOLLOW_UP' ? 'callback_management' : null;
+
+        if (!key) return next();
+
+        try {
+            const result = await pool.query(
+                'SELECT is_enabled FROM tenant_features WHERE tenant_id = $1 AND feature_key = $2',
+                [req.session.user.tenantId, key]
+            );
+            if (result.rows[0]?.is_enabled === true) return next();
+
+            return res.status(403).json({
+                error: 'feature_disabled',
+                message: 'This feature is not enabled for your tenant.',
+                features: [key]
+            });
+        } catch (err) {
+            return next(err);
+        }
+    }
+);
 
 // ---- Outbound DNC preflight ----
 router.post('/dnd/check', async (req, res) => {

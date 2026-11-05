@@ -1,0 +1,53 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Campaign Report</h1>
+<form method="get" class="tl-filters">
+    <div><label>Campaign</label>
+        <select name="campaign_id">
+        <% campaigns.forEach(c => { %><option value="<%= c.id %>" <%= c.id === campaignId ? 'selected' : '' %>><%= c.name %><%= c.is_robo_campaign ? ' (Robo)' : '' %></option><% }) %>
+        </select>
+    </div>
+    <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+    <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+    <div><button class="tl-btn" type="submit">Run Report</button></div>
+    <% if (campaignId) { %>
+    <div><a class="tl-btn secondary" href="/export/campaign?format=csv&campaign_id=<%= campaignId %>&from=<%= from %>&to=<%= to %>">Export CSV</a></div>
+    <% } %>
+</form>
+
+<% if (voiceSummary) { %>
+<h2>Voice Summary</h2>
+<div class="tl-grid">
+    <div class="tl-card"><div class="tl-kpi-value"><%= voiceSummary.attempted %></div><div class="tl-kpi-label">Attempted</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= voiceSummary.connected %></div><div class="tl-kpi-label">Connected</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= voiceSummary.failed %></div><div class="tl-kpi-label">Failed</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= voiceSummary.abandoned %></div><div class="tl-kpi-label">Abandoned</div></div>
+    <div class="tl-card"><div class="tl-kpi-value"><%= voiceSummary.aht_seconds != null ? Math.round(voiceSummary.aht_seconds)+'s' : '—' %></div><div class="tl-kpi-label">AHT</div></div>
+</div>
+<% } %>
+
+<% if (selected && selected.is_robo_campaign) { %>
+<h2>Robo / Voice-Blast Reach</h2>
+<table>
+<tr><th>Hour</th><th>Attempted</th><th>Connected</th><th>Failed</th><th>Busy</th><th>Likely Hangups</th><th>Avg Message Length</th><th>Survey Responses</th></tr>
+<% roboSummary.forEach(r => { %>
+<tr>
+    <td><%= r.hour_bucket %></td><td><%= r.calls_attempted %></td><td><%= r.calls_connected %></td>
+    <td><%= r.calls_failed %></td><td><%= r.calls_busy %></td><td><%= r.likely_hangups %></td>
+    <td><%= r.avg_message_seconds != null ? Math.round(r.avg_message_seconds)+'s' : '—' %></td>
+    <td><%= r.survey_responses_captured %></td>
+</tr>
+<% }) %>
+<% if (roboSummary.length === 0) { %><tr><td colspan="8">No data for this range yet.</td></tr><% } %>
+</table>
+
+<h2>Survey Response Distribution</h2>
+<table>
+<tr><th>Question Node</th><th>Answer (DTMF)</th><th>Responses</th></tr>
+<% surveyResults.forEach(r => { %>
+<tr><td><%= r.node_name %></td><td><%= r.response_dtmf || '(no response)' %></td><td><%= r.total %></td></tr>
+<% }) %>
+<% if (surveyResults.length === 0) { %><tr><td colspan="3">No survey responses captured yet for this range.</td></tr><% } %>
+</table>
+<% } %>
+<%- include('../partials/foot') %>

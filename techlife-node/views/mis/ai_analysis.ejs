@@ -1,0 +1,25 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>AI Analysis</h1>
+<p class="tl-subtitle">Explore report data and generate transparent data-derived summaries.</p>
+<p><strong>Analysis mode:</strong> Local deterministic analysis. This page does not currently call an external AI provider and does not send tenant data outside TECH-Life.</p>
+<form method="get" class="tl-filters">
+  <div><label>Dataset</label><select name="dataset">
+    <% datasets.forEach(d => { %><option value="<%= d.key %>" <%= d.key === selectedKey ? 'selected' : '' %>><%= d.label %></option><% }) %>
+  </select></div>
+  <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+  <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+  <input type="hidden" name="run" value="1">
+  <div><button class="tl-btn" type="submit">Analyze Data</button></div>
+</form>
+<% if (analysis) { %>
+<h2><%= analysis.label %></h2>
+<div class="tl-grid"><div class="tl-card"><div class="tl-kpi-value"><%= analysis.rowCount %></div><div class="tl-kpi-label">Rows Analyzed</div></div></div>
+<% if (analysis.empty) { %><p>No records were found in the selected period. There is not enough data to derive trends.</p><% } else { %>
+<h3>Numeric Totals</h3><table><tr><th>Metric</th><th>Total</th></tr>
+<% analysis.totals.forEach(t => { %><tr><td><%= t.column %></td><td><%= Number(t.total).toLocaleString() %></td></tr><% }) %>
+<% if (!analysis.totals.length) { %><tr><td colspan="2">This dataset has no numeric metrics to summarize.</td></tr><% } %>
+</table>
+<% } %>
+<% } %>
+<%- include('../partials/foot') %>

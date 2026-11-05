@@ -17,6 +17,7 @@ const trunkCredentialCrypto = require('../src/trunkCredentialCrypto');
 const phoneMasker = require('../src/phoneMasker');
 const { resolveTenantContext } = require('../src/tenantContext');
 const { loadTenantAppearance } = require('../src/tenantAppearance');
+const { requireFeature, requireAllFeatures, loadTenantFeatures } = require('../src/tenantFeatures');
 const { audioUpload, leadsUpload } = require('../src/uploadMiddleware');
 const { parse } = require('csv-parse/sync');
 const fs = require('fs');
@@ -35,6 +36,36 @@ router.use((req, res, next) => {
 router.use(requireRole(['admin']));
 router.use(resolveTenantContext);
 router.use(loadTenantAppearance);
+router.use(loadTenantFeatures);
+
+// Tenant module enforcement. These checks run after effective tenant
+// resolution, so reseller tenant switching is enforced correctly.
+router.use('/recording-settings', requireFeature('call_recording'));
+router.use('/queues', requireFeature('queues'));
+router.use('/trunks', requireFeature('sip_trunks'));
+router.use('/prefixes', requireFeature('outbound'));
+router.use('/inbound-groups', requireFeature('inbound'));
+router.use('/dids', requireFeature('inbound'));
+router.use('/campaigns', requireFeature('campaigns'));
+router.use('/campaigns/:id/leads', requireAllFeatures('campaigns', 'list_management'));
+router.use('/dnc', requireFeature('dnc_management'));
+router.use('/robo-agents', requireAllFeatures('campaigns', 'robo_agents'));
+router.use('/callbacks', requireFeature('callback_management'));
+router.use('/lists', requireFeature('list_management'));
+router.use('/cli-settings', requireFeature('caller_id'));
+router.use('/privacy-settings', requireFeature('privacy_masking'));
+router.use('/ivr', requireFeature('ivr'));
+router.use('/chat-widget', requireFeature('webchat'));
+router.use('/mattermost', requireFeature('mattermost'));
+router.use('/crm-integration', requireFeature('crm_integration'));
+router.use('/skill-routing', requireFeature('skill_routing'));
+router.use('/skills', requireFeature('skills'));
+router.use('/dispositions', requireFeature('dispositions'));
+router.use('/user-groups', requireFeature('user_groups'));
+router.use('/pause-codes', requireFeature('pause_codes'));
+router.use('/media-assets', requireFeature('media_assets'));
+router.use('/audit-logs', requireFeature('audit_logs'));
+router.use('/staff-chat', requireFeature('staff_chat'));
 router.use('/staff-chat', require('./staffChat')('admin'));
 
 /**
@@ -5657,15 +5688,27 @@ router.post('/skill-routing/queues/:id/members/add', async (req, res) => {
 
     try {
         const result = await pool.query(
-            `INSERT INTO queue_agents (queue_id, agent_id, penalty, is_active)
-             SELECT q.id, a.id, $4, TRUE
+            `INSERT INTO queue_agents
+                (tenant_id, queue_id, agent_id, penalty, is_active)
+             SELECT $2, q.id, a.id, $4, TRUE
                FROM queues q
-               JOIN agents a ON a.tenant_id = q.tenant_id
-              WHERE q.id = $1 AND q.tenant_id = $2
+               JOIN agents a
+                 ON a.tenant_id = q.tenant_id
+               JOIN users u
+                 ON u.id = a.user_id
+                AND u.tenant_id = a.tenant_id
+              WHERE q.id = $1
+                AND q.tenant_id = $2
+                AND q.is_active = TRUE
                 AND a.id = $3
+                AND a.is_active = TRUE
+                AND u.is_active = TRUE
              ON CONFLICT (queue_id, agent_id)
-             DO UPDATE SET penalty = EXCLUDED.penalty, is_active = TRUE
-             RETURNING queue_id, agent_id`,
+             DO UPDATE SET
+                tenant_id = EXCLUDED.tenant_id,
+                penalty = EXCLUDED.penalty,
+                is_active = TRUE
+             RETURNING tenant_id, queue_id, agent_id`,
             [queueId, t, agentId, penalty]
         );
 

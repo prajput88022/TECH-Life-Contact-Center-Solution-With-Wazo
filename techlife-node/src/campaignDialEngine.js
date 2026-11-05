@@ -16,6 +16,7 @@
 
 const { pool } = require('./db');
 const wazoAgentService = require('./wazoAgentService');
+const { tenantHasFeatures } = require('./tenantFeatures');
 
 const ACTIVE_CLAIM_STATUSES = ['claimed', 'originating', 'ringing', 'in_flight'];
 const LIVE_AGENT_MODES = new Set(['progressive']);
@@ -420,6 +421,20 @@ async function claimCampaignLeads(tenantId, campaignId, requestedLimit = 5) {
         return { ok: false, claimed: [], reason: 'campaign_not_active' };
     }
 
+    const runtimeFeature = campaignSnapshot.is_robo_campaign
+        ? 'robo_agents'
+        : 'auto_dialer';
+    const requiredFeatures = ['campaigns', runtimeFeature];
+
+    if (!(await tenantHasFeatures(tenantId, requiredFeatures))) {
+        return {
+            ok: false,
+            claimed: [],
+            reason: 'tenant_feature_disabled',
+            features: requiredFeatures
+        };
+    }
+
     if (campaignSnapshot.dialing_mode === 'preview') {
         return { ok: false, claimed: [], reason: 'preview_mode_never_auto_dials' };
     }
@@ -483,6 +498,25 @@ async function claimCampaignLeads(tenantId, campaignId, requestedLimit = 5) {
         ) {
             await client.query('ROLLBACK');
             return { ok: false, claimed: [], reason: 'campaign_configuration_changed' };
+        }
+
+        // Recheck while holding the campaign transaction. Existing feature
+        // rows are share-locked so a concurrent toggle cannot race this claim.
+        const lockedRuntimeFeature = campaign.is_robo_campaign
+            ? 'robo_agents'
+            : 'auto_dialer';
+        const lockedRequiredFeatures = ['campaigns', lockedRuntimeFeature];
+
+        if (!(await tenantHasFeatures(
+            tenantId, lockedRequiredFeatures, client, true
+        ))) {
+            await client.query('ROLLBACK');
+            return {
+                ok: false,
+                claimed: [],
+                reason: 'tenant_feature_disabled',
+                features: lockedRequiredFeatures
+            };
         }
 
         if (campaign.dialing_mode === 'preview' || !withinCallingHours(campaign)) {

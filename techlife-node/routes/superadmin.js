@@ -166,9 +166,23 @@ router.post('/users/create', async (req, res) => {
     }
 });
 
-const FEATURE_KEYS = ['voice','inbound','outbound','call_recording','webrtc','video_calling',
-    'omnichannel','campaigns','auto_dialer','queues','call_monitoring','barge','whisper',
-    'call_listening','mis_reports'];
+// Canonical tenant feature allowlist. Keep existing keys for compatibility;
+// new keys correspond to actual TECH-Life navigation and application modules.
+const FEATURE_KEYS = [
+    'voice', 'inbound', 'outbound', 'internal_calling',
+    'call_recording', 'webrtc', 'video_calling', 'omnichannel',
+    'campaigns', 'auto_dialer', 'queues', 'call_monitoring',
+    'barge', 'whisper', 'call_listening', 'mis_reports',
+    'sip_trunks', 'mattermost', 'skills', 'dispositions',
+    'user_groups', 'pause_codes', 'skill_routing', 'robo_agents',
+    'list_management', 'callback_management', 'media_assets',
+    'ivr', 'caller_id', 'dnc_management', 'privacy_masking',
+    'crm_integration', 'webchat', 'staff_chat', 'audit_logs'
+];
+
+const DEFAULT_FEATURE_KEYS = new Set([
+    'voice', 'inbound', 'outbound', 'internal_calling'
+]);
 
 router.get('/tenants', async (req, res) => {
     const tenants = (await pool.query(
@@ -182,18 +196,28 @@ router.get('/tenants', async (req, res) => {
         const rows = (await pool.query('SELECT feature_key, is_enabled FROM tenant_features WHERE tenant_id = $1', [editId])).rows;
         rows.forEach((r) => { editFeatures[r.feature_key] = r.is_enabled; });
     }
-    res.render('superadmin/tenants', { pageTitle: 'Superadmin — Tenants', tenants, editId, editFeatures, featureKeys: FEATURE_KEYS });
+    res.render('superadmin/tenants', {
+        pageTitle: 'Superadmin — Tenants',
+        tenants, editId, editFeatures,
+        featureKeys: FEATURE_KEYS,
+        defaultFeatureKeys: DEFAULT_FEATURE_KEYS
+    });
 });
 
 router.post('/tenants/create', async (req, res) => {
-    const { name, slug, feature, tenant_type, admin_username, admin_password, admin_full_name, admin_email } = req.body;
+    const {
+        name, slug, feature, feature_form_submitted, tenant_type,
+        admin_username, admin_password, admin_full_name, admin_email
+    } = req.body;
     const result = await pool.query(
         'INSERT INTO tenants (name, slug, tenant_type) VALUES ($1,$2,$3) RETURNING id',
         [name, slug, tenant_type === 'reseller' ? 'reseller' : 'normal']
     );
     const newId = result.rows[0].id;
     for (const fk of FEATURE_KEYS) {
-        const enabled = !!(feature && feature[fk] !== undefined);
+        const enabled = feature_form_submitted === '1'
+            ? !!(feature && Object.prototype.hasOwnProperty.call(feature, fk))
+            : DEFAULT_FEATURE_KEYS.has(fk);
         await pool.query('INSERT INTO tenant_features (tenant_id, feature_key, is_enabled) VALUES ($1,$2,$3)', [newId, fk, enabled]);
     }
 
@@ -226,14 +250,119 @@ router.post('/tenants/:id/set-type', async (req, res) => {
     res.redirect('/superadmin/tenants');
 });
 
+router.post('/tenants/save-features', async (req, res) => {
+    const tenantId = req.body.tenant_id;
+    const submitted = req.body.feature_form_submitted;
+    const selected = req.body.feature || {};
+
+    // A missing marker could mean a malformed request, not an intentional
+    // request to disable every checkbox.
+    if (submitted !== '1') {
+        return res.status(400).send('Feature form submission could not be verified.');
+    }
+    if (typeof tenantId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+        return res.status(400).send('Invalid tenant ID.');
+    }
+    if (!selected || typeof selected !== 'object' || Array.isArray(selected)) {
+        return res.status(400).send('Invalid feature selection.');
+    }
+
+    // Reject unknown keys rather than accepting arbitrary feature names.
+    const unknownKeys = Object.keys(selected).filter((key) => !FEATURE_KEYS.includes(key));
+    if (unknownKeys.length) {
+        return res.status(400).send('Unknown feature key: ' + unknownKeys.join(', '));
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const tenant = await client.query(
+            'SELECT id FROM tenants WHERE id = $1 FOR UPDATE',
+            [tenantId]
+        );
+        if (!tenant.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).send('Tenant not found.');
+        }
+
+        for (const key of FEATURE_KEYS) {
+            const value = Object.prototype.hasOwnProperty.call(selected, key)
+                ? selected[key]
+                : undefined;
+
+            if (value !== undefined && value !== '1' && value !== 'on' && value !== true) {
+                await client.query('ROLLBACK');
+                return res.status(400).send('Invalid value for feature: ' + key);
+            }
+
+            const enabled = value === '1' || value === 'on' || value === true;
+
+            await client.query(
+                `INSERT INTO tenant_features (tenant_id, feature_key, is_enabled)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (tenant_id, feature_key)
+                 DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = now()`,
+                [tenantId, key, enabled]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        await writeAuditLog(
+            req.session.user.tenantId,
+            req.session.user.id,
+            'TENANT_FEATURES_UPDATED',
+            'tenant',
+            tenantId,
+            null,
+            { enabled_features: FEATURE_KEYS.filter((key) =>
+                Object.prototype.hasOwnProperty.call(selected, key)
+            ) }
+        );
+
+        return res.redirect('/superadmin/tenants?edit=' + encodeURIComponent(tenantId));
+    } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        console.error('Tenant feature update failed:', err);
+        return res.status(500).send('Could not save tenant features. Check the server log.');
+    } finally {
+        client.release();
+    }
+});
+
+// Retain the old single-feature endpoint for compatibility with any older
+// page or integration, but apply the same strict tenant/key validation.
 router.post('/tenants/toggle-feature', async (req, res) => {
     const { tenant_id, feature_key, enabled } = req.body;
-    await pool.query(
-        `INSERT INTO tenant_features (tenant_id, feature_key, is_enabled) VALUES ($1,$2,$3)
-         ON CONFLICT (tenant_id, feature_key) DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = now()`,
-        [tenant_id, feature_key, enabled === '1']
-    );
-    res.redirect(`/superadmin/tenants?edit=${tenant_id}`);
+
+    if (!FEATURE_KEYS.includes(feature_key)) {
+        return res.status(400).send('Unknown feature key.');
+    }
+    if (typeof tenant_id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenant_id)) {
+        return res.status(400).send('Invalid tenant ID.');
+    }
+    if (enabled !== '0' && enabled !== '1') {
+        return res.status(400).send('Invalid feature state.');
+    }
+
+    try {
+        const tenant = await pool.query('SELECT id FROM tenants WHERE id = $1', [tenant_id]);
+        if (!tenant.rows.length) return res.status(404).send('Tenant not found.');
+
+        await pool.query(
+            `INSERT INTO tenant_features (tenant_id, feature_key, is_enabled)
+             VALUES ($1,$2,$3)
+             ON CONFLICT (tenant_id, feature_key)
+             DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = now()`,
+            [tenant_id, feature_key, enabled === '1']
+        );
+        return res.redirect('/superadmin/tenants?edit=' + encodeURIComponent(tenant_id));
+    } catch (err) {
+        console.error('Single tenant feature update failed:', err);
+        return res.status(500).send('Could not update tenant feature.');
+    }
 });
 
 router.post('/tenants/:id/toggle-active', async (req, res) => {

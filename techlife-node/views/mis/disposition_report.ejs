@@ -1,0 +1,16 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Disposition and Conversion Report</h1>
+<p class="tl-subtitle">Call outcomes grouped by disposition, with conversion and transfer totals.</p>
+<form method="get" class="tl-filters">
+  <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+  <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+  <div><button class="tl-btn" type="submit">Run Report</button></div>
+  <div><a class="tl-btn secondary" href="/export/dispositions?format=csv&from=<%= from %>&to=<%= to %>">CSV</a></div>
+  <div><a class="tl-btn secondary" href="/export/dispositions?format=xlsx&from=<%= from %>&to=<%= to %>">Excel</a></div>
+</form>
+<table><tr><% headers.forEach(h => { %><th><%= h %></th><% }) %></tr>
+<% rows.forEach(r => { %><tr><% Object.keys(r).forEach(k => { %><td><%= r[k] == null ? '' : r[k] %></td><% }) %></tr><% }) %>
+<% if (!rows.length) { %><tr><td colspan="<%= headers.length %>">No dispositions recorded for this range.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

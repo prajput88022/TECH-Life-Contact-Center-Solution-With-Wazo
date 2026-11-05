@@ -6,6 +6,7 @@
  */
 const express = require('express');
 const router = express.Router();
+const { pool } = require('../src/db');
 const ExcelJS = require('exceljs');
 const { stringify } = require('csv-stringify/sync');
 const { requireAuth, requireRole } = require('../src/auth');
@@ -14,8 +15,21 @@ const queueReportService = require('../src/services/queueReportService');
 const didReportService = require('../src/services/didReportService');
 const campaignReportService = require('../src/services/campaignReportService');
 const callRecordService = require('../src/services/callRecordService');
+const customMisReportService = require('../src/services/customMisReportService');
+const { requireFeature, tenantHasFeatures } = require('../src/tenantFeatures');
 
 router.use(requireAuth);
+router.use(requireFeature('mis_reports'));
+router.use('/agent-hourly', requireFeature('voice'));
+router.use('/agent-performance', requireFeature('voice'));
+router.use('/omnichannel', requireFeature('omnichannel'));
+router.use('/list-wise', requireFeature('list_management'));
+router.use('/dispositions', requireFeature('voice'));
+router.use('/dispositions', requireFeature('dispositions'));
+router.use('/queue', requireFeature('queues'));
+router.use('/did', requireFeature('inbound'));
+router.use('/campaign', requireFeature('campaigns'));
+router.use('/calls', requireFeature('voice'));
 
 function formatCell(value) {
     if (value instanceof Date) {
@@ -76,12 +90,114 @@ router.get('/did', requireRole(['mis_agent', 'supervisor', 'admin', 'superadmin'
     await sendExport(res, header, rows, 'did_report', format);
 });
 
-router.get('/campaign', requireRole(['mis_agent', 'supervisor', 'admin', 'superadmin']), async (req, res) => {
-    const { campaign_id, from, to, format } = req.query;
-    const summary = await campaignReportService.summary(req.session.user.tenantId, campaign_id, from, to);
-    const header = ['Channel', 'Event Type', 'Total'];
-    const rows = summary.by_channel.map((r) => [r.channel, r.event_type, r.total]);
-    await sendExport(res, header, rows, 'campaign_report', format);
+router.get('/campaign', requireRole(['mis_agent', 'supervisor', 'admin', 'superadmin']), async (req, res, next) => {
+    try {
+        const u = req.session.user;
+        const { from, to } = exportDateRange(req);
+        const campaignId = String(req.query.campaign_id || '');
+
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(campaignId)) {
+            return res.status(400).send('A valid campaign_id is required.');
+        }
+
+        const summary = await campaignReportService.summary(
+            u.tenantId, campaignId, from, to
+        );
+
+        const header = [
+            'Section', 'Metric', 'Value',
+            'Hour', 'Node', 'DTMF', 'Responses'
+        ];
+        const rows = [];
+
+        for (const [key, value] of Object.entries(summary.voice || {})) {
+            rows.push(['Voice', key, value ?? '', '', '', '', '']);
+        }
+
+        for (const [key, value] of Object.entries(summary.leads || {})) {
+            rows.push(['Leads', key, value ?? '', '', '', '', '']);
+        }
+
+        for (const event of summary.by_channel || []) {
+            rows.push([
+                'Channel Events',
+                `${event.channel}: ${event.event_type}`,
+                event.total,
+                '', '', '', ''
+            ]);
+        }
+
+        if (summary.campaign.is_robo_campaign) {
+            const hourly = await campaignReportService.roboHourly(
+                u.tenantId, campaignId, from, to
+            );
+
+            for (const item of hourly) {
+                rows.push([
+                    'Robo Hourly',
+                    'Calls attempted',
+                    item.calls_attempted,
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Calls connected',
+                    item.calls_connected,
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Calls failed',
+                    item.calls_failed,
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Calls busy',
+                    item.calls_busy,
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Likely hangups',
+                    item.likely_hangups,
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Average message seconds',
+                    item.avg_message_seconds ?? '',
+                    item.hour_bucket, '', '', ''
+                ]);
+                rows.push([
+                    'Robo Hourly',
+                    'Survey responses captured',
+                    item.survey_responses_captured,
+                    item.hour_bucket, '', '', ''
+                ]);
+            }
+
+            const survey = await campaignReportService.surveyDistribution(
+                u.tenantId, campaignId, from, to
+            );
+
+            for (const item of survey) {
+                rows.push([
+                    'Survey Distribution',
+                    'DTMF response',
+                    '',
+                    '',
+                    item.node_name,
+                    item.response_dtmf ?? '',
+                    item.total
+                ]);
+            }
+        }
+
+        await sendExport(res, header, rows, 'campaign_report', req.query.format);
+    } catch (err) {
+        return next(err);
+    }
 });
 
 // CDR export: 'context' is 'supervisor' or 'agent' -- decides which
@@ -130,5 +246,142 @@ router.get('/calls', async (req, res) => {
     ]);
     await sendExport(res, header, rows, `cdr_${context}`, format);
 });
+
+
+
+// Validate export date parameters before passing them to report services.
+function validExportDate(value) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) &&
+        !Number.isNaN(Date.parse(String(value) + 'T00:00:00Z')) &&
+        new Date(String(value) + 'T00:00:00Z').toISOString().slice(0, 10) === String(value);
+}
+
+function exportDateRange(req) {
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!validExportDate(from) || !validExportDate(to) || from > to) {
+        const err = new Error('Valid from and to dates are required for report exports.');
+        err.status = 400;
+        throw err;
+    }
+    return { from, to };
+}
+
+router.get('/agent-performance', requireRole(['mis_agent','supervisor','admin','superadmin']), async (req, res, next) => {
+    try {
+        const u = req.session.user;
+        const { from, to } = exportDateRange(req);
+        const agentId = String(req.query.agent_id || '');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(agentId)) {
+            return res.status(400).send('A valid agent_id is required.');
+        }
+
+        const owner = await pool.query(
+            'SELECT 1 FROM agents WHERE id=$1 AND tenant_id=$2 AND is_active=TRUE',
+            [agentId, u.tenantId]
+        );
+        if (!owner.rowCount) return res.status(400).send('Agent does not belong to this tenant.');
+
+        const includeOmni = await tenantHasFeatures(u.tenantId, ['omnichannel']);
+        const data = await agentReportService.performance(
+            u.tenantId, agentId, from, to, { includeOmni }
+        );
+        const header = [
+            'Metric','Value'
+        ];
+        const rows = [
+            ['Inbound Calls',data.voice.inbound_calls],
+            ['Outbound Calls',data.voice.outbound_calls],
+            ['Answered Calls',data.voice.answered_calls],
+            ['Missed Calls',data.voice.missed_calls],
+            ['Abandoned Calls',data.voice.abandoned_calls],
+            ['Talk Seconds',data.voice.talk_seconds],
+            ['Hold Seconds',data.voice.hold_seconds],
+            ['Call ACW Seconds',data.voice.acw_seconds],
+            ['Average Handle Time Seconds',data.voice.aht_seconds],
+            ['Transfers',data.voice.transfers],
+            ['Logged In Seconds',data.status.total_logged_in],
+            ['Available Seconds',data.status.available_seconds],
+            ['Break Seconds',data.status.break_seconds],
+            ['Status ACW Seconds',data.status.acw_seconds],
+            ['Total Interactions',data.total_interactions],
+            ['Conversions',data.total_conversions],
+            ['Conversion Rate',data.conversion_rate],
+            ['Occupancy',data.occupancy],
+            ['Productivity',data.productivity],
+            ...(data.omni || []).flatMap(channel => [
+                [`Omnichannel ${channel.channel} Handled`, channel.handled],
+                [`Omnichannel ${channel.channel} Responded`, channel.responded],
+                [`Omnichannel ${channel.channel} Closed`, channel.closed],
+                [`Omnichannel ${channel.channel} Avg First Response Seconds`, channel.avg_first_response_seconds],
+                [`Omnichannel ${channel.channel} Avg Duration Seconds`, channel.avg_duration_seconds]
+            ])
+        ];
+        await sendExport(res, header, rows, 'agent_performance', req.query.format);
+    } catch (err) { next(err); }
+});
+
+router.get('/omnichannel', requireRole(['mis_agent','supervisor','admin','superadmin']), async (req, res, next) => {
+    try {
+        const { from, to } = exportDateRange(req);
+        const result = await customMisReportService.run(
+            req.session.user.tenantId, 'omnichannel', null, from, to
+        );
+        await sendExport(res, result.headers, result.rows.map(row =>
+            result.columns.map(column => row[column])
+        ), 'omnichannel_report', req.query.format);
+    } catch (err) { next(err); }
+});
+
+router.get('/list-wise', requireRole(['mis_agent','supervisor','admin','superadmin']), async (req, res, next) => {
+    try {
+        const { from, to } = exportDateRange(req);
+        const result = await customMisReportService.run(
+            req.session.user.tenantId, 'lists', null, from, to
+        );
+        await sendExport(res, result.headers, result.rows.map(row =>
+            result.columns.map(column => row[column])
+        ), 'list_wise_report', req.query.format);
+    } catch (err) { next(err); }
+});
+
+router.get('/dispositions', requireRole(['mis_agent','supervisor','admin','superadmin']), async (req, res, next) => {
+    try {
+        const { from, to } = exportDateRange(req);
+        const result = await customMisReportService.run(
+            req.session.user.tenantId, 'dispositions', null, from, to
+        );
+        await sendExport(res, result.headers, result.rows.map(row =>
+            result.columns.map(column => row[column])
+        ), 'disposition_report', req.query.format);
+    } catch (err) { next(err); }
+});
+
+router.get('/custom', requireRole(['mis_agent','supervisor','admin','superadmin']), async (req, res, next) => {
+    try {
+        const u = req.session.user;
+        const { from, to } = exportDateRange(req);
+        const key = String(req.query.dataset || '');
+        const definition = customMisReportService.getDataset(key);
+        if (!definition) return res.status(400).send('Unknown report dataset.');
+
+        if (!u.roles?.includes('superadmin')) {
+            const allowed = await tenantHasFeatures(u.tenantId, definition.features);
+            if (!allowed) return res.status(403).send('This report is not enabled for this tenant.');
+        }
+
+        const requested = req.query.columns
+            ? (Array.isArray(req.query.columns) ? req.query.columns : [req.query.columns])
+            : null;
+
+        const result = await customMisReportService.run(
+            u.tenantId, key, requested, from, to
+        );
+        await sendExport(res, result.headers, result.rows.map(row =>
+            result.columns.map(column => row[column])
+        ), `custom_${key}`, req.query.format);
+    } catch (err) { next(err); }
+});
+
 
 module.exports = router;

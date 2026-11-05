@@ -1,0 +1,16 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Omnichannel Report</h1>
+<p class="tl-subtitle">Conversation volumes, first responses, message activity and handling time by channel and agent.</p>
+<form method="get" class="tl-filters">
+  <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+  <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+  <div><button class="tl-btn" type="submit">Run Report</button></div>
+  <div><a class="tl-btn secondary" href="/export/omnichannel?format=csv&from=<%= from %>&to=<%= to %>">CSV</a></div>
+  <div><a class="tl-btn secondary" href="/export/omnichannel?format=xlsx&from=<%= from %>&to=<%= to %>">Excel</a></div>
+</form>
+<table><tr><th>Channel</th><th>Agent</th><th>Conversations</th><th>Responded</th><th>Closed</th><th>Open</th><th>Avg First Response (s)</th><th>Avg Duration (s)</th><th>Messages</th></tr>
+<% rows.forEach(r => { %><tr><td><%= r.channel %></td><td><%= r.agent_name %></td><td><%= r.conversations %></td><td><%= r.responded %></td><td><%= r.closed %></td><td><%= r.open %></td><td><%= r.avg_first_response_seconds ?? '—' %></td><td><%= r.avg_duration_seconds ?? '—' %></td><td><%= r.messages %></td></tr><% }) %>
+<% if (!rows.length) { %><tr><td colspan="9">No omnichannel conversations in this date range.</td></tr><% } %>
+</table>
+<%- include('../partials/foot') %>

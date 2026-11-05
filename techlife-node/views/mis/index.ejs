@@ -8,14 +8,45 @@
     <div class="tl-card"><div class="tl-kpi-value"><%= kpis.abandoned_today %></div><div class="tl-kpi-label">Abandoned Today</div></div>
     <div class="tl-card"><div class="tl-kpi-value"><%= kpis.conversations_today %></div><div class="tl-kpi-label">Chat/Email Today</div></div>
 </div>
+<%
+const reportFlags = (typeof tenantFeatures !== 'undefined' && tenantFeatures)
+    ? tenantFeatures : null;
+const canReport = key => !reportFlags || reportFlags[key] === true;
+const canAllReports = (...keys) => keys.every(canReport);
+%>
 <h2>Available Reports</h2>
 <ul>
-    <li><a href="/mis/agent-hourly">Agent Hourly / Daily / Weekly Report</a></li>
-    <li><a href="/mis/login-activity">Agent Login/Logout Report</a></li>
-    <li><a href="/mis/queue-report">Queue Performance Report</a></li>
-    <li><a href="/mis/campaign-report">Campaign Report (incl. Robo/Survey results)</a></li>
-    <li><a href="/mis/did-report">DID Performance Report</a></li>
-    <li><a href="/mis/ivr-journey">IVR Journey Viewer</a></li>
-    <li><a href="/mis/recordings">Recordings</a></li>
+    <% if (canReport('voice')) { %>
+        <li><a href="/mis/agent-hourly">Agent Hourly Report</a></li>
+        <li><a href="/mis/agent-performance">Agent Performance Report (APR)</a></li>
+        <li><a href="/mis/login-activity">Agent Login/Logout Report</a></li>
+        <li><a href="/mis/disposition-report">Disposition and Conversion Report</a></li>
+    <% } %>
+    <% if (canReport('queues')) { %>
+        <li><a href="/mis/queue-report">Queue Performance Report</a></li>
+    <% } %>
+    <% if (canReport('campaigns')) { %>
+        <li><a href="/mis/campaign-report">Campaign Report (including Robo/Survey results)</a></li>
+    <% } %>
+    <% if (canReport('list_management')) { %>
+        <li><a href="/mis/list-report">List-wise Lead Performance</a></li>
+    <% } %>
+    <% if (canReport('omnichannel')) { %>
+        <li><a href="/mis/omnichannel-report">Omnichannel Report</a></li>
+    <% } %>
+    <% if (canReport('callback_management')) { %>
+        <li><a href="/mis/callback-report">Callback Report</a></li>
+    <% } %>
+    <% if (canReport('inbound')) { %>
+        <li><a href="/mis/did-report">DID Performance Report</a></li>
+    <% } %>
+    <% if (canReport('ivr')) { %>
+        <li><a href="/mis/ivr-journey">IVR Journey Viewer</a></li>
+    <% } %>
+    <% if (canReport('call_recording')) { %>
+        <li><a href="/mis/recordings">Recordings</a></li>
+    <% } %>
+    <li><a href="/mis/custom-reports">Custom Report Builder</a></li>
+    <li><a href="/mis/ai-analysis">AI Analysis</a></li>
 </ul>
 <%- include('../partials/foot') %>

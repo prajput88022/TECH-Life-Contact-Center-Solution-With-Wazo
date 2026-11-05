@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { pool } = require('../src/db');
 const config = require('../config/config');
 const { wazoFetch } = require('../src/wazoFetch');
+const { tenantHasFeatures } = require('../src/tenantFeatures');
 
 async function getToken() {
     const resp = await wazoFetch(`${config.wazo.authUrl.replace(/\/$/, '')}/token`, {
@@ -93,6 +94,11 @@ async function nextLeadsToDial(tenantId, campaignId, limit) {
 async function claimNextRoboLeads(tenantId, campaignId, limit) {
     const safeLimit = Math.max(0, Math.min(100, Number.parseInt(limit, 10) || 0));
     if (!safeLimit) return [];
+
+    // Missing or disabled flags must never result in Robo lead claims.
+    if (!(await tenantHasFeatures(tenantId, ['campaigns', 'robo_agents']))) {
+        return [];
+    }
 
     const result = await pool.query(
         `WITH claim_owner AS (SELECT gen_random_uuid() AS token),
@@ -218,6 +224,16 @@ async function claimNextRoboLeads(tenantId, campaignId, limit) {
 }
 
 async function originateRoboCall(campaign, lead) {
+    if (!(await tenantHasFeatures(
+        campaign.tenant_id, ['campaigns', 'robo_agents']
+    ))) {
+        return {
+            ok: false,
+            skipped: true,
+            reason: 'tenant_feature_disabled'
+        };
+    }
+
     // Safe-by-default: the correct tenant outbound route and source user
     // must be configured and tested before this feature can place calls.
     if (process.env.ROBO_AGENT_LIVE_DIALING_ENABLED !== 'true') {
@@ -239,13 +255,27 @@ async function originateRoboCall(campaign, lead) {
 }
 
 async function runTick(tenantId, campaignId) {
+    const campaign = await getCampaign(tenantId, campaignId);
+    if (!campaign || !campaign.is_robo_campaign || !campaign.is_active) {
+        return { ok: true, skipped: true, reason: 'campaign_not_active' };
+    }
+
+    if (!(await tenantHasFeatures(tenantId, ['campaigns', 'robo_agents']))) {
+        return {
+            ok: true,
+            skipped: true,
+            reason: 'tenant_feature_disabled',
+            features: ['campaigns', 'robo_agents']
+        };
+    }
+
     if (process.env.ROBO_AGENT_LIVE_DIALING_ENABLED !== 'true') {
         return { ok: true, skipped: true, reason: 'live_dialing_disabled' };
     }
 
-    const campaign = await getCampaign(tenantId, campaignId);
-    if (!campaign || !campaign.is_robo_campaign || !campaign.is_active) return;
-    if (!withinCallingHours(campaign)) return;
+    if (!withinCallingHours(campaign)) return {
+        ok: true, skipped: true, reason: 'outside_calling_hours'
+    };
 
     const capacity = computeConcurrentCapacity(campaign);
     const inFlight = await countInFlightRoboCalls(tenantId, campaignId);

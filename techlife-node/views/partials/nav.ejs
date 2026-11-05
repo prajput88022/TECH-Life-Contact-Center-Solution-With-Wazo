@@ -71,19 +71,92 @@ const navGroups = {
         ]},
         { label: 'Reports', items: [
             { label: 'Agent Hourly', href: '/mis/agent-hourly', icon: 'schedule' },
-            { label: 'Callback Report', href: '/mis/callback-report', icon: 'calendar-clock' },
+            { label: 'Agent Performance (APR)', href: '/mis/agent-performance', icon: 'analytics' },
             { label: 'Agent Login/Logout', href: '/mis/login-activity', icon: 'login' },
             { label: 'Queue Report', href: '/mis/queue-report', icon: 'queue' },
             { label: 'Campaign Report', href: '/mis/campaign-report', icon: 'campaign' },
+            { label: 'List-wise Report', href: '/mis/list-report', icon: 'list' },
+            { label: 'Disposition Report', href: '/mis/disposition-report', icon: 'clipboard-check' },
+            { label: 'Omnichannel Report', href: '/mis/omnichannel-report', icon: 'messages-square' },
+            { label: 'Callback Report', href: '/mis/callback-report', icon: 'calendar-clock' },
             { label: 'DID Report', href: '/mis/did-report', icon: 'dialpad' },
             { label: 'IVR Journey', href: '/mis/ivr-journey', icon: 'account_tree' },
             { label: 'Recordings', href: '/mis/recordings', icon: 'graphic_eq' },
+            { label: 'Custom Report Builder', href: '/mis/custom-reports', icon: 'file-spreadsheet' },
+            { label: 'AI Analysis', href: '/mis/ai-analysis', icon: 'brain' },
         ]},
     ],
 };
 const roleLabels = { superadmin: 'Superadmin', admin: 'Admin', supervisor: 'Supervisor', agent: 'Agent', mis_agent: 'MIS Agent' };
 const primaryRole = (currentUser && currentUser.roles && currentUser.roles[0]) || 'agent';
-const groups = navGroups[primaryRole] || [];
+const tenantFeatureFlags =
+    (typeof tenantFeatures !== 'undefined' && tenantFeatures)
+        ? tenantFeatures : {};
+
+const navFeatureRequirements = {
+    '/admin/queues': ['queues'],
+    '/admin/skills': ['skills'],
+    '/admin/dispositions': ['dispositions'],
+    '/admin/user-groups': ['user_groups'],
+    '/admin/pause-codes': ['pause_codes'],
+    '/admin/skill-routing': ['skill_routing'],
+    '/admin/campaigns': ['campaigns'],
+    '/admin/robo-agents': ['campaigns', 'robo_agents'],
+    '/admin/lists': ['list_management'],
+    '/admin/callbacks': ['callback_management'],
+    '/admin/media-assets': ['media_assets'],
+    '/admin/recording-settings': ['call_recording'],
+    '/admin/ivr': ['ivr'],
+    '/admin/inbound-groups': ['inbound'],
+    '/admin/dids': ['inbound'],
+    '/admin/trunks': ['sip_trunks'],
+    '/admin/cli-settings': ['caller_id'],
+    '/admin/prefixes': ['outbound'],
+    '/admin/audit-logs': ['audit_logs'],
+    '/admin/dnc': ['dnc_management'],
+    '/admin/privacy-settings': ['privacy_masking'],
+    '/admin/crm-integration': ['crm_integration'],
+    '/admin/chat-widget': ['webchat'],
+    '/admin/mattermost': ['mattermost'],
+    '/admin/staff-chat': ['staff_chat'],
+
+    '/supervisor': ['voice', 'callback_management', 'dnc_management'],
+    '/supervisor/calls': ['voice'],
+    '/supervisor/chat': ['omnichannel'],
+    '/supervisor/staff-chat': ['staff_chat'],
+
+    '/agent': ['voice'],
+    '/agent/chat': ['omnichannel'],
+    '/agent/staff-chat': ['staff_chat'],
+    '/agent/calls': ['voice'],
+
+    '/mis': ['mis_reports'],
+    '/mis/agent-hourly': ['mis_reports', 'voice'],
+    '/mis/agent-performance': ['mis_reports', 'voice'],
+    '/mis/callback-report': ['mis_reports', 'callback_management'],
+    '/mis/login-activity': ['mis_reports', 'voice'],
+    '/mis/queue-report': ['mis_reports', 'queues'],
+    '/mis/campaign-report': ['mis_reports', 'campaigns'],
+    '/mis/list-report': ['mis_reports', 'list_management'],
+    '/mis/disposition-report': ['mis_reports', 'voice', 'dispositions'],
+    '/mis/omnichannel-report': ['mis_reports', 'omnichannel'],
+    '/mis/custom-reports': ['mis_reports'],
+    '/mis/ai-analysis': ['mis_reports'],
+    '/mis/did-report': ['mis_reports', 'inbound'],
+    '/mis/ivr-journey': ['mis_reports', 'ivr'],
+    '/mis/recordings': ['mis_reports', 'call_recording']
+};
+
+const groups = (navGroups[primaryRole] || [])
+    .map(group => ({
+        label: group.label,
+        items: group.items.filter(item => {
+            const required = navFeatureRequirements[item.href];
+            if (primaryRole === 'superadmin' || !required) return true;
+            return required.every(key => tenantFeatureFlags[key] === true);
+        })
+    }))
+    .filter(group => group.items.length > 0);
 const curPath = typeof currentPath !== 'undefined' ? currentPath : '';
 const initials = currentUser && (currentUser.fullName || currentUser.username)
     ? (currentUser.fullName || currentUser.username).split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase()
@@ -145,7 +218,7 @@ const effTenant = typeof effectiveTenant !== 'undefined' ? effectiveTenant : nul
         <% }) %>
     </nav>
 
-    <% if (primaryRole === 'agent' && curPath === '/agent') { %>
+    <% if (primaryRole === 'agent' && curPath === '/agent' && (primaryRole === 'superadmin' || tenantFeatureFlags.internal_calling === true)) { %>
     <details class="tl-sidebar-directory">
         <summary><span>Contacts & Agents</span><span class="tl-sidebar-dir-arrow">＋</span></summary>
         <div class="tl-sidebar-dir-body">
@@ -161,7 +234,7 @@ const effTenant = typeof effectiveTenant !== 'undefined' ? effectiveTenant : nul
             <p id="agentDirectoryMessage" class="tl-sidebar-dir-message" aria-live="polite"></p>
         </div>
     </details>
-    <% } else if (primaryRole === 'supervisor' && curPath === '/supervisor') { %>
+    <% } else if (primaryRole === 'supervisor' && curPath === '/supervisor' && (primaryRole === 'superadmin' || tenantFeatureFlags.internal_calling === true)) { %>
     <details class="tl-sidebar-directory">
         <summary><span>Contacts & Agents</span><span class="tl-sidebar-dir-arrow">＋</span></summary>
         <div class="tl-sidebar-dir-body">

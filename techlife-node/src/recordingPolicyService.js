@@ -176,7 +176,9 @@ async function processAgent(settings, agent, token, apply) {
     `, [tenantId, agent.id]);
 
     const state = stateResult.rows[0] || null;
-    const shouldRecord = settings.recording_enabled === true &&
+    const shouldRecord =
+        settings.call_recording_enabled === true &&
+        settings.recording_enabled === true &&
         agent.is_active === true;
     const desired = shouldRecord ? policyFlags(settings) :
         (state ? state.original_flags : null);
@@ -296,7 +298,15 @@ async function reconcileRecordingPolicies({ apply = false } = {}) {
 
     try {
         const tenants = await pool.query(`
-            SELECT s.*, t.name AS tenant_name,
+            SELECT s.*,
+                   EXISTS (
+                       SELECT 1
+                         FROM tenant_features tf
+                        WHERE tf.tenant_id = s.tenant_id
+                          AND tf.feature_key = 'call_recording'
+                          AND tf.is_enabled = TRUE
+                   ) AS call_recording_enabled,
+                   t.name AS tenant_name,
                    to_jsonb(t)->>'wazo_tenant_uuid' AS tenant_uuid
             FROM recording_settings s
             JOIN tenants t ON t.id = s.tenant_id

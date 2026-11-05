@@ -12,6 +12,19 @@ const { pool } = require('../src/db');
 const chatbot = require('../src/chatbot');
 const mattermostBridge = require('../src/mattermostBridge');
 
+async function tenantFeatureEnabled(tenantId, featureKey) {
+    try {
+        const result = await pool.query(
+            'SELECT is_enabled FROM tenant_features WHERE tenant_id = $1 AND feature_key = $2',
+            [tenantId, featureKey]
+        );
+        return result.rows[0]?.is_enabled === true;
+    } catch (err) {
+        console.error('Public widget feature check failed:', err.message);
+        return false;
+    }
+}
+
 async function getWidgetConfig(publicKey) {
     const res = await pool.query('SELECT * FROM chat_widget_configs WHERE public_key = $1 AND is_active = TRUE', [publicKey]);
     return res.rows[0] || null;
@@ -20,6 +33,9 @@ async function getWidgetConfig(publicKey) {
 router.post('/:publicKey/start', async (req, res) => {
     const widget = await getWidgetConfig(req.params.publicKey);
     if (!widget) return res.status(404).json({ error: 'widget_not_found' });
+    if (!(await tenantFeatureEnabled(widget.tenant_id, 'webchat'))) {
+        return res.status(404).json({ error: 'widget_not_found' });
+    }
 
     const { name, email } = req.body;
     let contactId = null;
@@ -56,6 +72,9 @@ router.post('/:publicKey/message', async (req, res) => {
     const widget = await getWidgetConfig(req.params.publicKey);
     if (!widget) return res.status(404).json({ error: 'widget_not_found' });
 
+    if (!(await tenantFeatureEnabled(widget.tenant_id, 'webchat'))) {
+        return res.status(404).json({ error: 'widget_not_found' });
+    }
     const { conversation_id, body } = req.body;
     if (!conversation_id || !body) return res.status(400).json({ error: 'conversation_id and body are required' });
 
@@ -87,7 +106,11 @@ router.post('/:publicKey/message', async (req, res) => {
         `SELECT c.full_name FROM conversations cv LEFT JOIN contacts c ON c.id = cv.contact_id WHERE cv.id = $1`,
         [conversation_id]
     );
-    await mattermostBridge.pushCustomerMessage(widget.tenant_id, conversation_id, body, contactRes.rows[0]?.full_name);
+    if (await tenantFeatureEnabled(widget.tenant_id, 'mattermost')) {
+        await mattermostBridge.pushCustomerMessage(
+            widget.tenant_id, conversation_id, body, contactRes.rows[0]?.full_name
+        );
+    }
 
     res.json({ ok: true, bot_replied: botReplied });
 });
@@ -100,6 +123,9 @@ router.get('/:publicKey/poll', async (req, res) => {
     const widget = await getWidgetConfig(req.params.publicKey);
     if (!widget) return res.status(404).json({ error: 'widget_not_found' });
 
+    if (!(await tenantFeatureEnabled(widget.tenant_id, 'webchat'))) {
+        return res.status(404).json({ error: 'widget_not_found' });
+    }
     const { conversation_id, after_id } = req.query;
     if (!conversation_id) return res.status(400).json({ error: 'conversation_id is required' });
 

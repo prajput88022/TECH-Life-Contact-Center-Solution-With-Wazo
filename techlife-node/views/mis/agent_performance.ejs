@@ -1,0 +1,49 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Agent Performance Report (APR)</h1>
+<p class="tl-subtitle">Voice performance, agent state time, conversions, occupancy and productivity for the selected agent.</p>
+<form method="get" class="tl-filters">
+  <div><label>Agent</label><select name="agent_id">
+    <% agents.forEach(a => { %><option value="<%= a.id %>" <%= a.id === agentId ? 'selected' : '' %>><%= a.full_name %></option><% }) %>
+  </select></div>
+  <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+  <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+  <div><button class="tl-btn" type="submit">Run Report</button></div>
+  <% if (agentId) { %>
+  <div><a class="tl-btn secondary" href="/export/agent-performance?format=csv&agent_id=<%= encodeURIComponent(agentId) %>&from=<%= from %>&to=<%= to %>">CSV</a></div>
+  <div><a class="tl-btn secondary" href="/export/agent-performance?format=xlsx&agent_id=<%= encodeURIComponent(agentId) %>&from=<%= from %>&to=<%= to %>">Excel</a></div>
+  <% } %>
+</form>
+<% if (!data) { %><p>No active agents are available for this tenant.</p><% } else { %>
+<div class="tl-grid">
+  <div class="tl-card"><div class="tl-kpi-value"><%= data.total_interactions %></div><div class="tl-kpi-label">Total Interactions</div></div>
+  <div class="tl-card"><div class="tl-kpi-value"><%= data.total_conversions %></div><div class="tl-kpi-label">Conversions</div></div>
+  <div class="tl-card"><div class="tl-kpi-value"><%= (data.conversion_rate * 100).toFixed(2) %>%</div><div class="tl-kpi-label">Conversion Rate</div></div>
+  <div class="tl-card"><div class="tl-kpi-value"><%= (data.occupancy * 100).toFixed(2) %>%</div><div class="tl-kpi-label">Occupancy</div></div>
+  <div class="tl-card"><div class="tl-kpi-value"><%= (data.productivity * 100).toFixed(2) %>%</div><div class="tl-kpi-label">Productivity</div></div>
+</div>
+<h2>Voice Performance</h2>
+<table><tr><th>Metric</th><th>Value</th></tr>
+<% [
+['Inbound Calls',data.voice.inbound_calls],['Outbound Calls',data.voice.outbound_calls],
+['Answered Calls',data.voice.answered_calls],['Missed Calls',data.voice.missed_calls],
+['Abandoned Calls',data.voice.abandoned_calls],['Transfers',data.voice.transfers],
+['Talk Seconds',data.voice.talk_seconds],['Hold Seconds',data.voice.hold_seconds],
+['Call ACW Seconds',data.voice.acw_seconds],['Average Handle Time (s)',data.voice.aht_seconds]
+].forEach(r => { %><tr><td><%= r[0] %></td><td><%= r[1] == null ? 0 : Number(r[1]).toFixed(2) %></td></tr><% }) %>
+</table>
+<h2>Agent State Time</h2>
+<table><tr><th>Metric</th><th>Seconds</th></tr>
+<% [
+['Logged In',data.status.total_logged_in],['Available',data.status.available_seconds],
+['Break',data.status.break_seconds],['After Call Work',data.status.acw_seconds],
+['Offline',data.status.offline_seconds]
+].forEach(r => { %><tr><td><%= r[0] %></td><td><%= Number(r[1] || 0) %></td></tr><% }) %>
+</table>
+<% if (data.omni && data.omni.length) { %>
+<h2>Omnichannel Agent Activity</h2>
+<table><tr><th>Channel</th><th>Handled</th><th>Responded</th><th>Closed</th><th>Avg First Response (s)</th><th>Avg Duration (s)</th></tr>
+<% data.omni.forEach(r => { %><tr><td><%= r.channel %></td><td><%= r.handled %></td><td><%= r.responded %></td><td><%= r.closed %></td><td><%= r.avg_first_response_seconds ?? '—' %></td><td><%= r.avg_duration_seconds ?? '—' %></td></tr><% }) %>
+</table><% } %>
+<% } %>
+<%- include('../partials/foot') %>

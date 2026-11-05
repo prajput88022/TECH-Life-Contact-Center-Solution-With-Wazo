@@ -616,13 +616,21 @@ async function processTenant(settings) {
 
     for (const job of jobs) {
         const liveSetting = await pool.query(`
-            SELECT remote_upload_enabled, storage_provider
-            FROM recording_settings
-            WHERE tenant_id = $1
+            SELECT s.remote_upload_enabled, s.storage_provider,
+                   EXISTS (
+                       SELECT 1
+                         FROM tenant_features tf
+                        WHERE tf.tenant_id = s.tenant_id
+                          AND tf.feature_key = 'call_recording'
+                          AND tf.is_enabled = TRUE
+                   ) AS call_recording_enabled
+            FROM recording_settings s
+            WHERE s.tenant_id = $1
         `, [settings.tenant_id]);
 
         if (!liveSetting.rows[0]?.remote_upload_enabled ||
-            liveSetting.rows[0]?.storage_provider !== 'sftp') {
+            liveSetting.rows[0]?.storage_provider !== 'sftp' ||
+            liveSetting.rows[0]?.call_recording_enabled !== true) {
             await pool.query(`
                 UPDATE recording_storage_jobs
                 SET job_status = 'pending',
@@ -712,6 +720,13 @@ async function reconcileRecordingStorage() {
             JOIN tenants t ON t.id = s.tenant_id
             WHERE s.remote_upload_enabled = TRUE
               AND s.storage_provider = 'sftp'
+              AND EXISTS (
+                  SELECT 1
+                    FROM tenant_features tf
+                   WHERE tf.tenant_id = s.tenant_id
+                     AND tf.feature_key = 'call_recording'
+                     AND tf.is_enabled = TRUE
+              )
               AND t.is_active = TRUE
               AND (s.upload_next_run_at IS NULL
                    OR s.upload_next_run_at <= NOW())

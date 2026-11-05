@@ -17,6 +17,7 @@ const wazoAgentService = require('./wazoAgentService');
 
 const { verifyOutboundRouteLive } = require('./outboundRouteResolver');
 const correlation = require('./campaignDialCorrelation');
+const { tenantHasFeatures } = require('./tenantFeatures');
 
 function isEnabled() {
     return process.env.CAMPAIGN_DIALING_ENABLED === 'true' &&
@@ -54,6 +55,45 @@ async function releaseNotSent(tenantId, claimId, claimToken, reason) {
     return correlation.releaseBeforeOrigination(
         tenantId, claimId, claimToken, reason
     );
+}
+
+async function verifyDialingFeatures(tenantId, claimId, claimToken) {
+    const requiredFeatures = ['campaigns', 'auto_dialer'];
+
+    let enabled;
+    try {
+        enabled = await tenantHasFeatures(tenantId, requiredFeatures);
+    } catch (error) {
+        await releaseNotSent(
+            tenantId,
+            claimId,
+            claimToken,
+            `Tenant feature verification failed before origination: ${error.message}`
+        ).catch(() => {});
+
+        return {
+            ok: false,
+            reason: 'tenant_feature_check_failed',
+            features: requiredFeatures
+        };
+    }
+
+    if (!enabled) {
+        await releaseNotSent(
+            tenantId,
+            claimId,
+            claimToken,
+            'Campaign or auto-dialer feature is disabled for this tenant'
+        ).catch(() => {});
+
+        return {
+            ok: false,
+            reason: 'tenant_feature_disabled',
+            features: requiredFeatures
+        };
+    }
+
+    return { ok: true };
 }
 
 async function markUncertain(
@@ -99,6 +139,13 @@ async function originateProgressiveClaim(tenantId, claimId, claimToken) {
     );
 
     if (!prepared.ok) return prepared;
+
+    const initialFeatureCheck = await verifyDialingFeatures(
+        tenantId, claimId, claimToken
+    );
+    if (!initialFeatureCheck.ok) {
+        return { ...initialFeatureCheck, skipped: true };
+    }
 
     // The route verifier is read-only. A failed route is a definite
     // preflight failure, so the claim may safely be released.
@@ -181,6 +228,15 @@ async function originateProgressiveClaim(tenantId, claimId, claimToken) {
             TECHLIFE_LEAD_ID: String(prepared.leadId)
         }
     };
+
+    // Recheck the tenant's entitlement at the last possible point before
+    // making the Wazo request. A disabled feature must never originate a call.
+    const finalFeatureCheck = await verifyDialingFeatures(
+        tenantId, claimId, claimToken
+    );
+    if (!finalFeatureCheck.ok) {
+        return { ...finalFeatureCheck, skipped: true };
+    }
 
     // From this point, a transport error or ambiguous HTTP response is
     // uncertain: Wazo may have accepted the request. Never auto-redial it.

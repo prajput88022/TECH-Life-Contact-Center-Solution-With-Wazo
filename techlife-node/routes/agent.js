@@ -5,12 +5,15 @@ const { pool } = require('../src/db');
 const callRecordService = require('../src/services/callRecordService');
 const phoneMasker = require('../src/phoneMasker');
 const { loadTenantAppearance } = require('../src/tenantAppearance');
+const { requireFeature, loadTenantFeatures } = require('../src/tenantFeatures');
 
 router.use(requireRole(['agent', 'supervisor', 'admin', 'superadmin']));
 router.use(loadTenantAppearance);
+router.use(loadTenantFeatures);
+router.use('/chat', requireFeature('omnichannel'));
 router.use('/staff-chat', require('./staffChat')('agent'));
 
-router.get('/', async (req, res) => {
+router.get('/', requireFeature('voice'), async (req, res) => {
     const u = req.session.user;
     if (!u.agentId) {
         return res.render('agent/no_profile', { pageTitle: 'Agent Workspace' });
@@ -288,7 +291,7 @@ router.get('/chat/:id/messages.json', async (req, res) => {
     res.json({ messages });
 });
 
-router.get('/calls', async (req, res) => {
+router.get('/calls', requireFeature('voice'), async (req, res) => {
     const u = req.session.user;
     if (!u.agentId) {
         return res.render('agent/no_profile', { pageTitle: 'My Calls' });

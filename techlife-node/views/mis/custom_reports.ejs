@@ -1,0 +1,30 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+<h1>Custom Report Builder</h1>
+<p class="tl-subtitle">Choose an enabled dataset, select columns and preview or export the result.</p>
+<form method="get" class="tl-filters">
+  <div><label>Dataset</label><select name="dataset" onchange="this.form.run.value='0';this.form.submit()">
+    <% datasets.forEach(d => { %><option value="<%= d.key %>" <%= d.key === selectedKey ? 'selected' : '' %>><%= d.label %></option><% }) %>
+  </select></div>
+  <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+  <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+  <input type="hidden" name="run" value="1">
+  <div><button class="tl-btn" type="submit">Preview Report</button></div>
+  <% if (result) { %>
+  <div><a class="tl-btn secondary" href="/export/custom?dataset=<%= encodeURIComponent(selectedKey) %>&format=csv&from=<%= from %>&to=<%= to %><% selectedColumns.forEach(c => { %>&columns=<%= encodeURIComponent(c) %><% }) %>">CSV</a></div>
+  <div><a class="tl-btn secondary" href="/export/custom?dataset=<%= encodeURIComponent(selectedKey) %>&format=xlsx&from=<%= from %>&to=<%= to %><% selectedColumns.forEach(c => { %>&columns=<%= encodeURIComponent(c) %><% }) %>">Excel</a></div>
+  <% } %>
+  <div style="flex-basis:100%"><strong>Columns</strong><div class="tl-filters">
+    <% if (selectedDataset) { selectedDataset.columns.forEach(c => { %>
+      <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" name="columns" value="<%= c.name %>" <%= !selectedColumns.length || selectedColumns.includes(c.name) ? 'checked' : '' %>><%= c.label %></label>
+    <% }) } %>
+  </div></div>
+</form>
+<% if (result) { %>
+<h2><%= result.label %> — <%= result.rows.length %> rows</h2>
+<div style="overflow-x:auto"><table><tr><% result.headers.forEach(h => { %><th><%= h %></th><% }) %></tr>
+<% result.rows.forEach(r => { %><tr><% result.columns.forEach(c => { %><td><%= r[c] == null ? '' : r[c] %></td><% }) %></tr><% }) %>
+<% if (!result.rows.length) { %><tr><td colspan="<%= result.headers.length %>">No records for this range.</td></tr><% } %>
+</table></div>
+<% } %>
+<%- include('../partials/foot') %>

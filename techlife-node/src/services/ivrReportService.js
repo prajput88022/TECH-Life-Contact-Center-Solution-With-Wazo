@@ -22,8 +22,31 @@ async function journeyForCall(tenantId, callId) {
 
 async function hourly(tenantId, ivrMenuId, from, to) {
     const res = await pool.query(
-        `SELECT * FROM mv_ivr_hourly WHERE tenant_id = $1 AND ivr_menu_id = $2
-         AND hour_bucket BETWEEN $3 AND $4 ORDER BY hour_bucket`,
+        `SELECT
+            date_trunc('hour', entry_time) AS hour_bucket,
+            COUNT(*)::int AS sessions_entered,
+            COUNT(*) FILTER (
+                WHERE exit_time IS NOT NULL
+            )::int AS sessions_exited,
+            COUNT(*) FILTER (
+                WHERE exit_reason::text = 'abandoned'
+            )::int AS sessions_abandoned,
+            COUNT(*) FILTER (
+                WHERE exit_reason::text = 'queue_transfer'
+            )::int AS transferred_to_queue,
+            COUNT(*) FILTER (
+                WHERE exit_reason::text = 'agent_transfer'
+            )::int AS transferred_to_agent,
+            AVG(duration_seconds) AS avg_duration_seconds,
+            COALESCE(SUM(invalid_count),0)::int AS invalid_selections,
+            COALESCE(SUM(timeout_count),0)::int AS timeouts
+         FROM ivr_sessions
+         WHERE tenant_id = $1
+           AND ivr_menu_id = $2
+           AND entry_time >= $3::date
+           AND entry_time < ($4::date + INTERVAL '1 day')
+         GROUP BY date_trunc('hour', entry_time)
+         ORDER BY hour_bucket`,
         [tenantId, ivrMenuId, from, to]
     );
     return res.rows;

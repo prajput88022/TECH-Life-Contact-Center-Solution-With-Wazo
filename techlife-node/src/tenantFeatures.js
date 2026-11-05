@@ -1,0 +1,206 @@
+'use strict';
+
+const { pool } = require('./db');
+
+function tenantIdFor(req) {
+    return req.effectiveTenant?.id ||
+        req.session?.user?.tenantId ||
+        req.session?.user?.tenant_id ||
+        null;
+}
+
+function isSuperadmin(req) {
+    const roles = req.session?.user?.roles || [];
+    return roles.includes('superadmin');
+}
+
+function normalizeFeatureKeys(featureKeys) {
+    const values = Array.isArray(featureKeys)
+        ? featureKeys.flat(Infinity)
+        : [featureKeys];
+
+    const keys = [...new Set(values)];
+
+    if (!keys.length || keys.some(key =>
+        typeof key !== 'string' || !/^[a-z][a-z0-9_]*$/.test(key)
+    )) {
+        throw new Error('Invalid tenant feature configuration');
+    }
+
+    return keys;
+}
+
+/**
+ * Missing feature rows are disabled.
+ *
+ * lockRows=true is intended for use with a transaction client. It
+ * prevents an existing feature row from being changed while a campaign
+ * claim transaction is checking and creating its claims.
+ */
+async function tenantHasFeatures(
+    tenantId,
+    featureKeys,
+    db = pool,
+    lockRows = false
+) {
+    if (!tenantId) return false;
+
+    const keys = normalizeFeatureKeys(featureKeys);
+    const lockClause = lockRows ? ' FOR SHARE' : '';
+
+    const result = await db.query(
+        `SELECT feature_key, is_enabled
+           FROM tenant_features
+          WHERE tenant_id = $1
+            AND feature_key = ANY($2::varchar[])${lockClause}`,
+        [tenantId, keys]
+    );
+
+    const enabled = new Set(
+        result.rows
+            .filter(row => row.is_enabled === true)
+            .map(row => row.feature_key)
+    );
+
+    return keys.every(key => enabled.has(key));
+}
+
+function requireFeatures(...featureKeys) {
+    const keys = normalizeFeatureKeys(featureKeys.flat());
+
+    return async function tenantFeatureMiddleware(req, res, next) {
+        // Superadmin is never restricted by tenant feature flags.
+        if (isSuperadmin(req)) return next();
+
+        const tenantId = tenantIdFor(req);
+        if (!tenantId) {
+            return res.status(403).send('Tenant context is required.');
+        }
+
+        try {
+            const result = await pool.query(
+                `SELECT feature_key, is_enabled
+                   FROM tenant_features
+                  WHERE tenant_id = $1
+                    AND feature_key = ANY($2::varchar[])`,
+                [tenantId, keys]
+            );
+
+            const enabled = new Set(
+                result.rows
+                    .filter(row => row.is_enabled === true)
+                    .map(row => row.feature_key)
+            );
+
+            // Missing rows and disabled rows are both denied.
+            const denied = keys.filter(key => !enabled.has(key));
+
+            if (denied.length) {
+                const isApi = req.originalUrl?.startsWith('/api/');
+                const acceptsJson = req.accepts(['json', 'html']) === 'json';
+
+                if (isApi || acceptsJson || req.xhr) {
+                    return res.status(403).json({
+                        error: 'feature_disabled',
+                        message: 'This feature is not enabled for your tenant.',
+                        features: denied
+                    });
+                }
+
+                return res.status(403).send(
+                    'This feature is not enabled for your tenant.'
+                );
+            }
+
+            return next();
+        } catch (err) {
+            // Never allow access if feature verification itself fails.
+            return next(err);
+        }
+    };
+}
+
+/**
+ * Loads all saved flags once for page rendering/navigation.
+ * This is read-only and never inserts defaults or modifies tenant rows.
+ */
+async function loadTenantFeatures(req, res, next) {
+    if (isSuperadmin(req)) {
+        res.locals.tenantFeatures = null;
+        return next();
+    }
+
+    const tenantId = tenantIdFor(req);
+    if (!tenantId) {
+        res.locals.tenantFeatures = {};
+        return next();
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT feature_key, is_enabled
+               FROM tenant_features
+              WHERE tenant_id = $1`,
+            [tenantId]
+        );
+
+        const flags = Object.create(null);
+        for (const row of result.rows) {
+            flags[row.feature_key] = row.is_enabled === true;
+        }
+
+        res.locals.tenantFeatures = flags;
+        return next();
+    } catch (err) {
+        return next(err);
+    }
+}
+
+function requireAnyFeatures(...featureKeys) {
+    const keys = normalizeFeatureKeys(featureKeys.flat());
+
+    return async function tenantAnyFeatureMiddleware(req, res, next) {
+        if (isSuperadmin(req)) return next();
+
+        const tenantId = tenantIdFor(req);
+        if (!tenantId) {
+            return res.status(403).json({
+                error: 'tenant_context_required'
+            });
+        }
+
+        try {
+            const result = await pool.query(
+                `SELECT feature_key, is_enabled
+                   FROM tenant_features
+                  WHERE tenant_id = $1
+                    AND feature_key = ANY($2::varchar[])`,
+                [tenantId, keys]
+            );
+
+            const allowed = result.rows.some(
+                row => row.is_enabled === true
+            );
+
+            if (allowed) return next();
+
+            return res.status(403).json({
+                error: 'feature_disabled',
+                message: 'This feature is not enabled for your tenant.',
+                features: keys
+            });
+        } catch (err) {
+            return next(err);
+        }
+    };
+}
+
+module.exports = {
+    requireFeature: key => requireFeatures(key),
+    requireAllFeatures: (...keys) => requireFeatures(...keys),
+    requireAnyFeature: (...keys) => requireAnyFeatures(...keys),
+    tenantIdFor,
+    isSuperadmin,
+    tenantHasFeatures,
+    loadTenantFeatures
+};

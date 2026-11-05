@@ -5,13 +5,18 @@ const { pool } = require('../src/db');
 const callRecordService = require('../src/services/callRecordService');
 const phoneMasker = require('../src/phoneMasker');
 const { loadTenantAppearance } = require('../src/tenantAppearance');
+const { requireFeature, requireAllFeatures, loadTenantFeatures } = require('../src/tenantFeatures');
 const { isScopedSupervisor, agentAccessPredicate, canAccessAgent } = require('../src/supervisorScope');
 
 router.use(requireRole(['supervisor', 'admin', 'superadmin']));
 router.use(loadTenantAppearance);
+router.use(loadTenantFeatures);
+router.use('/chat', requireFeature('omnichannel'));
+router.use('/callbacks', requireFeature('callback_management'));
+router.use('/dnc', requireFeature('dnc_management'));
 router.use('/staff-chat', require('./staffChat')('supervisor'));
 
-router.get('/', async (req, res) => {
+router.get('/', requireAllFeatures('voice', 'callback_management', 'dnc_management'), async (req, res) => {
     const t = req.session.user.tenantId;
     const u = req.session.user;
     let queues;
@@ -130,7 +135,7 @@ router.get('/chat', async (req, res) => {
     res.render('supervisor/chat', { pageTitle: 'Supervisor — Chat Monitor', conversations });
 });
 
-router.get('/calls', async (req, res) => {
+router.get('/calls', requireFeature('voice'), async (req, res) => {
     const t = req.session.user.tenantId;
     const today = new Date().toISOString().slice(0, 10);
     const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)

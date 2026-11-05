@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../src/db');
 const { requireRole } = require('../src/auth');
+const { requireFeature } = require('../src/tenantFeatures');
 const { isScopedSupervisor, agentAccessPredicate } = require('../src/supervisorScope');
 
 module.exports = function createStaffChatRouter(area) {
@@ -12,6 +13,7 @@ module.exports = function createStaffChatRouter(area) {
     };
 
     router.use(requireRole(allowedRoles[area] || []));
+    router.use(requireFeature('staff_chat'));
 
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const basePath = `/${area}/staff-chat`;

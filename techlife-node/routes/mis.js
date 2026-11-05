@@ -7,10 +7,27 @@ const queueReportService = require('../src/services/queueReportService');
 const campaignReportService = require('../src/services/campaignReportService');
 const didReportService = require('../src/services/didReportService');
 const ivrReportService = require('../src/services/ivrReportService');
+const customMisReportService = require('../src/services/customMisReportService');
 const { loadTenantAppearance } = require('../src/tenantAppearance');
+const { requireFeature, loadTenantFeatures } = require('../src/tenantFeatures');
 
 router.use(requireRole(['mis_agent', 'supervisor', 'admin', 'superadmin']));
 router.use(loadTenantAppearance);
+router.use(loadTenantFeatures);
+router.use(requireFeature('mis_reports'));
+router.use('/agent-hourly', requireFeature('voice'));
+router.use('/agent-performance', requireFeature('voice'));
+router.use('/login-activity', requireFeature('voice'));
+router.use('/omnichannel-report', requireFeature('omnichannel'));
+router.use('/list-report', requireFeature('list_management'));
+router.use('/disposition-report', requireFeature('voice'));
+router.use('/disposition-report', requireFeature('dispositions'));
+router.use('/queue-report', requireFeature('queues'));
+router.use('/did-report', requireFeature('inbound'));
+router.use('/campaign-report', requireFeature('campaigns'));
+router.use('/callback-report', requireFeature('callback_management'));
+router.use('/ivr-journey', requireFeature('ivr'));
+router.use('/recordings', requireFeature('call_recording'));
 
 router.get('/', async (req, res) => {
     const t = req.session.user.tenantId;
@@ -54,37 +71,66 @@ router.get('/did-report', async (req, res) => {
     res.render('mis/did_report', { pageTitle: 'MIS — DID Report', from, to, rows });
 });
 
-router.get('/campaign-report', async (req, res) => {
-    const t = req.session.user.tenantId;
-    const campaigns = await campaignReportService.listActive(t);
-    const campaignId = req.query.campaign_id || (campaigns[0] ? campaigns[0].id : null);
-    const from = req.query.from || new Date().toISOString().slice(0, 10);
-    const to = req.query.to || new Date().toISOString().slice(0, 10);
+router.get('/campaign-report', async (req, res, next) => {
+    try {
+        const t = req.session.user.tenantId;
+        const campaigns = await campaignReportService.listActive(t);
 
-    let voiceSummary = null, roboSummary = [], surveyResults = [];
-    const selected = campaigns.find((c) => c.id === campaignId);
+        const requestedId = String(req.query.campaign_id || '');
+        const campaignId = requestedId ||
+            (campaigns[0] ? campaigns[0].id : null);
 
-    if (campaignId) {
-        const summary = await campaignReportService.summary(t, campaignId, from, to);
-        voiceSummary = summary.voice;
+        const validDate = (value) =>
+            /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) &&
+            !Number.isNaN(Date.parse(String(value) + 'T00:00:00Z')) &&
+            new Date(String(value) + 'T00:00:00Z')
+                .toISOString().slice(0, 10) === String(value);
 
-        if (selected && selected.is_robo_campaign) {
-            const r1 = await pool.query(
-                `SELECT * FROM mv_robo_campaign_hourly WHERE tenant_id = $1 AND campaign_id = $2
-                 AND hour_bucket BETWEEN $3 AND $4 ORDER BY hour_bucket`,
-                [t, campaignId, from, to]
-            );
-            roboSummary = r1.rows;
-            const r2 = await pool.query(
-                `SELECT node_name, response_dtmf, SUM(response_count) AS total FROM mv_survey_response_summary
-                 WHERE tenant_id = $1 AND campaign_id = $2 AND day_bucket BETWEEN $3 AND $4
-                 GROUP BY node_name, response_dtmf ORDER BY node_name, response_dtmf`,
-                [t, campaignId, from, to]
-            );
-            surveyResults = r2.rows;
+        const today = new Date().toISOString().slice(0, 10);
+        const from = String(req.query.from || today);
+        const to = String(req.query.to || today);
+
+        if (!validDate(from) || !validDate(to) || from > to) {
+            return res.status(400).send('Valid report dates are required.');
         }
+
+        let voiceSummary = null;
+        let roboSummary = [];
+        let surveyResults = [];
+        let selected = null;
+
+        if (campaignId) {
+            const summary = await campaignReportService.summary(
+                t, campaignId, from, to
+            );
+
+            selected = summary.campaign;
+            voiceSummary = summary.voice;
+
+            if (selected.is_robo_campaign) {
+                roboSummary = await campaignReportService.roboHourly(
+                    t, campaignId, from, to
+                );
+                surveyResults = await campaignReportService.surveyDistribution(
+                    t, campaignId, from, to
+                );
+            }
+        }
+
+        return res.render('mis/campaign_report', {
+            pageTitle: 'MIS — Campaign Report',
+            campaigns,
+            campaignId,
+            from,
+            to,
+            voiceSummary,
+            selected,
+            roboSummary,
+            surveyResults
+        });
+    } catch (err) {
+        return next(err);
     }
-    res.render('mis/campaign_report', { pageTitle: 'MIS — Campaign Report', campaigns, campaignId, from, to, voiceSummary, selected, roboSummary, surveyResults });
 });
 
 
@@ -326,54 +372,378 @@ router.get('/recordings/:id/play', async (req, res) => {
 });
 
 // ---------------- Agent Login/Logout Report ----------------
-router.get('/login-activity', async (req, res) => {
-    const t = req.session.user.tenantId;
-    const from = req.query.from || new Date().toISOString().slice(0, 10) + ' 00:00:00';
-    const to = req.query.to || new Date().toISOString().slice(0, 10) + ' 23:59:59';
-    const agentId = req.query.agent_id || null;
+router.get('/login-activity', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const today = new Date().toISOString().slice(0, 10);
+        const from = String(req.query.from || today + ' 00:00:00').replace('T', ' ');
+        const to = String(req.query.to || today + ' 23:59:59').replace('T', ' ');
+        const requestedAgentId = String(req.query.agent_id || '');
+        const agentId = requestedAgentId || null;
 
-    const agents = (await pool.query(
-        `SELECT a.id, u.full_name FROM agents a JOIN users u ON u.id = a.user_id WHERE a.tenant_id = $1 ORDER BY u.full_name`, [t]
-    )).rows;
+        const agents = (await pool.query(
+            `SELECT a.id,
+                    COALESCE(NULLIF(u.full_name,''), u.username, a.agent_number) AS full_name
+               FROM agents a
+               JOIN users u
+                 ON u.id = a.user_id
+                AND u.tenant_id = a.tenant_id
+              WHERE a.tenant_id = $1
+              ORDER BY full_name`,
+            [tenantId]
+        )).rows;
 
-    // Each 'login' status_event paired with the NEXT 'logout' event for
-    // that same agent (if any -- NULL means still logged in). Then sums
-    // available/break/ACW time that actually fell within that span, so
-    // the report reads as "agent X logged in at 9:00, logged out at
-    // 17:30, spent Y on break within that session" -- not just raw
-    // status rows.
-    const where = ['login.tenant_id = $1', "login.status = 'login'", 'login.started_at BETWEEN $2 AND $3'];
-    const params = [t, from, to];
-    if (agentId) { where.push('login.agent_id = $4'); params.push(agentId); }
+        if (agentId && !agents.some(agent => agent.id === agentId)) {
+            return res.status(400).send('Selected agent does not belong to this tenant.');
+        }
 
-    const rows = (await pool.query(
-        `SELECT login.agent_id, u.full_name,
-                login.started_at AS login_at,
-                (SELECT MIN(lo.started_at) FROM agent_status_events lo
-                    WHERE lo.agent_id = login.agent_id AND lo.status = 'logout' AND lo.started_at > login.started_at) AS logout_at,
-                (SELECT COALESCE(SUM(x.duration_seconds),0) FROM agent_status_events x
-                    WHERE x.agent_id = login.agent_id AND x.status = 'available' AND x.ended_at IS NOT NULL
-                      AND x.started_at >= login.started_at
-                      AND x.started_at < COALESCE(
-                        (SELECT MIN(lo2.started_at) FROM agent_status_events lo2
-                            WHERE lo2.agent_id = login.agent_id AND lo2.status = 'logout' AND lo2.started_at > login.started_at),
-                        now())) AS available_seconds,
-                (SELECT COALESCE(SUM(x.duration_seconds),0) FROM agent_status_events x
-                    WHERE x.agent_id = login.agent_id AND x.status IN ('break','lunch','tea','training','meeting','personal_break') AND x.ended_at IS NOT NULL
-                      AND x.started_at >= login.started_at
-                      AND x.started_at < COALESCE(
-                        (SELECT MIN(lo2.started_at) FROM agent_status_events lo2
-                            WHERE lo2.agent_id = login.agent_id AND lo2.status = 'logout' AND lo2.started_at > login.started_at),
-                        now())) AS break_seconds
-         FROM agent_status_events login
-         JOIN agents a ON a.id = login.agent_id
-         JOIN users u ON u.id = a.user_id
-         WHERE ${where.join(' AND ')}
-         ORDER BY login.started_at DESC`,
-        params
-    )).rows;
+        const params = [tenantId, from, to];
+        let agentFilter = '';
 
-    res.render('mis/login_activity', { pageTitle: 'MIS — Agent Login/Logout Report', agents, agentId, from, to, rows });
+        if (agentId) {
+            params.push(agentId);
+            agentFilter = 'AND a.id = $4';
+        }
+
+        const rows = (await pool.query(
+            `SELECT
+                 a.id AS agent_id,
+                 COALESCE(NULLIF(u.full_name,''), u.username, a.agent_number) AS full_name,
+                 login.created_at AS login_at,
+                 logout.logout_at,
+                 COALESCE((
+                     SELECT SUM(x.duration_seconds)
+                       FROM agent_status_events x
+                      WHERE x.tenant_id = login.tenant_id
+                        AND x.agent_id = a.id
+                        AND x.status = 'available'
+                        AND x.ended_at IS NOT NULL
+                        AND x.started_at >= login.created_at
+                        AND x.started_at < COALESCE(logout.logout_at, now())
+                 ), 0)::bigint AS available_seconds,
+                 COALESCE((
+                     SELECT SUM(x.duration_seconds)
+                       FROM agent_status_events x
+                      WHERE x.tenant_id = login.tenant_id
+                        AND x.agent_id = a.id
+                        AND x.status IN (
+                            'break', 'lunch', 'tea', 'training',
+                            'meeting', 'personal_break'
+                        )
+                        AND x.ended_at IS NOT NULL
+                        AND x.started_at >= login.created_at
+                        AND x.started_at < COALESCE(logout.logout_at, now())
+                 ), 0)::bigint AS break_seconds
+             FROM audit_logs login
+             JOIN users u
+               ON u.id = login.user_id
+              AND u.tenant_id = login.tenant_id
+             JOIN agents a
+               ON a.user_id = u.id
+              AND a.tenant_id = login.tenant_id
+             LEFT JOIN LATERAL (
+                 SELECT MIN(lo.created_at) AS logout_at
+                   FROM audit_logs lo
+                  WHERE lo.tenant_id = login.tenant_id
+                    AND lo.user_id = login.user_id
+                    AND lo.action = 'LOGOUT'
+                    AND lo.created_at > login.created_at
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM audit_logs next_login
+                         WHERE next_login.tenant_id = login.tenant_id
+                           AND next_login.user_id = login.user_id
+                           AND next_login.action = 'LOGIN'
+                           AND next_login.created_at > login.created_at
+                           AND next_login.created_at < lo.created_at
+                    )
+             ) logout ON TRUE
+             WHERE login.tenant_id = $1
+               AND login.action = 'LOGIN'
+               AND login.created_at BETWEEN $2::timestamptz AND $3::timestamptz
+               ${agentFilter}
+             ORDER BY login.created_at DESC`,
+            params
+        )).rows;
+
+        return res.render('mis/login_activity', {
+            pageTitle: 'MIS — Agent Login/Logout Report',
+            agents,
+            agentId,
+            from,
+            to,
+            rows
+        });
+    } catch (err) {
+        return next(err);
+    }
 });
+
+// ------------------------------------------------------------
+// Shared report input validation.
+// ------------------------------------------------------------
+function validReportDate(value) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) &&
+        !Number.isNaN(Date.parse(String(value) + 'T00:00:00Z')) &&
+        new Date(String(value) + 'T00:00:00Z').toISOString().slice(0, 10) === String(value);
+}
+
+async function reportDateRange(req) {
+    const todayResult = await pool.query('SELECT CURRENT_DATE::text AS today');
+    const today = todayResult.rows[0].today;
+    const from = String(req.query.from || today);
+    const to = String(req.query.to || today);
+
+    if (!validReportDate(from) || !validReportDate(to) || from > to) {
+        const err = new Error('Choose a valid report date range.');
+        err.status = 400;
+        throw err;
+    }
+    return { from, to };
+}
+
+const reportUuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+
+// ------------------------------------------------------------
+// Agent Performance Report (APR).
+// ------------------------------------------------------------
+router.get('/agent-performance', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+
+        const agents = (await pool.query(
+            `SELECT a.id,
+                    COALESCE(NULLIF(u.full_name,''),u.username,a.agent_number) AS full_name
+               FROM agents a
+               JOIN users u ON u.id = a.user_id AND u.tenant_id = a.tenant_id
+              WHERE a.tenant_id = $1 AND a.is_active = TRUE
+              ORDER BY full_name`,
+            [tenantId]
+        )).rows;
+
+        let agentId = String(req.query.agent_id || (agents[0] && agents[0].id) || '');
+        if (agentId && (!reportUuidPattern.test(agentId) ||
+            !agents.some(agent => agent.id === agentId))) {
+            return res.status(400).send('Selected agent does not belong to this tenant.');
+        }
+
+        const data = agentId
+            ? await agentReportService.performance(
+                tenantId,
+                agentId,
+                from,
+                to,
+                { includeOmni: res.locals.tenantFeatures?.omnichannel === true }
+              )
+            : null;
+
+        res.render('mis/agent_performance', {
+            pageTitle: 'MIS — Agent Performance Report',
+            agents, agentId, from, to, data
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// ------------------------------------------------------------
+// Omnichannel report: conversations, messages and response times.
+// ------------------------------------------------------------
+router.get('/omnichannel-report', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+
+        const rows = (await pool.query(
+            `SELECT cv.channel::text AS channel,
+                    COALESCE(NULLIF(u.full_name,''),u.username,a.agent_number,'Unassigned') AS agent_name,
+                    COUNT(*)::int AS conversations,
+                    COUNT(*) FILTER (WHERE cv.first_response_at IS NOT NULL)::int AS responded,
+                    COUNT(*) FILTER (WHERE cv.closed_at IS NOT NULL)::int AS closed,
+                    COUNT(*) FILTER (WHERE cv.closed_at IS NULL)::int AS open,
+                    ROUND(AVG(EXTRACT(EPOCH FROM (
+                        cv.first_response_at - cv.started_at
+                    )))::numeric, 2) AS avg_first_response_seconds,
+                    ROUND(AVG(cv.duration_seconds)::numeric, 2) AS avg_duration_seconds,
+                    COALESCE(SUM(msg.message_count),0)::int AS messages
+               FROM conversations cv
+               LEFT JOIN agents a
+                 ON a.id = cv.agent_id AND a.tenant_id = cv.tenant_id
+               LEFT JOIN users u
+                 ON u.id = a.user_id AND u.tenant_id = a.tenant_id
+               LEFT JOIN LATERAL (
+                    SELECT COUNT(*)::int AS message_count
+                      FROM conversation_messages cm
+                     WHERE cm.tenant_id = cv.tenant_id
+                       AND cm.conversation_id = cv.id
+                       AND cm.sent_at >= $2::date
+                       AND cm.sent_at < ($3::date + INTERVAL '1 day')
+               ) msg ON TRUE
+              WHERE cv.tenant_id = $1
+                AND cv.channel::text NOT IN ('voice','ivr')
+                AND cv.started_at >= $2::date
+                AND cv.started_at < ($3::date + INTERVAL '1 day')
+              GROUP BY cv.channel, agent_name
+              ORDER BY cv.channel, agent_name`,
+            [tenantId, from, to]
+        )).rows;
+
+        res.render('mis/omnichannel_report', {
+            pageTitle: 'MIS — Omnichannel Report', from, to, rows
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// ------------------------------------------------------------
+// List-wise report.
+// ------------------------------------------------------------
+router.get('/list-report', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+        const result = await customMisReportService.run(
+            tenantId, 'lists', null, from, to
+        );
+
+        res.render('mis/list_report', {
+            pageTitle: 'MIS — List-wise Report', from, to,
+            headers: result.headers, rows: result.rows
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// ------------------------------------------------------------
+// Disposition report.
+// ------------------------------------------------------------
+router.get('/disposition-report', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+        const result = await customMisReportService.run(
+            tenantId, 'dispositions', null, from, to
+        );
+
+        res.render('mis/disposition_report', {
+            pageTitle: 'MIS — Disposition Report', from, to,
+            headers: result.headers, rows: result.rows
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// ------------------------------------------------------------
+// Custom report builder. Dataset and column names are allowlisted
+// by customMisReportService; tenant feature checks are mandatory.
+// ------------------------------------------------------------
+router.get('/custom-reports', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+        const flags = res.locals.tenantFeatures || {};
+        const datasets = customMisReportService.availableDatasets(
+            req.session.user.roles?.includes('superadmin') ? null : flags
+        );
+
+        const selectedKey = String(req.query.dataset || (datasets[0] && datasets[0].key) || '');
+        const selectedDataset = datasets.find(d => d.key === selectedKey) || null;
+        let result = null;
+        let selectedColumns = [];
+
+        if (selectedDataset) {
+            const requested = req.query.columns
+                ? (Array.isArray(req.query.columns) ? req.query.columns : [req.query.columns])
+                : selectedDataset.columns.map(c => c.name);
+
+            selectedColumns = requested.filter(c =>
+                selectedDataset.columns.some(def => def.name === c)
+            );
+
+            if (req.query.run === '1') {
+                if (!selectedColumns.length) {
+                    return res.status(400).send('Select at least one valid report column.');
+                }
+                result = await customMisReportService.run(
+                    tenantId, selectedKey, selectedColumns, from, to
+                );
+            }
+        }
+
+        res.render('mis/custom_reports', {
+            pageTitle: 'MIS — Custom Report Builder',
+            datasets, selectedKey, selectedDataset,
+            selectedColumns, from, to, result
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// ------------------------------------------------------------
+// AI Analysis workspace.
+// Current analysis is deterministic and local; it does not call
+// an external AI provider or transmit tenant data.
+// ------------------------------------------------------------
+router.get('/ai-analysis', async (req, res, next) => {
+    try {
+        const tenantId = req.session.user.tenantId;
+        const { from, to } = await reportDateRange(req);
+        const flags = res.locals.tenantFeatures || {};
+        const datasets = customMisReportService.availableDatasets(
+            req.session.user.roles?.includes('superadmin') ? null : flags
+        );
+
+        const selectedKey = String(req.query.dataset || 'call_outcomes');
+        const selectedDataset = datasets.find(d => d.key === selectedKey) || datasets[0] || null;
+        let analysis = null;
+
+        if (selectedDataset && req.query.run === '1') {
+            const result = await customMisReportService.run(
+                tenantId, selectedDataset.key, null, from, to
+            );
+
+            const numericColumns = result.columns.filter(column =>
+                result.rows.some(row =>
+                    row[column] !== null && row[column] !== '' &&
+                    Number.isFinite(Number(row[column]))
+                )
+            );
+
+            const totals = numericColumns.map(column => ({
+                column,
+                total: result.rows.reduce((sum, row) =>
+                    sum + (Number(row[column]) || 0), 0)
+            }));
+
+            analysis = {
+                label: result.label,
+                rowCount: result.rows.length,
+                totals,
+                empty: result.rows.length === 0
+            };
+        }
+
+        res.render('mis/ai_analysis', {
+            pageTitle: 'MIS — AI Analysis',
+            datasets, selectedKey: selectedDataset?.key || '',
+            from, to, analysis
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 
 module.exports = router;
