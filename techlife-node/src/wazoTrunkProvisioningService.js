@@ -229,7 +229,10 @@ async function provisionTrunk(tenantId, trunkId) {
     const endpointBody = {
       transport: { uuid: selectedTransport.uuid },
       label: String(tr.name).slice(0, 128),
-      aor_section_options: [['contact', endpointUri]],
+      aor_section_options: [
+        ['contact', endpointUri],
+        ['qualify_frequency', String(tr.qualify_frequency ?? 60)],
+      ],
       identify_section_options:
         authMode === 'ip' &&
         tr.inbound_enabled === true
@@ -240,8 +243,7 @@ async function provisionTrunk(tenantId, trunkId) {
         : [],
       endpoint_section_options: [
         ['context', incallContext.name],
-        ['disallow', 'all'],
-        ['allow', allowed.join(',')],
+        ['allow', `!all,${allowed.join(',')}`],
         ...(authMode === 'credentials' ? [['outbound_auth', String(tr.name).slice(0, 128)]] : []),
       ],
     };

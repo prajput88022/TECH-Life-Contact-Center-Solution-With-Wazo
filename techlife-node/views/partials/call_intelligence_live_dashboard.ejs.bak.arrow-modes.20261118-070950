@@ -1,0 +1,299 @@
+<style>
+.ci-live-dashboard{display:grid;gap:16px}
+.ci-live-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.ci-live-head h2,.ci-live-card h2{margin:0 0 6px;color:#e8edf5}
+.ci-live-muted{color:#9aa8b8;font-size:12px}
+.ci-live-state{display:inline-flex;align-items:center;gap:8px;border:1px solid #354252;border-radius:99px;padding:7px 13px;font-weight:700;font-size:12px;letter-spacing:.08em}
+.ci-live-state span{width:8px;height:8px;border-radius:50%;background:#667085}
+.ci-live-state.is-on{color:#57dfa6;border-color:#1b7652;background:#0b2a20}
+.ci-live-state.is-on span{background:#2bd58b;box-shadow:0 0 10px #2bd58b}
+.ci-live-state.is-off{color:#a9b2bf;background:#18202a}
+.ci-live-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-top:14px}
+.ci-live-stat{background:#161e28;border:1px solid #2b3542;border-radius:7px;padding:12px;min-width:0}
+.ci-live-stat small{display:block;color:#91a0b1;text-transform:uppercase;font-size:10px;letter-spacing:.07em}
+.ci-live-stat strong{display:block;color:#eef3fa;font-size:19px;margin-top:5px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ci-live-card{background:#101720;border:1px solid #2a3542;border-radius:9px;padding:16px;color:#e5ebf3;min-width:0}
+.ci-live-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}
+.ci-live-select{background:#18222e;color:#e9eef5;border:1px solid #394758;border-radius:6px;padding:8px;min-width:min(100%,340px)}
+.ci-live-scroll{overflow:auto;border:1px solid #26313e;border-radius:7px;background:#0a1118}
+.ci-live-board{min-width:720px}
+.ci-live-participants{display:grid;position:sticky;top:0;z-index:2;background:#151e28;border-bottom:1px solid #33404d;padding-left:112px}
+.ci-live-participant{min-width:0;text-align:center;padding:12px 6px;border-left:1px solid #293644;overflow-wrap:anywhere}
+.ci-live-participant strong{display:block;color:#e7edf6;font:600 11px ui-monospace,monospace}
+.ci-live-participant small{display:block;color:#8999aa;font:10px ui-monospace,monospace;margin-top:4px}
+.ci-live-row{display:grid;grid-template-columns:112px minmax(0,1fr);min-height:68px;border-bottom:1px solid #1e2935}
+.ci-live-row:nth-child(even){background:#0d151e}
+.ci-live-time{padding:11px 8px;color:#a8b4c2;font:11px ui-monospace,monospace}
+.ci-live-time strong{display:block;color:#d6e0eb}
+.ci-live-lane{position:relative;min-height:68px;overflow:hidden}
+.ci-live-lifelines{position:absolute;inset:0;display:grid;pointer-events:none}
+.ci-live-lifelines span{border-left:1px dashed #34404d;opacity:.75}
+.ci-live-arrow{position:absolute;inset:10px 0 auto;height:25px;width:100%;overflow:visible}
+.ci-live-label{position:absolute;top:3px;transform:translateX(-50%);background:#0a1118;padding:1px 6px;border-radius:4px;font:700 11px ui-monospace,monospace;white-space:nowrap}
+.ci-live-callid{position:relative;z-index:1;color:#738397;font:10px ui-monospace,monospace;margin:38px 8px 3px;overflow-wrap:anywhere}
+.ci-live-details{position:relative;z-index:1;margin:0 8px 8px;color:#9cabbc;font-size:11px}
+.ci-live-details summary{cursor:pointer;color:#9fb0c2}
+.ci-live-details pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:#080d13;border:1px solid #273342;border-radius:5px;padding:10px;color:#d7e1ed}
+.ci-live-empty{border:1px dashed #3a4756;border-radius:8px;padding:28px;text-align:center;color:#9aabba;background:#0b121a}
+.ci-live-analytics{display:grid;grid-template-columns:minmax(190px,.7fr) minmax(280px,2fr);gap:16px;align-items:center}
+.ci-live-donut{width:160px;height:160px;border-radius:50%;margin:auto;position:relative;background:#263342}
+.ci-live-donut:after{content:"";position:absolute;inset:31px;border-radius:50%;background:#101720;border:1px solid #2c3947}
+.ci-live-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.ci-live-legend-item{font-size:12px;color:#cbd5e1;display:flex;justify-content:space-between;gap:8px;background:#17212c;border:1px solid #2a3745;padding:7px 9px;border-radius:5px}
+.ci-live-media-svg{width:100%;height:190px;display:block;background:#0b121a;border:1px solid #273442;border-radius:6px}
+.ci-live-actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+@media(max-width:700px){.ci-live-analytics{grid-template-columns:1fr}.ci-live-row{grid-template-columns:90px minmax(0,1fr)}.ci-live-participants{padding-left:90px}.ci-live-time{font-size:10px}}
+</style>
+
+<div class="ci-live-dashboard" id="ci-live-dashboard" data-session-id="<%= selectedSession.id %>">
+    <section class="tl-card ci-live-card">
+        <div class="ci-live-head">
+            <div>
+                <div class="ci-live-muted">ADMIN / CALL INTELLIGENCE</div>
+                <h2>Full call journey · Live SIP sequence</h2>
+                <div class="ci-live-muted">Session <code><%= selectedSession.id %></code> · <%= selectedSession.capture_scope %> · <%= selectedSession.capture_profile %></div>
+            </div>
+            <div class="ci-live-actions">
+                <span id="ci-live-state" class="ci-live-state <%= selectedSession.status === 'active' || selectedSession.status === 'starting' ? 'is-on' : 'is-off' %>">
+                    <span></span><b id="ci-live-state-text"><%= selectedSession.status === 'active' ? 'LIVE ON' : selectedSession.status === 'starting' ? 'STARTING' : selectedSession.status.toUpperCase() %></b>
+                </span>
+                <% if (selectedSession.status === 'active') { %>
+                    <form method="post" action="/admin/call-intelligence/sessions/<%= selectedSession.id %>/stop">
+                        <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                        <button class="tl-btn" type="submit">Turn Live Capture OFF</button>
+                    </form>
+                <% } else if (selectedSession.status === 'starting' || selectedSession.status === 'scheduled') { %>
+                    <form method="post" action="/admin/call-intelligence/sessions/<%= selectedSession.id %>/cancel">
+                        <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                        <button class="tl-btn secondary" type="submit">Cancel capture</button>
+                    </form>
+                <% } %>
+                <a class="tl-btn secondary" href="/admin/call-intelligence">Back</a>
+            </div>
+        </div>
+        <div class="ci-live-stats">
+            <div class="ci-live-stat"><small>Packets received</small><strong id="ci-live-packets">—</strong></div>
+            <div class="ci-live-stat"><small>Packets saved</small><strong id="ci-live-saved">—</strong></div>
+            <div class="ci-live-stat"><small>Calls observed</small><strong id="ci-live-calls">0</strong></div>
+            <div class="ci-live-stat"><small>SIP messages</small><strong id="ci-live-message-count">0</strong></div>
+            <div class="ci-live-stat"><small>Endpoints</small><strong id="ci-live-endpoints">0</strong></div>
+        </div>
+        <div class="ci-live-muted" id="ci-live-error" style="margin-top:10px"><%= selectedSession.last_error || '' %></div>
+    </section>
+
+    <section class="tl-card ci-live-card">
+        <div class="ci-live-head">
+            <div><h2>Live SIP sequence</h2><div class="ci-live-muted">Caller / originating carrier → Wazo / Asterisk → destination carrier / called party, based on observed packet endpoints.</div></div>
+            <span class="ci-live-muted" id="ci-live-time-range">Waiting for SIP packets…</span>
+        </div>
+        <div class="ci-live-toolbar">
+            <label class="ci-live-muted" for="ci-live-call-select">Observed call</label>
+            <select id="ci-live-call-select" class="ci-live-select" hidden></select>
+            <span class="ci-live-muted" id="ci-live-correlation-note">Cross-leg dialogs are combined only when TECH-Life has a shared verified call ID.</span>
+        </div>
+        <div id="ci-live-sequence" class="ci-live-scroll"><div class="ci-live-empty">Waiting for captured SIP signalling. Place a test call while Live Capture is ON.</div></div>
+    </section>
+
+    <section class="tl-card ci-live-card">
+        <div class="ci-live-head"><div><h2>SIP analytics</h2><div class="ci-live-muted">Distribution and timing calculated from observed SIP messages and verified call legs.</div></div></div>
+        <div class="ci-live-analytics">
+            <div><div id="ci-live-donut" class="ci-live-donut"></div><div class="ci-live-muted" style="text-align:center;margin-top:8px">SIP method / response mix</div></div>
+            <div>
+                <div class="ci-live-stats">
+                    <div class="ci-live-stat"><small>Call duration</small><strong id="ci-live-duration">—</strong></div>
+                    <div class="ci-live-stat"><small>First response</small><strong id="ci-live-setup">—</strong></div>
+                    <div class="ci-live-stat"><small>Disconnect response</small><strong id="ci-live-disconnect">—</strong></div>
+                    <div class="ci-live-stat"><small>First seen</small><strong id="ci-live-first">—</strong></div>
+                    <div class="ci-live-stat"><small>Last seen</small><strong id="ci-live-last">—</strong></div>
+                </div>
+                <div id="ci-live-method-legend" class="ci-live-legend" style="margin-top:12px"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="tl-card ci-live-card">
+        <div class="ci-live-head"><div><h2>Media / RTCP activity</h2><div class="ci-live-muted">Observed RTCP report volume by time. This is not a decoded MOS, jitter or packet-loss graph.</div></div></div>
+        <div id="ci-live-media" class="ci-live-empty">No RTCP reports observed yet. Voice-quality metrics will appear only when valid RTCP report fields can be decoded.</div>
+    </section>
+</div>
+
+<script>
+(function () {
+    const root = document.getElementById('ci-live-dashboard');
+    if (!root) return;
+    const sessionId = root.dataset.sessionId;
+    const api = '/admin/call-intelligence/sessions/' + encodeURIComponent(sessionId) + '/live-data';
+    const packetMap = new Map();
+    let legs = [];
+    let lastId = '0';
+    let chosenGroup = '';
+    let busy = false;
+    let timer = null;
+    const colors = ['#39c6e8','#e69b32','#31c48d','#a78bfa','#ef6476','#55a6ff','#d6b44c','#50c2ad'];
+    const byId = id => document.getElementById(id);
+    const fmtTime = value => value ? new Date(value).toLocaleTimeString() : '—';
+    const text = (node, value) => { if (node) node.textContent = value == null ? '—' : String(value); };
+    const packetTime = p => p.packet_time || p.received_at || null;
+    const groupKey = p => p.app_call_id ? 'app:' + p.app_call_id : p.call_id ? 'sip:' + p.call_id : 'packet:' + p.id;
+    const labelFor = p => p.sip_method || ((p.sip_status_code || '') + ' ' + (p.sip_reason || '')).trim() || 'SIP';
+    const endpointKey = (ip, port) => String(ip || 'Unknown IP') + '|' + String(port == null ? '?' : port);
+    function fmtDuration(ms) {
+        if (!Number.isFinite(ms) || ms < 0) return '—';
+        const s = Math.round(ms / 1000);
+        return s >= 3600 ? Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm' : s >= 60 ? Math.floor(s/60) + 'm ' + (s%60) + 's' : s + 's';
+    }
+    function groupsNow() {
+        const map = new Map();
+        for (const p of packetMap.values()) {
+            if (p.record_type !== 'sip') continue;
+            const key = groupKey(p);
+            if (!map.has(key)) map.set(key, []);
+            map.get(key).push(p);
+        }
+        for (const arr of map.values()) arr.sort((a,b) => new Date(packetTime(a)||0)-new Date(packetTime(b)||0) || Number(a.id)-Number(b.id));
+        return map;
+    }
+    function updateSelector(groups) {
+        const select = byId('ci-live-call-select');
+        const entries = [...groups.entries()];
+        if (!select) return;
+        if (!entries.length) { select.hidden = true; chosenGroup = ''; return; }
+        select.hidden = entries.length < 2;
+        if (!chosenGroup || !groups.has(chosenGroup)) chosenGroup = entries[0][0];
+        select.innerHTML = '';
+        for (const [key, items] of entries) {
+            const option = document.createElement('option');
+            const first = items[0];
+            const from = first.sip_from_uri || first.sip_request_uri || first.call_id || key;
+            option.value = key;
+            option.textContent = String(from).slice(0,65) + ' · ' + items.length + ' SIP';
+            option.selected = key === chosenGroup;
+            select.appendChild(option);
+        }
+        select.onchange = () => { chosenGroup = select.value; render(); };
+    }
+    function participantName(p) {
+        const role = p.channel_role ? ' · ' + p.channel_role : '';
+        return String(p.source_ip || '') + ':' + String(p.source_port || '?') + role;
+    }
+    function decodePayload(base64, truncated) {
+        if (!base64) return '';
+        try {
+            const binary = atob(base64);
+            const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+            let value = new TextDecoder().decode(bytes);
+            value = value.replace(/^(Authorization|Proxy-Authorization|WWW-Authenticate|Proxy-Authenticate)\s*:\s*.*$/gim, '$1: [REDACTED]');
+            value = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            if (truncated) value += '\n[Payload preview truncated by TECH-Life]';
+            return value.slice(0,12000);
+        } catch (_) { return '[SIP payload could not be decoded]'; }
+    }
+    function renderSequence(items) {
+        const host = byId('ci-live-sequence');
+        if (!host) return;
+        if (!items.length) { host.innerHTML = '<div class="ci-live-empty">No SIP signalling for this call yet.</div>'; return; }
+        const participants = [];
+        const indexes = new Map();
+        function add(ip, port, role) {
+            const key = endpointKey(ip, port);
+            if (!indexes.has(key)) { indexes.set(key, participants.length); participants.push({ip:String(ip||'Unknown IP'),port:String(port==null?'?':port),roles:new Set()}); }
+            if (role) participants[indexes.get(key)].roles.add(String(role));
+            return indexes.get(key);
+        }
+        for (const p of items) { add(p.source_ip,p.source_port,p.channel_role); add(p.destination_ip,p.destination_port,''); }
+        const board = document.createElement('div'); board.className='ci-live-board';
+        board.style.minWidth=Math.max(720,participants.length*190+112)+'px';
+        const head=document.createElement('div'); head.className='ci-live-participants'; head.style.gridTemplateColumns='repeat('+participants.length+',minmax(0,1fr))';
+        for (const p of participants) { const el=document.createElement('div'); el.className='ci-live-participant'; const strong=document.createElement('strong'); strong.textContent=p.ip; const small=document.createElement('small'); small.textContent='Port '+p.port+(p.roles.size?' · '+[...p.roles].join('/'):''); el.append(strong,small); head.appendChild(el); }
+        board.appendChild(head);
+        const firstMs=new Date(packetTime(items[0])||0).getTime();
+        items.forEach((p,index)=>{
+            const row=document.createElement('div'); row.className='ci-live-row';
+            const time=document.createElement('div'); time.className='ci-live-time'; const strong=document.createElement('strong'); strong.textContent=fmtTime(packetTime(p)); const small=document.createElement('span'); small.textContent='#'+(index+1); time.append(strong,small);
+            const lane=document.createElement('div'); lane.className='ci-live-lane';
+            const lifelines=document.createElement('div'); lifelines.className='ci-live-lifelines'; lifelines.style.gridTemplateColumns='repeat('+participants.length+',minmax(0,1fr))';
+            participants.forEach(()=>lifelines.appendChild(document.createElement('span')));
+            const src=indexes.get(endpointKey(p.source_ip,p.source_port)); const dst=indexes.get(endpointKey(p.destination_ip,p.destination_port));
+            const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 1000 30'); svg.setAttribute('preserveAspectRatio','none'); svg.classList.add('ci-live-arrow');
+            const defs=document.createElementNS('http://www.w3.org/2000/svg','defs'); const marker=document.createElementNS('http://www.w3.org/2000/svg','marker'); marker.setAttribute('id','ci-live-arrow-'+index); marker.setAttribute('markerWidth','8'); marker.setAttribute('markerHeight','8'); marker.setAttribute('refX','7'); marker.setAttribute('refY','4'); marker.setAttribute('orient','auto'); marker.setAttribute('markerUnits','userSpaceOnUse'); const path=document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d','M0,0 L8,4 L0,8 z'); const status=Number(p.sip_status_code||0); const color=status>=300?'#ef6476':status>=200?'#31c48d':status>=100?'#45c6a8':String(p.sip_method||'').toUpperCase()==='ACK'?'#a78bfa':'#49c5e8'; path.setAttribute('fill',color); marker.appendChild(path); defs.appendChild(marker); svg.appendChild(defs);
+            const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1',String((src+.5)/participants.length*1000)); line.setAttribute('y1','20'); line.setAttribute('x2',String((dst+.5)/participants.length*1000)); line.setAttribute('y2','20'); line.setAttribute('stroke',color); line.setAttribute('stroke-width','2'); line.setAttribute('marker-end','url(#ci-live-arrow-'+index+')'); svg.appendChild(line);
+            const label=document.createElement('span'); label.className='ci-live-label'; label.style.left=(((src+dst+1)/2)/participants.length*100)+'%'; label.style.color=color; label.textContent=labelFor(p);
+            const callid=document.createElement('div'); callid.className='ci-live-callid'; callid.textContent='Call-ID: '+(p.call_id||'unavailable')+' · '+(Number.isFinite(new Date(packetTime(p)||0).getTime()-firstMs)?'+'+(new Date(packetTime(p)||0).getTime()-firstMs).toFixed(1)+' ms':'');
+            const details=document.createElement('details'); details.className='ci-live-details'; const summary=document.createElement('summary'); summary.textContent='Message details · '+(p.transport_protocol||'transport unavailable')+' · CSeq '+(p.sip_cseq||'—'); const body=document.createElement('div'); body.style.padding='8px 0';
+            const endpointInfo=document.createElement('div'); endpointInfo.textContent='From '+String(p.source_ip||'?')+':'+String(p.source_port||'?')+' → '+String(p.destination_ip||'?')+':'+String(p.destination_port||'?'); const uri=document.createElement('div'); uri.textContent='Request '+(p.sip_request_uri||'—')+' · '+(p.sip_from_uri||'—')+' → '+(p.sip_to_uri||'—'); body.append(endpointInfo,uri);
+            const raw=decodePayload(p.payload_base64,p.payload_truncated); if(raw){const pre=document.createElement('pre');pre.textContent=raw;body.appendChild(pre);} details.append(summary,body);
+            lane.append(lifelines,svg,label,callid,details); row.append(time,lane); board.appendChild(row);
+        });
+        host.innerHTML=''; host.appendChild(board);
+        const times=items.map(p=>new Date(packetTime(p)||0).getTime()).filter(Number.isFinite); text(byId('ci-live-time-range'),times.length?new Date(Math.min(...times)).toLocaleString()+' — '+new Date(Math.max(...times)).toLocaleString():'Time unavailable');
+        text(byId('ci-live-message-count'),items.length); text(byId('ci-live-endpoints'),participants.length);
+    }
+    function responseDelay(items) {
+        for (const invite of items.filter(p=>String(p.sip_method||'').toUpperCase()==='INVITE')) {
+            const t0=new Date(packetTime(invite)||0).getTime();
+            const response=items.find(p=>p.call_id===invite.call_id && Number(p.sip_status_code)>=100 && new Date(packetTime(p)||0).getTime()>=t0);
+            if(response) return new Date(packetTime(response)).getTime()-t0;
+        }
+        return NaN;
+    }
+    function disconnectDelay(items) {
+        for (const bye of items.filter(p=>['BYE','CANCEL'].includes(String(p.sip_method||'').toUpperCase()))) {
+            const seq=String(bye.sip_cseq||'').split(/\s+/)[0]; const t0=new Date(packetTime(bye)||0).getTime();
+            const response=items.find(p=>p.call_id===bye.call_id && Number(p.sip_status_code)>=200 && Number(p.sip_status_code)<300 && String(p.sip_cseq||'').startsWith(seq+' ') && new Date(packetTime(p)||0).getTime()>=t0);
+            if(response) return new Date(packetTime(response)).getTime()-t0;
+        }
+        return NaN;
+    }
+    function renderAnalytics(items, appCallId) {
+        const counts=new Map();
+        for(const p of items){const k=p.sip_method||((p.sip_status_code||'')+' '+(p.sip_reason||'')).trim()||'SIP';counts.set(k,(counts.get(k)||0)+1);}
+        const total=[...counts.values()].reduce((a,b)=>a+b,0); const palette=['#e65a5a','#398fe3','#2dbd89','#9a66df','#df922d','#19b8c4','#d65c9c','#a8b65a'];
+        let cursor=0; const segments=[]; let i=0;
+        for(const [name,count] of counts){const start=total?cursor/total*100:0;cursor+=count;const end=total?cursor/total*100:100;segments.push(palette[i%palette.length]+' '+start+'% '+end+'%');i++;}
+        const donut=byId('ci-live-donut'); if(donut) donut.style.background=segments.length?'conic-gradient('+segments.join(',')+')':'#263342';
+        const legend=byId('ci-live-method-legend'); if(legend){legend.innerHTML='';i=0;for(const [name,count] of counts){const item=document.createElement('div');item.className='ci-live-legend-item';const a=document.createElement('span');a.textContent=name;const b=document.createElement('strong');b.textContent='× '+count;item.append(a,b);item.style.borderLeft='3px solid '+palette[i++%palette.length];legend.appendChild(item);}}
+        const groupLegs=appCallId?legs.filter(l=>l.app_call_id===appCallId):[]; const starts=groupLegs.map(l=>new Date(l.started_at||0).getTime()).filter(v=>v>0&&Number.isFinite(v)); const ends=groupLegs.map(l=>l.ended_at?new Date(l.ended_at).getTime():NaN).filter(Number.isFinite);
+        let duration=NaN; if(starts.length){const end=ends.length===groupLegs.length?Math.max(...ends):Date.now();duration=end-Math.min(...starts);}
+        text(byId('ci-live-duration'),fmtDuration(duration)); text(byId('ci-live-setup'),fmtDuration(responseDelay(items))); text(byId('ci-live-disconnect'),fmtDuration(disconnectDelay(items)));
+        text(byId('ci-live-first'),items.length?fmtTime(packetTime(items[0])):'—'); text(byId('ci-live-last'),items.length?fmtTime(packetTime(items[items.length-1])):'—');
+    }
+    function renderMedia(items) {
+        const host=byId('ci-live-media'); const rows=items.filter(p=>p.record_type==='rtcp');
+        if(!host)return; if(!rows.length){host.className='ci-live-empty';host.textContent='No RTCP reports observed for this call. Voice-quality metrics are unavailable.';return;}
+        host.className=''; const buckets=new Map();
+        for(const p of rows){const t=new Date(packetTime(p)||0).getTime();if(!Number.isFinite(t))continue;const key=Math.floor(t/10000)*10000;buckets.set(key,(buckets.get(key)||0)+1);}
+        const points=[...buckets.entries()].sort((a,b)=>a[0]-b[0]);const max=Math.max(1,...points.map(x=>x[1]));
+        const ns='http://www.w3.org/2000/svg';const svg=document.createElementNS(ns,'svg');svg.setAttribute('viewBox','0 0 1000 190');svg.setAttribute('class','ci-live-media-svg');
+        for(let i=0;i<4;i++){const y=18+i*48;const line=document.createElementNS(ns,'line');line.setAttribute('x1','42');line.setAttribute('x2','985');line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('stroke','#253342');svg.appendChild(line);}
+        points.forEach((point,i)=>{const x=50+(points.length===1?0:i/(points.length-1)*920);const h=point[1]/max*140;const bar=document.createElementNS(ns,'rect');bar.setAttribute('x',String(x-3));bar.setAttribute('y',String(160-h));bar.setAttribute('width','6');bar.setAttribute('height',String(h));bar.setAttribute('fill','#d83d7b');svg.appendChild(bar);});
+        host.innerHTML='';host.appendChild(svg);const cap=document.createElement('div');cap.className='ci-live-muted';cap.style.marginTop='8px';cap.textContent=rows.length+' RTCP reports · '+rows.reduce((a,p)=>a+Number(p.payload_bytes||0),0)+' RTCP payload bytes. Loss, jitter and MOS are not shown until decoded report fields are available.';host.appendChild(cap);
+    }
+    function render() {
+        const groups=groupsNow(); updateSelector(groups);
+        const key=chosenGroup; const items=groups.get(key)||[];
+        text(byId('ci-live-calls'),groups.size);
+        const selected=items.length?items[0]:null;
+        const allForGroup=[...packetMap.values()].filter(p=>groupKey(p)===key);
+        renderSequence(items); renderAnalytics(items,selected&&selected.app_call_id); renderMedia(allForGroup);
+        if(selected && !selected.app_call_id) text(byId('ci-live-correlation-note'),'This dialog has no shared verified application call ID; it is shown as its observed SIP Call-ID only.');
+        else text(byId('ci-live-correlation-note'),'SIP dialogs sharing the verified TECH-Life call ID are grouped into one journey.');
+    }
+    async function refresh() {
+        if(busy)return;busy=true;
+        try {
+            const response=await fetch(api+'?after_id='+encodeURIComponent(lastId),{headers:{'Accept':'application/json'},cache:'no-store'});
+            if(!response.ok)throw new Error('Live data request failed (HTTP '+response.status+').');
+            const data=await response.json();
+            for(const p of (data.packets||[]))packetMap.set(String(p.id),p);
+            legs=data.legs||legs;lastId=data.next_after_id||lastId;
+            text(byId('ci-live-packets'),data.session.packets_received);text(byId('ci-live-saved'),data.session.packets_persisted);
+            const status=String(data.session.status||'unknown').toUpperCase();text(byId('ci-live-state-text'),status==='ACTIVE'?'LIVE ON':status);
+            const badge=byId('ci-live-state');if(badge){badge.classList.toggle('is-on',['ACTIVE','STARTING'].includes(status));badge.classList.toggle('is-off',!['ACTIVE','STARTING'].includes(status));}
+            text(byId('ci-live-error'),data.session.last_error||'');render();
+            if(!['ACTIVE','STARTING','STOPPING'].includes(status) && timer){clearInterval(timer);timer=null;}
+        } catch(error){text(byId('ci-live-error'),error.message||'Unable to refresh live data.');}
+        finally{busy=false;}
+    }
+    refresh();timer=setInterval(refresh,2500);
+})();
+</script>

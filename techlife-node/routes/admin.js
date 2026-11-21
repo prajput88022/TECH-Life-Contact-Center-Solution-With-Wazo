@@ -66,7 +66,9 @@ router.use('/pause-codes', requireFeature('pause_codes'));
 router.use('/media-assets', requireFeature('media_assets'));
 router.use('/audit-logs', requireFeature('audit_logs'));
 router.use('/staff-chat', requireFeature('staff_chat'));
+router.use('/call-intelligence', requireFeature('call_intelligence'));
 router.use('/staff-chat', require('./staffChat')('admin'));
+router.use('/call-intelligence', require('./callIntelligence'));
 
 /**
  * Postgres raises error code 23503 (foreign_key_violation) when a
@@ -1692,6 +1694,17 @@ router.get('/trunks', async (req, res) => {
 router.post('/trunks/create', async (req, res) => {
     const t = req.effectiveTenant.id;
     const b = req.body;
+
+    const qualifyFrequency =
+        b.qualify_frequency === undefined || b.qualify_frequency === ''
+            ? 60 : Number(b.qualify_frequency);
+
+    if (!Number.isInteger(qualifyFrequency) ||
+        qualifyFrequency < 0 || qualifyFrequency > 3600) {
+        return res.status(400).send(
+            'SIP OPTIONS qualification must be an integer from 0 to 3600 seconds.'
+        );
+    }
     const authMode = b.auth_mode === 'credentials' ? 'credentials' : b.auth_mode === 'ip' ? 'ip' : null;
     if (!authMode) return res.status(400).send('Choose IP or username/password authentication.');
     const username = String(b.sip_username || '').trim();
@@ -1703,12 +1716,13 @@ router.post('/trunks/create', async (req, res) => {
     const saved = await pool.query(
         `INSERT INTO trunks
          (tenant_id, name, sip_server, transport, codec, max_calls, caller_id,
-          auth_mode, sip_username, sip_password_enc)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          auth_mode, sip_username, sip_password_enc, qualify_frequency)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          RETURNING id, is_active`,
         [t, b.name, b.sip_server, b.transport || 'udp', b.codec || null, b.max_calls || null,
          (b.caller_id || '').trim().slice(0, 80) || null,
-         authMode, authMode === 'credentials' ? username : null, passwordEnc]
+         authMode, authMode === 'credentials' ? username : null,
+         passwordEnc, qualifyFrequency]
     );
     const trunkId = saved.rows[0].id;
     const safeAudit = { ...b };
@@ -1797,6 +1811,18 @@ router.post('/trunks/:id/provision', async (req, res) => {
 router.post('/trunks/:id/edit', async (req, res) => {
     const t = req.effectiveTenant.id;
     const b = req.body;
+
+    const qualifyFrequency = b.qualify_frequency === undefined
+        ? null
+        : (b.qualify_frequency === '' ? 60 : Number(b.qualify_frequency));
+
+    if (qualifyFrequency !== null &&
+        (!Number.isInteger(qualifyFrequency) ||
+         qualifyFrequency < 0 || qualifyFrequency > 3600)) {
+        return res.status(400).send(
+            'SIP OPTIONS qualification must be an integer from 0 to 3600 seconds.'
+        );
+    }
     const authMode = b.auth_mode === 'credentials' ? 'credentials' : b.auth_mode === 'ip' ? 'ip' : null;
     if (!authMode) return res.status(400).send('Choose IP or username/password authentication.');
     const username = String(b.sip_username || '').trim();
@@ -1831,11 +1857,13 @@ router.post('/trunks/:id/edit', async (req, res) => {
 
     await pool.query(
         `UPDATE trunks SET name=$1, sip_server=$2, transport=$3, codec=$4, max_calls=$5,
-            is_active=$6, caller_id=$7, auth_mode=$8, sip_username=$9, sip_password_enc=$10
-         WHERE id=$11 AND tenant_id=$12`,
+            is_active=$6, caller_id=$7, auth_mode=$8, sip_username=$9, sip_password_enc=$10,
+            qualify_frequency=COALESCE($11, qualify_frequency)
+         WHERE id=$12 AND tenant_id=$13`,
         [b.name, b.sip_server, b.transport, b.codec || null, b.max_calls || null,
          b.is_active === '1', (b.caller_id || '').trim().slice(0, 80) || null,
-         authMode, authMode === 'credentials' ? username : null, passwordEnc, req.params.id, t]
+         authMode, authMode === 'credentials' ? username : null,
+         passwordEnc, qualifyFrequency, req.params.id, t]
     );
     const safeAudit = { ...b };
     delete safeAudit.sip_password;

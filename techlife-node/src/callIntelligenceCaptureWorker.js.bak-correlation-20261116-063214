@@ -1,0 +1,1546 @@
+'use strict';
+
+// Load protected environment files for manual checks as well as systemd.
+const fs = require('fs');
+
+function loadEnvFile(file) {
+    if (!fs.existsSync(file)) return;
+
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+        const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+        if (match && process.env[match[1]] === undefined) {
+            process.env[match[1]] = match[2];
+        }
+    }
+}
+
+loadEnvFile('/etc/techlife/call-intelligence-ami.env');
+loadEnvFile('/etc/techlife/call-intelligence-hep.env');
+
+const os = require('os');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
+
+const { pool } = require('./db');
+const { AmiEventClient } = require('./amiEventClient');
+const { CallIntelligenceIdentityResolver } =
+    require('./callIntelligenceIdentityResolver');
+const { CallIntelligenceHepReceiver } =
+    require('./callIntelligenceHepReceiver');
+const { CallIntelligenceHepControl } =
+    require('./callIntelligenceHepControl');
+
+const VARSET_ALLOWLIST = new Set([
+    'WAZO_TENANT_UUID',
+    'WAZO_USERUUID',
+    'WAZO_LINE_ID',
+    'WAZO_SIP_CALL_ID',
+    'WAZO_CHANNEL_DIRECTION',
+    'WAZO_CONVERSATION_DIRECTION',
+    'WAZO_ENTRY_CONTEXT',
+    'WAZO_ENTRY_EXTEN'
+]);
+
+const MAX_CHANNELS = 50000;
+const MAX_PENDING_HEP = 512;
+const MAX_PENDING_AMI = 512;
+const PENDING_TTL_MS = 5000;
+const CHANNEL_TTL_MS = 30 * 60 * 1000;
+const POLL_MS = 2000;
+const IDENTITY_REFRESH_MS = 60000;
+
+const WORKER_LOCK_A = 77341;
+const WORKER_LOCK_B = 901;
+
+function header(frame, name) {
+    const key = Object.keys(frame).find(
+        k => k.toLowerCase() === name.toLowerCase()
+    );
+
+    if (!key) return null;
+
+    const value = frame[key];
+    return Array.isArray(value) ? value[0] : value;
+}
+
+function safeText(value, max = 512) {
+    if (value === undefined || value === null) return null;
+    const text = String(value).trim();
+    return text ? text.slice(0, max) : null;
+}
+
+function intOrNull(value, min = 0, max = Number.MAX_SAFE_INTEGER) {
+    if (value === undefined || value === null || String(value).trim() === '') {
+        return null;
+    }
+
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < min || number > max) {
+        return null;
+    }
+    return number;
+}
+
+function validUuid(value) {
+    return typeof value === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function parseEventTime(value) {
+    if (!value) return new Date();
+
+    const raw = String(value).trim();
+
+    if (/^\d+(?:\.\d+)?$/.test(raw)) {
+        const numeric = Number(raw);
+        const millis = numeric > 1000000000000
+            ? numeric
+            : numeric * 1000;
+
+        const result = new Date(millis);
+        return Number.isNaN(result.getTime()) ? new Date() : result;
+    }
+
+    const result = new Date(raw);
+    return Number.isNaN(result.getTime()) ? new Date() : result;
+}
+
+function readEnv(name, fallback = '') {
+    return String(process.env[name] || fallback).trim();
+}
+
+class CallIntelligenceCaptureWorker {
+    constructor() {
+        this.workerId = `${os.hostname()}:${process.pid}`;
+
+        this.captureId = Number(
+            readEnv('CALL_INTELLIGENCE_HEP_CAPTURE_ID')
+        );
+
+        this.amiOptions = {
+            host: readEnv('CALL_INTELLIGENCE_AMI_HOST', '127.0.0.1'),
+            port: Number(readEnv('CALL_INTELLIGENCE_AMI_PORT', '5038')),
+            username: readEnv('CALL_INTELLIGENCE_AMI_USERNAME'),
+            secret: readEnv('CALL_INTELLIGENCE_AMI_SECRET')
+        };
+
+        if (
+            !Number.isSafeInteger(this.captureId) ||
+            this.captureId < 1 ||
+            this.captureId > 4294967295
+        ) {
+            throw new Error('TECH-Life HEP capture ID is missing or invalid.');
+        }
+
+        if (!this.amiOptions.username || !this.amiOptions.secret) {
+            throw new Error('TECH-Life AMI credentials are missing.');
+        }
+
+        this.resolver = new CallIntelligenceIdentityResolver();
+
+        this.receiver = new CallIntelligenceHepReceiver({
+            host: '127.0.0.1',
+            port: 9060,
+            captureId: this.captureId
+        });
+
+        this.hepControl = new CallIntelligenceHepControl({
+            captureAddress: '127.0.0.1:9060',
+            captureName: 'TECH-Life Call Intelligence',
+            captureId: this.captureId
+        });
+
+        this.lockClient = null;
+        this.amiClient = null;
+        this.amiConnecting = null;
+
+        this.infrastructureReady = false;
+        this.infrastructureOwned = false;
+        this.shuttingDown = false;
+        this.started = false;
+        this.polling = false;
+        this.timer = null;
+
+        this.channelStates = new Map();
+        this.pendingHep = [];
+        this.pendingAmi = [];
+
+        this.activeSessions = [];
+        this.lastIdentityRefresh = 0;
+        this.lastError = null;
+    }
+
+    log(message) {
+        console.log(
+            `[${new Date().toISOString()}] [call-intelligence:${this.workerId}] ${message}`
+        );
+    }
+
+    async acquireLock() {
+        this.lockClient = await pool.connect();
+
+        const result = await this.lockClient.query(
+            'SELECT pg_try_advisory_lock($1, $2) AS locked',
+            [WORKER_LOCK_A, WORKER_LOCK_B]
+        );
+
+        if (!result.rows[0]?.locked) {
+            this.lockClient.release();
+            this.lockClient = null;
+            throw new Error('Another Call Intelligence worker owns the scheduler lock.');
+        }
+    }
+
+    async releaseLock() {
+        if (!this.lockClient) return;
+
+        try {
+            await this.lockClient.query(
+                'SELECT pg_advisory_unlock($1, $2)',
+                [WORKER_LOCK_A, WORKER_LOCK_B]
+            );
+        } finally {
+            this.lockClient.release();
+            this.lockClient = null;
+        }
+    }
+
+    async moduleAction(action) {
+        if (!['start', 'stop', 'status'].includes(action)) {
+            throw new Error('Invalid HEP module action.');
+        }
+
+        const result = await execFileAsync(
+            '/usr/bin/sudo',
+            ['-n', '/usr/local/sbin/techlife-hep-modules', action],
+            {
+                timeout: 20000,
+                maxBuffer: 128 * 1024
+            }
+        );
+
+        return result.stdout || result.stderr || '';
+    }
+
+    isOwnHepConfiguration(options = {}) {
+        return (
+            Number(options.capture_id) === this.captureId &&
+            String(options.capture_address || '') === '127.0.0.1:9060' &&
+            String(options.uuid_type || '').toLowerCase() === 'channel'
+        );
+    }
+
+    async refreshIdentity(force = false) {
+        if (
+            !force &&
+            Date.now() - this.lastIdentityRefresh < IDENTITY_REFRESH_MS
+        ) {
+            return;
+        }
+
+        try {
+            const result = await this.resolver.refresh();
+            this.lastIdentityRefresh = Date.now();
+
+            this.log(
+                `Identity refresh: tenants=${result.tenantCount}, ` +
+                `endpoints=${result.endpointCount}, agents=${result.agentUserCount}, ` +
+                `eligibleTrunks=${result.eligibleTrunkCount}, errors=${result.errors.length}`
+            );
+
+            if (result.errors.length) {
+                for (const message of result.errors.slice(0, 10)) {
+                    this.log(`Identity mapping warning: ${message}`);
+                }
+            }
+        } catch (error) {
+            this.log(`Identity refresh failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async connectAmi() {
+        if (this.amiClient?.connected) return true;
+        if (this.amiConnecting) return this.amiConnecting;
+        if (this.amiClient?.socket) return false;
+
+        const client = new AmiEventClient(this.amiOptions);
+        this.amiClient = client;
+
+        client.on('event', frame => {
+            this.handleAmiEvent(frame).catch(error => {
+                this.log(`AMI event processing error: ${error.message}`);
+            });
+        });
+
+        client.on('socketError', error => {
+            this.log(`AMI socket error: ${error.message}`);
+        });
+
+        client.on('disconnect', info => {
+            if (this.amiClient === client) {
+                this.amiClient = null;
+            }
+
+            this.infrastructureReady = false;
+
+            // A disconnected AMI stream invalidates cached channel ownership.
+            this.channelStates.clear();
+            this.pendingAmi.length = 0;
+            this.pendingHep.length = 0;
+
+            if (!info.intentional && !this.shuttingDown) {
+                this.log('AMI disconnected; capture persistence is paused until identity is rebuilt.');
+            }
+        });
+
+        this.amiConnecting = client.connect()
+            .then(() => {
+                this.log('Restricted AMI event stream connected.');
+                return true;
+            })
+            .finally(() => {
+                this.amiConnecting = null;
+            });
+
+        return this.amiConnecting;
+    }
+
+    async ensureInfrastructure() {
+        if (!this.receiver.started) {
+            await this.receiver.start(packet => this.handleHepPacket(packet));
+            this.log('HEP receiver listening on 127.0.0.1:9060.');
+        }
+
+        const amiConnected = await this.connectAmi();
+
+        if (!amiConnected || !this.amiClient?.connected) {
+            throw new Error('Restricted AMI event stream is not connected.');
+        }
+
+        const status = await this.hepControl.status();
+
+        if (status.enabled && !this.isOwnHepConfiguration(status.options)) {
+            throw new Error(
+                'HEP is already enabled with a different capture destination or capture ID. Refusing to take over global HEP.'
+            );
+        }
+
+        if (status.enabled) {
+            this.infrastructureOwned = true;
+        } else {
+            await this.hepControl.enable();
+            this.infrastructureOwned = true;
+            this.log('Wazo global HEP configuration enabled for TECH-Life.');
+        }
+
+        try {
+            await this.moduleAction('start');
+            this.infrastructureReady = true;
+            this.log('HEP PJSIP and RTCP exporters are running.');
+        } catch (error) {
+            this.infrastructureReady = false;
+
+            try {
+                await this.moduleAction('stop');
+            } catch (_) {}
+
+            try {
+                const verify = await this.hepControl.status();
+                if (this.isOwnHepConfiguration(verify.options)) {
+                    await this.hepControl.disable();
+                }
+            } catch (_) {}
+
+            if (this.amiClient) this.amiClient.close();
+            if (this.receiver.started) await this.receiver.close();
+
+            throw error;
+        }
+    }
+
+    async shutdownInfrastructure() {
+        if (this.shuttingDown) return;
+        this.shuttingDown = true;
+
+        try {
+            const status = await this.hepControl.status();
+
+            if (status.enabled && !this.isOwnHepConfiguration(status.options)) {
+                throw new Error(
+                    'Refusing to disable HEP because the current configuration is not owned by TECH-Life.'
+                );
+            }
+
+            if (status.enabled || this.infrastructureOwned) {
+                // Stop packet exporters first. This prevents more HEP traffic
+                // while Wazo reloads its global disabled setting.
+                await this.moduleAction('stop');
+            }
+
+            if (status.enabled && this.isOwnHepConfiguration(status.options)) {
+                await this.hepControl.disable();
+                this.log('Wazo global HEP configuration disabled.');
+            }
+
+            if (this.receiver.started) {
+                await this.receiver.close();
+                this.log('HEP receiver closed.');
+            }
+
+            if (this.amiClient) {
+                this.amiClient.close();
+                this.amiClient = null;
+            }
+
+            this.infrastructureReady = false;
+            this.infrastructureOwned = false;
+        } finally {
+            this.shuttingDown = false;
+        }
+    }
+
+    async validateSession(session) {
+        if (!['sip', 'sip_rtcp'].includes(session.capture_profile)) {
+            throw new Error(
+                'This capture profile requires a separate raw RTP media capture component and is not enabled.'
+            );
+        }
+
+        const tenantResult = await pool.query(
+            `SELECT id, is_active, timezone
+               FROM tenants
+              WHERE id = $1`,
+            [session.tenant_id]
+        );
+
+        if (!tenantResult.rowCount || tenantResult.rows[0].is_active !== true) {
+            throw new Error('Tenant is not active.');
+        }
+
+        if (session.capture_scope === 'tenant') {
+            if (session.trunk_id || session.agent_id) {
+                throw new Error('Tenant scope must not specify one trunk or agent.');
+            }
+
+            const eligible = await pool.query(
+                `SELECT 1
+                   FROM trunks
+                  WHERE tenant_id = $1
+                    AND is_active = TRUE
+                    AND provisioning_status = 'provisioned'
+                    AND wazo_endpoint_uuid IS NOT NULL
+                  LIMIT 1`,
+                [session.tenant_id]
+            );
+
+            if (!eligible.rowCount) {
+                throw new Error('Tenant has no active, provisioned SIP trunk.');
+            }
+        } else if (session.capture_scope === 'trunk') {
+            const eligible = await pool.query(
+                `SELECT 1
+                   FROM trunks
+                  WHERE tenant_id = $1
+                    AND id = $2
+                    AND is_active = TRUE
+                    AND provisioning_status = 'provisioned'
+                    AND wazo_endpoint_uuid IS NOT NULL`,
+                [session.tenant_id, session.trunk_id]
+            );
+
+            if (!eligible.rowCount) {
+                throw new Error('Selected trunk is not active and provisioned.');
+            }
+        } else if (session.capture_scope === 'agent') {
+            const agent = await pool.query(
+                `SELECT 1
+                   FROM agents
+                  WHERE tenant_id = $1
+                    AND id = $2
+                    AND is_active = TRUE`,
+                [session.tenant_id, session.agent_id]
+            );
+
+            if (!agent.rowCount) {
+                throw new Error('Selected agent is not active in this tenant.');
+            }
+
+            const eligible = await pool.query(
+                `SELECT 1
+                   FROM trunks
+                  WHERE tenant_id = $1
+                    AND is_active = TRUE
+                    AND provisioning_status = 'provisioned'
+                    AND wazo_endpoint_uuid IS NOT NULL
+                    AND ($2::uuid IS NULL OR id = $2)
+                  LIMIT 1`,
+                [session.tenant_id, session.trunk_id]
+            );
+
+            if (!eligible.rowCount) {
+                throw new Error('Selected agent has no eligible trunk for this capture scope.');
+            }
+        } else {
+            throw new Error('Unknown capture scope.');
+        }
+
+        return true;
+    }
+
+    async failStartingSession(sessionId, error) {
+        await pool.query(
+            `UPDATE call_intelligence_capture_sessions
+                SET status = 'failed',
+                    actual_stop_at = COALESCE(actual_stop_at, NOW()),
+                    stop_reason = 'START_FAILED',
+                    last_error = $3,
+                    updated_at = NOW()
+              WHERE tenant_id = $1
+                AND id = $2
+                AND status = 'starting'`,
+            [null, sessionId, String(error.message || error).slice(0, 2000)]
+        ).catch(async firstError => {
+            // Tenant ID is obtained through the session ID only in this
+            // worker-owned internal failure path.
+            this.log(`Could not fail starting session ${sessionId}: ${firstError.message}`);
+        });
+    }
+
+    async failStartingSessionSafe(session, error) {
+        await pool.query(
+            `UPDATE call_intelligence_capture_sessions
+                SET status = 'failed',
+                    actual_stop_at = COALESCE(actual_stop_at, NOW()),
+                    stop_reason = 'START_FAILED',
+                    last_error = $3,
+                    updated_at = NOW()
+              WHERE tenant_id = $1
+                AND id = $2
+                AND status = 'starting'`,
+            [
+                session.tenant_id,
+                session.id,
+                String(error.message || error).slice(0, 2000)
+            ]
+        );
+    }
+
+    async loadActiveSessions() {
+        const result = await pool.query(
+            `SELECT id, tenant_id, trunk_id, agent_id,
+                    capture_scope, capture_profile,
+                    scheduled_start_at, scheduled_stop_at,
+                    actual_start_at, max_duration_seconds,
+                    max_storage_bytes, bytes_written, status
+               FROM call_intelligence_capture_sessions
+              WHERE status = 'active'
+                AND scheduled_start_at <= NOW()
+                AND scheduled_stop_at > NOW()
+                AND (
+                    actual_start_at IS NULL OR
+                    actual_start_at +
+                    make_interval(secs => max_duration_seconds) > NOW()
+                )`
+        );
+
+        this.activeSessions = result.rows;
+        return result.rows;
+    }
+
+    matchesSession(session, identity) {
+        if (!identity?.verified || session.tenant_id !== identity.tenantId) {
+            return false;
+        }
+
+        if (session.capture_scope === 'tenant') {
+            return true;
+        }
+
+        if (session.capture_scope === 'trunk') {
+            return Boolean(
+                identity.trunkId &&
+                identity.trunkCaptureEligible &&
+                session.trunk_id === identity.trunkId
+            );
+        }
+
+        if (session.capture_scope === 'agent') {
+            if (!identity.agentId || session.agent_id !== identity.agentId) {
+                return false;
+            }
+
+            if (session.trunk_id) {
+                return Boolean(
+                    identity.trunkId &&
+                    session.trunk_id === identity.trunkId
+                );
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    getOrCreateChannel(channelName, frame = {}) {
+        if (!channelName) return null;
+
+        let state = this.channelStates.get(channelName);
+
+        if (!state) {
+            state = {
+                channel: channelName,
+                vars: {},
+                uniqueId: null,
+                linkedId: null,
+                context: null,
+                extension: null,
+                callerIdNumber: null,
+                callerIdName: null,
+                lastSeen: Date.now()
+            };
+            this.channelStates.set(channelName, state);
+        }
+
+        state.lastSeen = Date.now();
+
+        state.uniqueId = safeText(header(frame, 'Uniqueid'), 256) || state.uniqueId;
+        state.linkedId = safeText(header(frame, 'Linkedid'), 256) || state.linkedId;
+        state.context = safeText(header(frame, 'Context'), 256) || state.context;
+        state.extension = safeText(header(frame, 'Exten'), 256) || state.extension;
+        state.callerIdNumber = safeText(header(frame, 'CallerIDNum'), 256) || state.callerIdNumber;
+        state.callerIdName = safeText(header(frame, 'CallerIDName'), 256) || state.callerIdName;
+
+        return state;
+    }
+
+    pruneChannelStates() {
+        const cutoff = Date.now() - CHANNEL_TTL_MS;
+
+        for (const [name, state] of this.channelStates) {
+            if (state.lastSeen < cutoff) this.channelStates.delete(name);
+        }
+
+        if (this.channelStates.size > MAX_CHANNELS) {
+            const oldest = [...this.channelStates.entries()]
+                .sort((a, b) => a[1].lastSeen - b[1].lastSeen);
+
+            const removeCount = this.channelStates.size - MAX_CHANNELS;
+            for (const [name] of oldest.slice(0, removeCount)) {
+                this.channelStates.delete(name);
+            }
+        }
+    }
+
+    resolveHepPacket(packet) {
+        const correlation = safeText(packet.correlationId, 512);
+        let state = correlation
+            ? this.channelStates.get(correlation)
+            : null;
+
+        if (!state && correlation) {
+            const matches = [...this.channelStates.values()].filter(item =>
+                item.channel === correlation
+            );
+
+            if (matches.length === 1) state = matches[0];
+        }
+
+        if (!state) {
+            const sipCallId = safeText(packet.sip?.callId, 512);
+            const candidates = [...this.channelStates.values()].filter(item => {
+                const values = [
+                    item.vars.WAZO_SIP_CALL_ID,
+                    item.uniqueId,
+                    item.linkedId
+                ];
+                return values.some(value =>
+                    value && (
+                        value === correlation ||
+                        value === sipCallId
+                    )
+                );
+            });
+
+            if (candidates.length === 1) state = candidates[0];
+        }
+
+        const channel = state?.channel || correlation;
+
+        if (!channel) {
+            return { verified: false, reason: 'missing_hep_channel', state: null };
+        }
+
+        const variables = {
+            ...(state?.vars || {}),
+            CONTEXT: state?.context || ''
+        };
+
+        const identity = this.resolver.resolveChannel(channel, variables);
+
+        return {
+            ...identity,
+            state,
+            channel
+        };
+    }
+
+    queuePendingHep(packet) {
+        if (this.pendingHep.length >= MAX_PENDING_HEP) {
+            this.pendingHep.shift();
+        }
+
+        this.pendingHep.push({
+            packet,
+            expiresAt: Date.now() + PENDING_TTL_MS
+        });
+    }
+
+    async flushPendingHep() {
+        const now = Date.now();
+        const pending = this.pendingHep;
+        this.pendingHep = [];
+
+        for (const item of pending) {
+            if (item.expiresAt <= now) continue;
+
+            const handled = await this.handleHepPacket(
+                item.packet,
+                false
+            );
+
+            if (!handled) this.pendingHep.push(item);
+        }
+    }
+
+    async handleHepPacket(packet, allowQueue = true) {
+        if (!this.infrastructureReady || !this.activeSessions.length) {
+            return false;
+        }
+
+        const identity = this.resolveHepPacket(packet);
+
+        if (
+            !identity.verified ||
+            !identity.trunkId ||
+            identity.trunkCaptureEligible !== true
+        ) {
+            if (allowQueue) this.queuePendingHep(packet);
+            return false;
+        }
+
+        const matches = this.activeSessions.filter(session =>
+            this.matchesSession(session, identity)
+        );
+
+        if (!matches.length) {
+            if (allowQueue) this.queuePendingHep(packet);
+            return false;
+        }
+
+        const state = identity.state;
+        const appCallId = await this.findAppCallId(
+            identity.tenantId,
+            state?.uniqueId,
+            state?.linkedId
+        );
+
+        for (const session of matches) {
+            await this.persistPacket(
+                session,
+                identity,
+                appCallId,
+                packet
+            );
+        }
+
+        return true;
+    }
+
+    async findAppCallId(tenantId, uniqueId, linkedId) {
+        const ids = [...new Set(
+            [uniqueId, linkedId]
+                .map(x => safeText(x, 256))
+                .filter(Boolean)
+        )];
+
+        if (!ids.length) return null;
+
+        const result = await pool.query(
+            `SELECT id
+               FROM calls
+              WHERE tenant_id = $1
+                AND wazo_call_id::text = ANY($2::text[])
+              ORDER BY start_time DESC
+              LIMIT 2`,
+            [tenantId, ids]
+        );
+
+        return result.rowCount === 1 ? result.rows[0].id : null;
+    }
+
+    async persistPacket(session, identity, appCallId, packet) {
+        const parsed = {
+            protocolType: packet.protocolType,
+            recordType: packet.recordType,
+            ipFamily: packet.ipFamily,
+            correlationId: safeText(packet.correlationId, 512)
+        };
+
+        const parsedJson = JSON.stringify(parsed);
+        const byteCount = packet.payload.length + Buffer.byteLength(parsedJson);
+
+        const client = await pool.connect();
+
+        try {
+            await client.query('BEGIN');
+
+            const reserve = await client.query(
+                `UPDATE call_intelligence_capture_sessions
+                    SET packets_received = packets_received + 1,
+                        packets_persisted = packets_persisted + 1,
+                        bytes_written = bytes_written + $3,
+                        heartbeat_at = NOW(),
+                        updated_at = NOW()
+                  WHERE tenant_id = $1
+                    AND id = $2
+                    AND status = 'active'
+                    AND bytes_written + $3 <= max_storage_bytes
+                RETURNING id`,
+                [session.tenant_id, session.id, byteCount]
+            );
+
+            if (!reserve.rowCount) {
+                await client.query(
+                    `UPDATE call_intelligence_capture_sessions
+                        SET status = 'stopping',
+                            stop_reason = 'STORAGE_LIMIT',
+                            updated_at = NOW()
+                      WHERE tenant_id = $1
+                        AND id = $2
+                        AND status = 'active'
+                        AND bytes_written + $3 > max_storage_bytes`,
+                    [session.tenant_id, session.id, byteCount]
+                );
+
+                await client.query('COMMIT');
+                return false;
+            }
+
+            await client.query(
+                `INSERT INTO call_intelligence_packets (
+                    tenant_id, session_id, trunk_id, agent_id, app_call_id,
+                    packet_time, record_type, correlation_id, call_id,
+                    channel_name, source_ip, destination_ip,
+                    source_port, destination_port, transport_protocol,
+                    sip_method, sip_status_code, sip_reason, sip_cseq,
+                    sip_request_uri, sip_from_uri, sip_to_uri,
+                    payload, parsed_json
+                ) VALUES (
+                    $1, $2, $3, $4, $5,
+                    $6, $7, $8, $9,
+                    $10, $11::inet, $12::inet,
+                    $13, $14, $15,
+                    $16, $17, $18, $19,
+                    $20, $21, $22,
+                    $23, $24::jsonb
+                )`,
+                [
+                    session.tenant_id,
+                    session.id,
+                    identity.trunkId,
+                    identity.agentId || null,
+                    appCallId,
+                    packet.packetTime,
+                    packet.recordType,
+                    safeText(packet.correlationId, 512),
+                    packet.sip?.callId || null,
+                    identity.channel,
+                    packet.sourceIp,
+                    packet.destinationIp,
+                    packet.sourcePort,
+                    packet.destinationPort,
+                    packet.transportProtocol,
+                    packet.sip?.method || null,
+                    packet.sip?.statusCode || null,
+                    safeText(packet.sip?.reason, 256),
+                    safeText(packet.sip?.cseq, 128),
+                    safeText(packet.sip?.requestUri, 2048),
+                    safeText(packet.sip?.fromUri, 2048),
+                    safeText(packet.sip?.toUri, 2048),
+                    packet.payload,
+                    parsedJson
+                ]
+            );
+
+            await client.query('COMMIT');
+            return true;
+        } catch (error) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async handleAmiEvent(frame) {
+        if (!this.infrastructureReady) return;
+
+        const eventType = safeText(header(frame, 'Event'), 32);
+        if (!eventType) return;
+
+        const channel = safeText(header(frame, 'Channel'), 512);
+        const peerChannel = safeText(
+            header(frame, 'DestChannel') || header(frame, 'Newname'),
+            512
+        );
+
+        if (!channel) return;
+
+        const state = this.getOrCreateChannel(channel, frame);
+
+        if (eventType === 'VarSet') {
+            const variable = safeText(header(frame, 'Variable'), 128);
+            const value = safeText(header(frame, 'Value'), 2048);
+
+            if (variable && VARSET_ALLOWLIST.has(variable) && value !== null) {
+                state.vars[variable] = value;
+            } else {
+                return;
+            }
+        }
+
+        // Keep a renamed channel as an alias, but do not transfer ownership
+        // to an unrelated channel or invent a PJSIP endpoint association.
+        if (eventType === 'Rename' && peerChannel) {
+            const next = this.getOrCreateChannel(peerChannel, frame);
+            next.vars = { ...state.vars };
+            next.uniqueId = state.uniqueId;
+            next.linkedId = state.linkedId;
+            next.context = state.context;
+            next.callerIdNumber = state.callerIdNumber;
+            next.callerIdName = state.callerIdName;
+        }
+
+        if (eventType === 'DialBegin' && peerChannel) {
+            this.getOrCreateChannel(peerChannel, {
+                Linkedid: state.linkedId,
+                Uniqueid: header(frame, 'DestUniqueid')
+            });
+        }
+
+        const variables = {
+            ...state.vars,
+            CONTEXT: state.context || ''
+        };
+
+        const identity = this.resolver.resolveChannel(channel, variables);
+
+        await this.persistAmiEvent(
+            frame,
+            eventType,
+            state,
+            peerChannel,
+            identity,
+            true
+        );
+
+        await this.flushPendingHep();
+        await this.flushPendingAmi();
+        this.pruneChannelStates();
+    }
+
+    async flushPendingAmi() {
+        const now = Date.now();
+        const pending = this.pendingAmi;
+        this.pendingAmi = [];
+
+        for (const item of pending) {
+            if (item.expiresAt <= now) continue;
+
+            const state = this.channelStates.get(item.channel);
+            if (!state) continue;
+
+            const identity = this.resolver.resolveChannel(
+                item.channel,
+                {
+                    ...state.vars,
+                    CONTEXT: state.context || ''
+                }
+            );
+
+            const matched = await this.persistAmiEvent(
+                item.frame,
+                item.eventType,
+                state,
+                item.peerChannel,
+                identity,
+                false
+            );
+
+            if (!matched) this.pendingAmi.push(item);
+        }
+    }
+
+    async persistAmiEvent(
+        frame,
+        eventType,
+        state,
+        peerChannel,
+        identity,
+        allowQueue
+    ) {
+        if (!identity?.verified) {
+            if (allowQueue) this.queuePendingAmi(
+                frame, eventType, state.channel, peerChannel
+            );
+            return false;
+        }
+
+        if (
+            eventType === 'VarSet' &&
+            !VARSET_ALLOWLIST.has(String(header(frame, 'Variable') || ''))
+        ) {
+            return false;
+        }
+
+        const matches = this.activeSessions.filter(session =>
+            this.matchesSession(session, identity)
+        );
+
+        if (!matches.length) {
+            if (allowQueue) this.queuePendingAmi(
+                frame, eventType, state.channel, peerChannel
+            );
+            return false;
+        }
+
+        const uniqueId = safeText(
+            header(frame, 'Uniqueid'), 256
+        ) || state.uniqueId;
+
+        const linkedId = safeText(
+            header(frame, 'Linkedid'), 256
+        ) || state.linkedId;
+
+        const appCallId = await this.findAppCallId(
+            identity.tenantId,
+            uniqueId,
+            linkedId
+        );
+
+        const variable = safeText(header(frame, 'Variable'), 128);
+        const value = variable && VARSET_ALLOWLIST.has(variable)
+            ? safeText(header(frame, 'Value'), 2048)
+            : null;
+
+        const payload = {};
+
+        if (eventType === 'VarSet') {
+            payload.variable = variable;
+            payload.value = value;
+        }
+
+        const stateDesc = safeText(
+            header(frame, 'ChannelStateDesc'), 64
+        );
+        if (stateDesc) payload.channelState = stateDesc;
+
+        const dialStatus = safeText(
+            header(frame, 'DialStatus'), 64
+        );
+        if (dialStatus) payload.dialStatus = dialStatus;
+
+        const bridgeId = safeText(
+            header(frame, 'BridgeUniqueid'), 256
+        );
+        if (bridgeId) payload.bridgeUniqueid = bridgeId;
+
+        const payloadJson = JSON.stringify(payload);
+        const byteCount = Buffer.byteLength(payloadJson) + 512;
+
+        for (const session of matches) {
+            const client = await pool.connect();
+
+            try {
+                await client.query('BEGIN');
+
+                const reserve = await client.query(
+                    `UPDATE call_intelligence_capture_sessions
+                        SET bytes_written = bytes_written + $3,
+                            heartbeat_at = NOW(),
+                            updated_at = NOW()
+                      WHERE tenant_id = $1
+                        AND id = $2
+                        AND status = 'active'
+                        AND bytes_written + $3 <= max_storage_bytes
+                    RETURNING id`,
+                    [session.tenant_id, session.id, byteCount]
+                );
+
+                if (!reserve.rowCount) {
+                    await client.query(
+                        `UPDATE call_intelligence_capture_sessions
+                            SET status = 'stopping',
+                                stop_reason = 'STORAGE_LIMIT',
+                                updated_at = NOW()
+                          WHERE tenant_id = $1
+                            AND id = $2
+                            AND status = 'active'
+                            AND bytes_written + $3 > max_storage_bytes`,
+                        [session.tenant_id, session.id, byteCount]
+                    );
+
+                    await client.query('COMMIT');
+                    continue;
+                }
+
+                await client.query(
+                    `INSERT INTO call_intelligence_ami_events (
+                        tenant_id, session_id, trunk_id, agent_id, app_call_id,
+                        event_time, event_type, channel_name, peer_channel,
+                        unique_id, linked_id, wazo_tenant_uuid, wazo_user_uuid,
+                        wazo_line_id, context_name, extension,
+                        caller_id_number, caller_id_name, connected_line_number,
+                        application, application_data, cause, cause_text,
+                        digit, duration_ms, direction, payload_json
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,
+                        $6,$7,$8,$9,
+                        $10,$11,$12,$13,
+                        $14,$15,$16,
+                        $17,$18,$19,
+                        $20,$21,$22,$23,
+                        $24,$25,$26,$27::jsonb
+                    )`,
+                    [
+                        session.tenant_id,
+                        session.id,
+                        identity.trunkId || null,
+                        identity.agentId || null,
+                        appCallId,
+                        parseEventTime(header(frame, 'Timestamp')),
+                        eventType,
+                        state.channel,
+                        peerChannel,
+                        uniqueId,
+                        linkedId,
+                        validUuid(identity.wazoTenantUuid)
+                            ? identity.wazoTenantUuid : null,
+                        validUuid(identity.wazoUserUuid)
+                            ? identity.wazoUserUuid : null,
+                        identity.wazoLineId,
+                        state.context,
+                        state.extension,
+                        state.callerIdNumber,
+                        state.callerIdName,
+                        safeText(header(frame, 'ConnectedLineNum'), 256),
+                        safeText(header(frame, 'Application'), 256),
+                        safeText(header(frame, 'AppData'), 2048),
+                        intOrNull(header(frame, 'Cause'), 0, 65535),
+                        safeText(header(frame, 'Cause-txt'), 256),
+                        safeText(header(frame, 'Digit'), 8),
+                        intOrNull(header(frame, 'DurationMs'), 0, 600000),
+                        safeText(
+                            header(frame, 'Direction') ||
+                            state.vars.WAZO_CHANNEL_DIRECTION ||
+                            state.vars.WAZO_CONVERSATION_DIRECTION,
+                            24
+                        ),
+                        payloadJson
+                    ]
+                );
+
+                await client.query('COMMIT');
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => {});
+                throw error;
+            } finally {
+                client.release();
+            }
+        }
+
+        return true;
+    }
+
+    queuePendingAmi(frame, eventType, channel, peerChannel) {
+        if (!channel) return;
+
+        if (this.pendingAmi.length >= MAX_PENDING_AMI) {
+            this.pendingAmi.shift();
+        }
+
+        this.pendingAmi.push({
+            frame,
+            eventType,
+            channel,
+            peerChannel,
+            expiresAt: Date.now() + PENDING_TTL_MS
+        });
+    }
+
+    expirePending() {
+        const now = Date.now();
+        this.pendingHep = this.pendingHep.filter(
+            item => item.expiresAt > now
+        );
+        this.pendingAmi = this.pendingAmi.filter(
+            item => item.expiresAt > now
+        );
+    }
+
+    async markExpiredSessions() {
+        await pool.query(
+            `UPDATE call_intelligence_capture_sessions
+                SET status = 'failed',
+                    actual_stop_at = COALESCE(actual_stop_at, NOW()),
+                    stop_reason = 'MISSED_SCHEDULE_WINDOW',
+                    last_error = 'Scheduled capture window expired before the worker started it.',
+                    updated_at = NOW()
+              WHERE status = 'scheduled'
+                AND scheduled_stop_at <= NOW()`
+        );
+
+        await pool.query(
+            `UPDATE call_intelligence_capture_sessions
+                SET status = 'stopping',
+                    stop_reason = COALESCE(stop_reason, 'SCHEDULED_END'),
+                    updated_at = NOW()
+              WHERE status = 'active'
+                AND (
+                    scheduled_stop_at <= NOW()
+                    OR actual_start_at +
+                       make_interval(secs => max_duration_seconds) <= NOW()
+                )`
+        );
+    }
+
+    async claimDueSessions() {
+        return pool.query(
+            `WITH due AS (
+                SELECT id
+                  FROM call_intelligence_capture_sessions
+                 WHERE status = 'scheduled'
+                   AND scheduled_start_at <= NOW()
+                   AND scheduled_stop_at > NOW()
+                 ORDER BY scheduled_start_at, created_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 20
+            )
+            UPDATE call_intelligence_capture_sessions s
+               SET status = 'starting',
+                   worker_id = $1,
+                   attempt_count = attempt_count + 1,
+                   last_error = NULL,
+                   updated_at = NOW()
+              FROM due
+             WHERE s.id = due.id
+            RETURNING s.id, s.tenant_id`,
+            [this.workerId]
+        );
+    }
+
+    async processStartingSessions() {
+        const result = await pool.query(
+            `SELECT *
+               FROM call_intelligence_capture_sessions
+              WHERE status = 'starting'
+              ORDER BY scheduled_start_at, created_at
+              LIMIT 20`
+        );
+
+        const valid = [];
+
+        for (const session of result.rows) {
+            try {
+                await this.validateSession(session);
+                valid.push(session);
+            } catch (error) {
+                await this.failStartingSessionSafe(session, error);
+                this.log(`Session start rejected ${session.id}: ${error.message}`);
+            }
+        }
+
+        if (!valid.length) return;
+
+        await this.ensureInfrastructure();
+
+        for (const session of valid) {
+            await pool.query(
+                `UPDATE call_intelligence_capture_sessions
+                    SET status = 'active',
+                        actual_start_at = COALESCE(actual_start_at, NOW()),
+                        heartbeat_at = NOW(),
+                        worker_id = $3,
+                        last_error = NULL,
+                        updated_at = NOW()
+                  WHERE tenant_id = $1
+                    AND id = $2
+                    AND status = 'starting'`,
+                [session.tenant_id, session.id, this.workerId]
+            );
+
+            this.log(`Capture session active: ${session.id} (${session.capture_scope}).`);
+        }
+    }
+
+    async processStoppingSessions() {
+        const result = await pool.query(
+            `SELECT id, tenant_id, stop_reason
+               FROM call_intelligence_capture_sessions
+              WHERE status = 'stopping'
+              ORDER BY updated_at
+              LIMIT 50`
+        );
+
+        if (!result.rowCount) return;
+
+        const remaining = await pool.query(
+            `SELECT COUNT(*)::int AS total
+               FROM call_intelligence_capture_sessions
+              WHERE status IN ('active','starting')`
+        );
+
+        if (remaining.rows[0].total === 0) {
+            await this.shutdownInfrastructure();
+        }
+
+        for (const session of result.rows) {
+            await pool.query(
+                `UPDATE call_intelligence_capture_sessions
+                    SET status = 'completed',
+                        actual_stop_at = COALESCE(actual_stop_at, NOW()),
+                        stop_reason = COALESCE(stop_reason, 'STOPPED'),
+                        heartbeat_at = NOW(),
+                        updated_at = NOW()
+                  WHERE tenant_id = $1
+                    AND id = $2
+                    AND status = 'stopping'`,
+                [session.tenant_id, session.id]
+            );
+
+            this.log(`Capture session completed: ${session.id}.`);
+        }
+    }
+
+    async updateHeartbeats() {
+        await pool.query(
+            `UPDATE call_intelligence_capture_sessions
+                SET heartbeat_at = NOW(),
+                    worker_id = $1,
+                    updated_at = NOW()
+              WHERE status = 'active'`,
+            [this.workerId]
+        );
+    }
+
+    async tick() {
+        if (this.polling || this.shuttingDown) return;
+        this.polling = true;
+
+        try {
+            await this.refreshIdentity();
+            this.expirePending();
+
+            await this.markExpiredSessions();
+            await this.claimDueSessions();
+            await this.processStartingSessions();
+
+            const active = await this.loadActiveSessions();
+
+            if (active.length) {
+                await this.ensureInfrastructure();
+                this.activeSessions = active;
+                await this.updateHeartbeats();
+            } else {
+                this.activeSessions = [];
+            }
+
+            await this.processStoppingSessions();
+
+            // A worker restart may find HEP enabled but no valid sessions.
+            // Remove only the HEP configuration owned by this installation.
+            if (
+                !this.activeSessions.length &&
+                this.infrastructureOwned &&
+                !this.shuttingDown
+            ) {
+                await this.shutdownInfrastructure();
+            }
+        } catch (error) {
+            this.lastError = error.message;
+            this.log(`Scheduler error: ${error.message}`);
+        } finally {
+            this.polling = false;
+        }
+    }
+
+    async start() {
+        if (this.started) return;
+
+        await this.acquireLock();
+        await this.refreshIdentity(true);
+
+        // Ensure the receiver and exporters are not left active by a
+        // previous unclean shutdown when there are no active DB sessions.
+        const active = await this.loadActiveSessions();
+
+        if (active.length) {
+            await this.ensureInfrastructure();
+        } else {
+            const status = await this.hepControl.status();
+
+            if (
+                status.enabled &&
+                this.isOwnHepConfiguration(status.options)
+            ) {
+                this.infrastructureOwned = true;
+                await this.shutdownInfrastructure();
+            } else if (status.enabled) {
+                throw new Error(
+                    'Global HEP is enabled with a different destination. Worker will not take control.'
+                );
+            }
+        }
+
+        this.started = true;
+
+        await this.tick();
+
+        this.timer = setInterval(() => {
+            this.tick().catch(error => {
+                this.log(`Unhandled scheduler error: ${error.message}`);
+            });
+        }, POLL_MS);
+
+        this.log('Capture scheduler started.');
+    }
+
+    async check() {
+        await this.refreshIdentity(true);
+
+        const status = await this.hepControl.status();
+        const moduleStatus = await this.moduleAction('status');
+
+        const database = await pool.query(`
+            SELECT
+              (SELECT COUNT(*)::int
+                 FROM call_intelligence_capture_sessions
+                WHERE status IN ('scheduled','starting','active','stopping')) AS open_sessions,
+              (SELECT COUNT(*)::int
+                 FROM call_intelligence_capture_sessions
+                WHERE status = 'active') AS active_sessions,
+              (SELECT COUNT(*)::int FROM call_intelligence_packets) AS stored_packets,
+              (SELECT COUNT(*)::int FROM call_intelligence_ami_events) AS stored_ami_events
+        `);
+
+        console.log(JSON.stringify({
+            identity: this.resolver.getSnapshot(),
+            hepEnabled: status.enabled,
+            hepOwnedByTechLife: this.isOwnHepConfiguration(status.options),
+            moduleStatus,
+            database: database.rows[0],
+            receiver: this.receiver.getStats(),
+            workerWillNotEnableHepInCheckMode: true
+        }, null, 2));
+    }
+
+    async stop() {
+        if (this.timer) clearInterval(this.timer);
+        this.timer = null;
+        this.shuttingDown = true;
+
+        try {
+            const active = await pool.query(
+                `SELECT COUNT(*)::int AS total
+                   FROM call_intelligence_capture_sessions
+                  WHERE status IN ('active','starting','stopping')`
+            );
+
+            if (active.rows[0].total === 0) {
+                const status = await this.hepControl.status();
+
+                if (
+                    status.enabled &&
+                    this.isOwnHepConfiguration(status.options)
+                ) {
+                    this.infrastructureOwned = true;
+                }
+
+                if (this.infrastructureOwned) {
+                    this.shuttingDown = false;
+                    await this.shutdownInfrastructure();
+                    this.shuttingDown = true;
+                }
+            } else {
+                this.log(
+                    'Shutdown requested while sessions remain active; leaving HEP enabled for safe systemd restart recovery.'
+                );
+            }
+        } catch (error) {
+            this.log(`Shutdown cleanup warning: ${error.message}`);
+        }
+
+        if (this.amiClient) {
+            this.amiClient.close();
+            this.amiClient = null;
+        }
+
+        this.activeSessions = [];
+        this.channelStates.clear();
+        this.pendingAmi.length = 0;
+        this.pendingHep.length = 0;
+
+        await this.releaseLock();
+        await pool.end();
+
+        this.log('Capture worker stopped.');
+    }
+}
+
+module.exports = { CallIntelligenceCaptureWorker };
+
+if (require.main === module) {
+    (async () => {
+        const worker = new CallIntelligenceCaptureWorker();
+
+        if (process.argv.includes('--check')) {
+            try {
+                await worker.check();
+            } finally {
+                await pool.end();
+            }
+            return;
+        }
+
+        await worker.start();
+
+        let stopping = false;
+
+        async function stop() {
+            if (stopping) return;
+            stopping = true;
+
+            try {
+                await worker.stop();
+                process.exitCode = 0;
+            } catch (error) {
+                console.error('Capture worker shutdown failed:', error.message);
+                process.exitCode = 1;
+            }
+        }
+
+        process.once('SIGTERM', stop);
+        process.once('SIGINT', stop);
+    })().catch(async error => {
+        console.error(
+            `[${new Date().toISOString()}] Call Intelligence worker failed:`,
+            error.message
+        );
+        await pool.end().catch(() => {});
+        process.exitCode = 1;
+    });
+}

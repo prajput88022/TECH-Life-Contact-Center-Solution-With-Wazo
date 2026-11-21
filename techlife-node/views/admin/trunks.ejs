@@ -14,6 +14,11 @@
             <select name="transport"><option value="udp">UDP</option><option value="tcp">TCP</option><option value="tls">TLS</option></select>
         </div>
         <div><label>Codec</label><input name="codec" placeholder="ulaw,alaw,g729"></div>
+        <div>
+            <label>SIP OPTIONS qualification (seconds; 0 disables)</label>
+            <input type="number" name="qualify_frequency"
+                   min="0" max="3600" step="1" value="60">
+        </div>
         <div><label>Max Calls</label><input type="number" name="max_calls" placeholder="unlimited"></div>
         <div><label>Trunk Caller ID / CLI</label><input name="caller_id" maxlength="80" placeholder="e.g. your approved outbound number"></div>
     </div>
@@ -109,6 +114,12 @@
             </select>
         </div>
         <div><label>Codec</label><input name="codec" value="<%= tr.codec || '' %>"></div>
+        <div>
+            <label>SIP OPTIONS qualification (seconds; 0 disables)</label>
+            <input type="number" name="qualify_frequency"
+                   min="0" max="3600" step="1"
+                   value="<%= tr.qualify_frequency == null ? 60 : tr.qualify_frequency %>">
+        </div>
         <div><label>Max Calls</label><input type="number" name="max_calls" value="<%= tr.max_calls || '' %>"></div>
         <div><label>Trunk Caller ID / CLI</label><input name="caller_id" maxlength="80" value="<%= tr.caller_id || '' %>" placeholder="Approved outbound number"></div>
         <div><label>Status</label>

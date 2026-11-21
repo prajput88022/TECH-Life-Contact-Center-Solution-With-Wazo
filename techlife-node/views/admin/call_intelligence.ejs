@@ -1,0 +1,1341 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<style>
+.ci-wrap { display:grid; gap:16px; }
+.ci-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:10px; }
+.ci-stat { padding:14px; border:1px solid var(--tl-border,#ddd); border-radius:10px; min-width:0; }
+.ci-stat strong { display:block; font-size:18px; margin-top:5px; overflow-wrap:anywhere; }
+.ci-muted { color:var(--tl-muted,#777); font-size:13px; }
+.ci-table { overflow-x:auto; }
+.ci-table table { min-width:850px; }
+.ci-warning { border-left:4px solid #c58b27; padding:12px 14px; }
+.ci-success { border-left:4px solid #27834c; padding:12px 14px; }
+.ci-error { border-left:4px solid #b83d3d; padding:12px 14px; }
+.ci-form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+.ci-field { display:flex; flex-direction:column; gap:6px; }
+.ci-field[hidden] { display:none !important; }
+.ci-field label { font-weight:600; }
+.ci-field input,.ci-field select { width:100%; min-height:40px; }
+.ci-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.ci-actions form { display:inline-flex; margin:0; }
+.ci-status { display:inline-block; padding:4px 9px; border-radius:20px; background:var(--tl-panel,#eee); font-size:12px; }
+.ci-status.active { background:#d8f3df; color:#14592a; }
+.ci-status.failed { background:#f8dede; color:#8b2222; }
+.ci-status.stopping,.ci-status.starting { background:#fff0cb; color:#79520a; }
+.ci-status.completed { background:#dceafa; color:#174f87; }
+.ci-timeline { position:relative; margin:18px 0 8px 8px; padding-left:25px; border-left:2px solid var(--tl-border,#ccd); }
+.ci-event { position:relative; padding:0 0 18px 12px; }
+.ci-event:before { content:''; position:absolute; left:-33px; top:4px; width:12px; height:12px; border-radius:50%; background:var(--tl-blue,#3978c6); border:2px solid var(--tl-card,#fff); }
+.ci-event h3 { margin:0 0 5px; font-size:15px; }
+.ci-event pre { white-space:pre-wrap; overflow-wrap:anywhere; max-width:900px; padding:10px; border-radius:7px; background:var(--tl-panel,#f5f6f8); }
+.ci-ladder { display:grid; gap:8px; }
+.ci-ladder-row { display:grid; grid-template-columns:minmax(125px,1fr) minmax(70px,.5fr) minmax(125px,1fr) minmax(180px,1.5fr); align-items:center; gap:9px; padding:10px; border:1px solid var(--tl-border,#ddd); border-radius:8px; }
+.ci-endpoint { overflow-wrap:anywhere; font-size:12px; }
+.ci-arrow { text-align:center; white-space:nowrap; font-weight:700; color:var(--tl-blue,#3978c6); }
+.ci-message { overflow-wrap:anywhere; font-size:13px; }
+.ci-scroll { overflow-x:auto; }
+.ci-pill-row { display:flex; flex-wrap:wrap; gap:7px; margin:8px 0; }
+.ci-pill { border:1px solid var(--tl-border,#ddd); border-radius:20px; padding:5px 9px; font-size:12px; }
+.ci-section { display:grid; gap:12px; }
+.ci-details { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px; }
+.ci-details div { padding:9px; background:var(--tl-panel,#f5f6f8); border-radius:7px; min-width:0; overflow-wrap:anywhere; }
+.ci-details small { display:block; color:var(--tl-muted,#777); }
+.ci-details strong { overflow-wrap:anywhere; }
+
+.ci-flow {
+    display:flex;
+    align-items:stretch;
+    gap:9px;
+    overflow-x:auto;
+    padding:8px 2px 14px;
+}
+.ci-flow-card {
+    flex:0 0 220px;
+    min-width:0;
+    padding:13px;
+    border:1px solid var(--tl-border,#ccd);
+    border-radius:10px;
+    background:var(--tl-card,#fff);
+    overflow-wrap:anywhere;
+}
+.ci-flow-card.core {
+    border:2px solid var(--tl-blue,#3978c6);
+    background:var(--tl-panel,#f5f6f8);
+}
+.ci-flow-card.destination {
+    border:1px dashed var(--tl-border,#999);
+}
+.ci-flow-card.missing {
+    border:1px dashed #c58b27;
+}
+.ci-flow-kind {
+    font-size:11px;
+    color:var(--tl-muted,#777);
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    margin-bottom:8px;
+}
+.ci-flow-title {
+    display:block;
+    font-size:15px;
+    margin-bottom:7px;
+    overflow-wrap:anywhere;
+}
+.ci-flow-detail {
+    font-size:12px;
+    color:var(--tl-muted,#777);
+    overflow-wrap:anywhere;
+}
+.ci-flow-meta {
+    font-size:12px;
+    margin-top:9px;
+    overflow-wrap:anywhere;
+}
+.ci-flow-arrow {
+    flex:0 0 28px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:23px;
+    color:var(--tl-blue,#3978c6);
+}
+.ci-cel-event {
+    border-left:3px solid var(--tl-blue,#3978c6);
+    padding:0 0 16px 13px;
+    margin-left:7px;
+}
+.ci-cel-event h3 {
+    font-size:14px;
+    margin:0 0 5px;
+}
+.ci-cel-event pre {
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    max-width:1100px;
+    padding:9px;
+    border-radius:7px;
+    background:var(--tl-panel,#f5f6f8);
+}
+.ci-cel-event details {
+    margin-top:7px;
+    font-size:12px;
+}
+.ci-cel-event summary {
+    cursor:pointer;
+    color:var(--tl-muted,#777);
+}
+.ci-cel-events {
+    display:grid;
+    gap:3px;
+}
+.ci-trace-note {
+    padding:11px 13px;
+    background:var(--tl-panel,#f5f6f8);
+    border-radius:8px;
+    color:var(--tl-muted,#777);
+    font-size:13px;
+}
+
+.ci-sip-scroll {
+    width:100%;
+    overflow-x:auto;
+    border:1px solid var(--tl-border,#ddd);
+    border-radius:10px;
+    background:var(--tl-card,#fff);
+}
+.ci-sip-ladder {
+    position:relative;
+    padding:12px;
+}
+.ci-sip-participants {
+    display:grid;
+    gap:8px;
+    padding-bottom:14px;
+}
+.ci-sip-participant {
+    min-width:0;
+    padding:12px 8px;
+    border:1px solid var(--tl-border,#ddd);
+    border-radius:8px;
+    background:var(--tl-panel,#f5f6f8);
+    text-align:center;
+    overflow-wrap:anywhere;
+}
+.ci-sip-participant small {
+    display:block;
+    color:var(--tl-muted,#777);
+    font-size:11px;
+    margin-bottom:5px;
+}
+.ci-sip-participant strong {
+    font-size:13px;
+}
+.ci-sip-rows-wrap {
+    position:relative;
+}
+.ci-sip-lifelines {
+    position:absolute;
+    inset:0;
+    display:grid;
+    pointer-events:none;
+}
+.ci-sip-lifelines span {
+    justify-self:center;
+    height:100%;
+    border-left:1px dashed var(--tl-border,#b9bdc5);
+}
+.ci-sip-messages {
+    position:relative;
+}
+.ci-sip-message-row {
+    position:relative;
+    padding:10px 5px 13px;
+    min-height:106px;
+    border-bottom:1px solid var(--tl-border,#ddd);
+}
+.ci-sip-message-time {
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:space-between;
+    gap:8px;
+    color:var(--tl-muted,#777);
+    font-size:12px;
+    margin-bottom:5px;
+}
+.ci-sip-arrow-area {
+    height:47px;
+    position:relative;
+}
+.ci-sip-arrow-area svg {
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:47px;
+    overflow:visible;
+}
+.ci-sip-arrow-label {
+    position:absolute;
+    top:0;
+    transform:translateX(-50%);
+    max-width:42%;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:12px;
+    font-weight:700;
+    padding:2px 7px;
+    border-radius:5px;
+    background:var(--tl-card,#fff);
+    border:1px solid var(--tl-border,#ddd);
+}
+.ci-sip-endpoints {
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+    font-size:11px;
+    color:var(--tl-muted,#777);
+    overflow-wrap:anywhere;
+}
+.ci-sip-meta {
+    display:flex;
+    flex-wrap:wrap;
+    gap:7px 15px;
+    margin-top:7px;
+    font-size:12px;
+    overflow-wrap:anywhere;
+}
+.ci-sip-raw {
+    margin-top:9px;
+}
+.ci-sip-raw summary {
+    cursor:pointer;
+    color:var(--tl-blue,#3978c6);
+    font-size:12px;
+}
+
+/* Dark signalling canvas matching the supplied call-flow reference. */
+.ci-sip-scroll {
+    background:#071321;
+    border-color:#20384d;
+    color:#e5f1fc;
+}
+.ci-sip-ladder {
+    background:#071321;
+    color:#e5f1fc;
+}
+.ci-sip-participant {
+    position:relative;
+    background:#0d2235;
+    border-color:#284761;
+    color:#e9f5ff;
+}
+.ci-sip-participant:before {
+    content:'';
+    display:block;
+    width:7px;
+    height:7px;
+    margin:0 auto 7px;
+    border-radius:50%;
+    background:#43cbbb;
+}
+.ci-sip-participant small {
+    color:#9bb9d2;
+}
+.ci-sip-lifelines span {
+    border-left:1px dashed #1c354b;
+}
+.ci-sip-message-row {
+    min-height:105px;
+    border-bottom-color:#172d42;
+    background:#091a2a;
+}
+.ci-sip-message-row:nth-child(even) {
+    background:#0c1e30;
+}
+.ci-sip-message-time {
+    color:#9db7ce;
+    font-size:11px;
+}
+.ci-sip-arrow-area {
+    height:45px;
+}
+.ci-sip-arrow-label {
+    background:#102a40;
+    color:#eaf6ff;
+    border-color:#31536f;
+    top:1px;
+    font-size:12px;
+    min-width:105px;
+    text-align:center;
+}
+.ci-sip-endpoints {
+    color:#96b3cc;
+}
+.ci-sip-meta {
+    color:#a8bfd3;
+}
+.ci-sip-meta code {
+    color:#d9edff;
+    overflow-wrap:anywhere;
+}
+.ci-sip-raw summary {
+    color:#76c9e8;
+}
+.ci-sip-raw pre {
+    background:#06111d;
+    color:#d4e5f4;
+    border:1px solid #20384d;
+}
+.ci-sip-summary {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:8px;
+    padding:9px 12px;
+    border:1px solid #25435b;
+    border-radius:8px;
+    background:#0b1b2a;
+    color:#dbeafa;
+    font-size:12px;
+}
+.ci-sip-summary strong {
+    color:#ffffff;
+}
+.ci-sip-summary span {
+    color:#9db8d0;
+}
+.ci-sip-sequence {
+    color:#86a6c2;
+    font-weight:700;
+    margin-right:5px;
+}
+
+.ci-sip-raw pre {
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    max-height:420px;
+    overflow:auto;
+    padding:12px;
+    background:var(--tl-panel,#f5f6f8);
+    border-radius:8px;
+    font-size:11px;
+}
+.ci-media-record {
+    padding:10px;
+    border:1px solid var(--tl-border,#ddd);
+    border-radius:8px;
+    overflow-wrap:anywhere;
+}
+
+
+/* TECH-Life compact multi-endpoint signalling diagram */
+.ci-sequence-board {
+    background:#071321;
+    color:#e8f2fc;
+    border:1px solid #20394e;
+    border-radius:9px;
+    overflow:hidden;
+}
+.ci-sequence-summary {
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:12px;
+    padding:9px 12px;
+    background:#0b1d2e;
+    border-bottom:1px solid #25435b;
+    font-size:11px;
+    color:#a9c0d5;
+}
+.ci-sequence-summary strong {
+    color:#e9f5ff;
+}
+.ci-sequence-header,
+.ci-sequence-row {
+    display:grid;
+    grid-template-columns:92px minmax(0,1fr);
+}
+.ci-sequence-header {
+    background:#071321;
+    padding-top:5px;
+}
+.ci-sequence-gutter {
+    min-width:0;
+}
+.ci-sequence-participants {
+    display:grid;
+    gap:0;
+}
+.ci-sequence-participant {
+    min-width:0;
+    padding:8px 5px;
+    margin:0 5px 7px;
+    border:1px solid #284761;
+    border-radius:7px;
+    background:#0d2235;
+    text-align:center;
+    overflow-wrap:anywhere;
+}
+.ci-sequence-participant:before {
+    content:'';
+    display:block;
+    width:6px;
+    height:6px;
+    border-radius:50%;
+    background:#43cbbb;
+    margin:0 auto 5px;
+}
+.ci-sequence-participant strong {
+    display:block;
+    color:#eaf6ff;
+    font-size:11px;
+}
+.ci-sequence-participant small {
+    display:block;
+    color:#9bb9d2;
+    font-size:10px;
+    margin-top:3px;
+}
+.ci-sequence-row {
+    min-height:53px;
+    border-top:1px solid #142c40;
+    background:#091a2a;
+}
+.ci-sequence-row:nth-child(even) {
+    background:#0c1e30;
+}
+.ci-sequence-time {
+    padding:9px 7px 4px;
+    color:#a4bed4;
+    font-size:10px;
+    line-height:1.45;
+    overflow-wrap:anywhere;
+}
+.ci-sequence-time strong {
+    display:block;
+    color:#d3e9fa;
+    font-size:10px;
+}
+.ci-sequence-time span {
+    color:#7899b5;
+}
+.ci-sequence-lane {
+    position:relative;
+    min-width:0;
+    padding:4px 0 5px;
+}
+.ci-sequence-lifelines {
+    position:absolute;
+    inset:0;
+    display:grid;
+    pointer-events:none;
+}
+.ci-sequence-lifelines span {
+    justify-self:center;
+    height:100%;
+    border-left:1px dashed #1b354a;
+}
+.ci-sequence-arrow {
+    height:27px;
+    position:relative;
+    z-index:1;
+}
+.ci-sequence-arrow svg {
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:27px;
+    overflow:visible;
+}
+.ci-sequence-label {
+    position:absolute;
+    top:0;
+    transform:translate(-50%,0);
+    min-width:74px;
+    max-width:38%;
+    padding:1px 7px;
+    border:1px solid currentColor;
+    border-radius:5px;
+    background:#10263a;
+    font-size:10px;
+    line-height:15px;
+    text-align:center;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    font-weight:700;
+    z-index:2;
+}
+.ci-sequence-callid {
+    position:relative;
+    z-index:1;
+    margin-top:0;
+    text-align:center;
+    color:#83a8c8;
+    font-size:8px;
+    line-height:12px;
+    overflow-wrap:anywhere;
+}
+.ci-sequence-detail {
+    position:relative;
+    z-index:2;
+    margin:3px 7px 5px;
+    color:#a8bfd3;
+    font-size:10px;
+}
+.ci-sequence-detail summary {
+    cursor:pointer;
+    color:#83cbea;
+    font-size:10px;
+}
+.ci-sequence-detail-content {
+    margin-top:7px;
+    padding:9px;
+    border:1px solid #29465e;
+    border-radius:6px;
+    background:#06111d;
+    overflow-wrap:anywhere;
+}
+.ci-sequence-detail-content pre {
+    margin:7px 0 0;
+    padding:9px;
+    border-radius:5px;
+    background:#091827;
+    color:#d8e8f5;
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    max-height:400px;
+    overflow:auto;
+    font-size:10px;
+}
+.ci-sequence-no-packets {
+    padding:20px;
+    background:#0b1d2e;
+    color:#a9c0d5;
+    font-size:12px;
+}
+
+
+.ci-mode-switch {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:10px;
+}
+.ci-mode-button {
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:9px;
+    min-height:48px;
+    padding:10px 14px;
+    border:1px solid var(--tl-border,#ccd);
+    border-radius:9px;
+    background:var(--tl-panel,#f5f6f8);
+    color:var(--tl-text,inherit);
+    font-weight:700;
+    cursor:pointer;
+}
+.ci-mode-button.active {
+    border:2px solid var(--tl-blue,#3978c6);
+    background:var(--tl-card,#fff);
+    box-shadow:inset 0 0 0 1px var(--tl-blue,#3978c6);
+}
+.ci-mode-dot {
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:#9ca3af;
+}
+.ci-mode-button.active[data-capture-mode="live"] .ci-mode-dot {
+    background:#16a34a;
+    box-shadow:0 0 0 4px rgba(22,163,74,.13);
+}
+.ci-mode-button.active[data-capture-mode="scheduled"] .ci-mode-dot {
+    background:#3978c6;
+    box-shadow:0 0 0 4px rgba(57,120,198,.13);
+}
+
+@media(max-width:700px) {
+    .ci-ladder-row { grid-template-columns:1fr; gap:5px; }
+    .ci-arrow { text-align:left; }
+}
+</style>
+
+<div class="ci-wrap">
+    <header>
+        <h1>Call Intelligence</h1>
+        <p class="tl-subtitle">
+            Capture control, SIP signalling investigation and observed Asterisk call-leg diagnostics.
+        </p>
+    </header>
+
+    <% if (notice) { %>
+        <div class="tl-card <%= notice.type === 'error' ? 'ci-error' : 'ci-success' %>">
+            <strong><%= notice.type === 'error' ? 'Action not completed' : 'Status' %></strong>
+            <p><%= notice.message %></p>
+        </div>
+    <% } %>
+
+    <% if (selectedSession) { %>
+    <%- include('../partials/call_intelligence_live_dashboard', { selectedSession, csrfToken }) %>
+    <% } else if (selectedCall) { %>
+        <div>
+            <a class="tl-btn secondary" href="/admin/call-intelligence">← Back to call search</a>
+        </div>
+
+        <section class="tl-card ci-section">
+            <h2>Call overview</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Wazo Call ID</span><strong><%= selectedCall.wazo_call_id || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Direction</span><strong><%= celTrace && celTrace.available && celTrace.direction !== 'unknown' ? celTrace.direction : (selectedCall.direction || '—') %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Status</span><strong><%= selectedCall.status || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Agent</span><strong><%= selectedCall.agent_name %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">From</span><strong><%= selectedCall.from_number || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">To</span><strong><%= selectedCall.to_number || '—' %></strong></div>
+            </div>
+            <p class="ci-muted">Call record: <code><%= selectedCall.id %></code></p>
+        </section>
+
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>End-to-end call flow</h2>
+                <p class="ci-muted">
+                    Correlated from Asterisk CEL using Uniqueid and Linkedid.
+                    PJSIP channels are displayed only after tenant identity verification.
+                </p>
+            </div>
+
+            <% if (celTrace && celTrace.available) { %>
+                <div class="ci-pill-row">
+                    <span class="ci-pill">Source: Asterisk CEL</span>
+                    <span class="ci-pill">Direction: <%= celTrace.direction %></span>
+                    <span class="ci-pill">Linkedid: <code><%= celTrace.linkedId %></code></span>
+                    <span class="ci-pill">Verified legs: <%= celTrace.legCount %></span>
+                    <span class="ci-pill">CEL events: <%= celTrace.eventCount %></span>
+                </div>
+
+                <% if (celTrace.omittedEventCount > 0) { %>
+                    <div class="ci-trace-note">
+                        <%= celTrace.omittedEventCount %> related CEL records were
+                        omitted because their channels could not be verified for this tenant.
+                    </div>
+                <% } %>
+
+                <div class="ci-flow">
+                    <% celTrace.flowNodes.forEach((node, index) => { %>
+                        <% if (index > 0) { %>
+                            <div class="ci-flow-arrow" aria-hidden="true">→</div>
+                        <% } %>
+                        <div class="ci-flow-card <%= node.kind %>">
+                            <div class="ci-flow-kind"><%= node.kindLabel %></div>
+                            <strong class="ci-flow-title"><%= node.title %></strong>
+                            <div class="ci-flow-detail"><%= node.detail || '—' %></div>
+                            <% if (node.uniqueId) { %>
+                                <div class="ci-flow-meta">
+                                    Uniqueid: <code><%= node.uniqueId %></code>
+                                </div>
+                            <% } %>
+                            <div class="ci-flow-meta"><%= node.meta || '' %></div>
+                        </div>
+                    <% }) %>
+                </div>
+
+                <% if (celTrace.direction === 'outbound') { %>
+                    <div class="ci-trace-note">
+                        The dialled number is shown as the recorded target.
+                        A separate carrier or remote destination leg is shown only
+                        when Asterisk records and verifies that channel.
+                    </div>
+                <% } %>
+
+            <% } else { %>
+                <div class="ci-trace-note">
+                    Historical Asterisk CEL trace is not available for this call.
+                    Existing TECH-Life events and any associated capture-session data
+                    remain available below.
+                    <% if (celTrace && celTrace.reason === 'tenant_identity_not_verified') { %>
+                        The call's PJSIP endpoint identity could not be verified for this tenant.
+                    <% } else if (celTrace && celTrace.reason === 'cel_call_not_found') { %>
+                        No matching Asterisk CEL Uniqueid or Linkedid was found.
+                    <% } else if (celTrace && celTrace.reason === 'ambiguous_cel_linkedid') { %>
+                        More than one Linkedid matched this call ID; the trace was withheld
+                        rather than combining potentially unrelated calls.
+                    <% } %>
+                </div>
+            <% } %>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Graphical SIP signalling ladder</h2>
+                <p class="ci-muted">
+                    Actual HEP SIP packets arranged by timestamp and network direction.
+                    Each vertical lifeline represents an observed IP address and port.
+                    Arrow direction is derived from the packet source and destination.
+                </p>
+            </div>
+
+            <% const callSipCount = (typeof sipLadder !== 'undefined' && sipLadder)
+                ? sipLadder.messages.length : 0; %>
+            <% const callRtcpPackets = capturePackets.filter(p => p.record_type === 'rtcp'); %>
+            <% const callDtmfEvents = captureAmiEvents.filter(e =>
+                e.digit != null ||
+                ['DTMFBegin', 'DTMFEnd'].includes(e.event_type)
+            ); %>
+
+            <% if (callSipCount > 0) { %>
+                <div class="ci-sip-scroll">
+                <div class="ci-sequence-board"
+                     style="min-width:<%= Math.max(950, sipLadder.participants.length * 190 + 92) %>px">
+                    <div class="ci-sequence-summary">
+                        <strong><%= callSipCount %> unique SIP messages</strong>
+                        <span><%= sipLadder.packetCount || callSipCount %> captured packets</span>
+                        <span>CAPTURED TRACE · STATIC DIRECTION ARROWS</span>
+                        <span><%= sipLadder.participants.length %> signalling endpoints</span>
+                        <span>
+                            <%= sipLadder.firstPacketTime
+                                ? new Date(sipLadder.firstPacketTime).toLocaleString()
+                                : 'Time unavailable' %>
+                            —
+                            <%= sipLadder.lastPacketTime
+                                ? new Date(sipLadder.lastPacketTime).toLocaleString()
+                                : 'Time unavailable' %>
+                        </span>
+                        <% if (celTrace && celTrace.available) { %>
+                            <span><%= celTrace.legCount %> verified call legs</span>
+                        <% } %>
+                    </div>
+
+                    <div class="ci-sequence-header">
+                        <div class="ci-sequence-gutter"></div>
+                        <div class="ci-sequence-participants"
+                             style="grid-template-columns:repeat(<%= sipLadder.participants.length %>,minmax(0,1fr))">
+                            <% sipLadder.participants.forEach((participant, index) => { %>
+                                <div class="ci-sequence-participant">
+                                    <strong><%= participant.ip %></strong>
+                                    <small>Port <%= participant.port %></small>
+                                </div>
+                            <% }) %>
+                        </div>
+                    </div>
+
+                    <% sipLadder.messages.forEach((message, index) => { %>
+                        <div class="ci-sequence-row">
+                            <div class="ci-sequence-time">
+                                <strong>
+                                    <%= message.packetTime
+                                        ? new Date(message.packetTime).toLocaleTimeString()
+                                        : 'Time unavailable' %>
+                                </strong>
+                                <span>#<%= index + 1 %></span>
+                            </div>
+
+                            <div class="ci-sequence-lane">
+                                <div class="ci-sequence-lifelines"
+                                     style="grid-template-columns:repeat(<%= sipLadder.participants.length %>,minmax(0,1fr))">
+                                    <% sipLadder.participants.forEach(() => { %>
+                                        <span></span>
+                                    <% }) %>
+                                </div>
+
+                                <div class="ci-sequence-arrow">
+                                    <svg viewBox="0 0 1000 27"
+                                         preserveAspectRatio="none"
+                                         role="img"
+                                         aria-label="SIP message direction">
+                                        <defs>
+                                            <marker id="ci-sequence-arrow-<%= index %>"
+                                                    markerWidth="10"
+                                                    markerHeight="10"
+                                                    refX="9"
+                                                    refY="5"
+                                                    orient="auto"
+                                                    markerUnits="userSpaceOnUse">
+                                                <path d="M0,0 L10,5 L0,10 z"
+                                                      fill="<%= message.lineColor %>"></path>
+                                            </marker>
+                                        </defs>
+                                        <line
+                                            class="ci-captured-arrow-line"
+                                            x1="<%= message.sourceX %>"
+                                            y1="19"
+                                            x2="<%= message.destinationX %>"
+                                            y2="19"
+                                            stroke="<%= message.lineColor %>"
+                                            stroke-width="3"
+                                            marker-end="url(#ci-sequence-arrow-<%= index %>)">
+                                        </line>
+                                    </svg>
+
+                                    <span class="ci-sequence-label"
+                                          style="left:<%= message.labelLeftPercent %>%;color:<%= message.lineColor %>">
+                                        <%= message.label %>
+                                    </span>
+                                </div>
+
+                                <div class="ci-sequence-callid">
+                                    <%= message.callId
+                                        ? String(message.callId).slice(0,58)
+                                        : 'SIP Call-ID unavailable' %>
+                                </div>
+
+                                <details class="ci-sequence-detail">
+                                    <summary>
+                                        Message details
+                                        · <%= message.transportLabel %>
+                                        · CSeq <%= message.cseq || '—' %>
+                                        <% if (message.retransmissionCount > 0) { %>
+                                            · <%= message.retransmissionCount %> retransmissions
+                                        <% } %>
+                                        <% if (message.elapsedMs !== null) { %>
+                                            · +<%= message.elapsedMs.toFixed(1) %> ms
+                                        <% } %>
+                                    </summary>
+                                    <div class="ci-sequence-detail-content">
+                                        <div><strong>Source:</strong> <%= message.sourceLabel %></div>
+                                        <div><strong>Destination:</strong> <%= message.destinationLabel %></div>
+                                        <div><strong>Channel:</strong> <%= message.channelName || '—' %></div>
+                                        <div><strong>Request URI:</strong> <%= message.requestUri || '—' %></div>
+                                        <div><strong>From URI:</strong> <%= message.fromUri || '—' %></div>
+                                        <div><strong>To URI:</strong> <%= message.toUri || '—' %></div>
+                                        <div><strong>SIP start line:</strong> <%= message.startLine || '—' %></div>
+                                        <div><strong>Via branch:</strong> <%= message.viaBranch || '—' %></div>
+
+                                        <% if (message.sipHeaders && message.sipHeaders.length) { %>
+                                            <div style="margin-top:8px"><strong>Selected SIP headers</strong></div>
+                                            <% message.sipHeaders.forEach(header => { %>
+                                                <div><strong><%= header.name %>:</strong> <%= header.value %></div>
+                                            <% }) %>
+                                        <% } %>
+
+                                        <% if (message.retransmissionCount > 0) { %>
+                                            <div style="margin-top:8px"><strong>Retransmission packet IDs:</strong>
+                                                <%= message.packetIds.join(', ') %>
+                                            </div>
+                                            <div><strong>Retransmission timestamps:</strong></div>
+                                            <% message.packetTimes.forEach(time => { %>
+                                                <div><%= new Date(time).toLocaleString() %></div>
+                                            <% }) %>
+                                        <% } %>
+
+                                        <% if (message.payloadPreview) { %>
+                                            <pre><%= message.payloadPreview %></pre>
+                                            <% if (message.payloadTruncated) { %>
+                                                <p>Payload display limited to 12 KB.</p>
+                                            <% } %>
+                                        <% } else { %>
+                                            <p>No raw SIP payload preview stored.</p>
+                                        <% } %>
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
+                    <% }) %>
+                </div>
+                </div>
+
+                <p class="ci-muted">
+                    Each row represents a unique SIP message. Confirmed retransmissions
+                    are grouped using Call-ID, CSeq, Via branch, direction and start line.
+                    Their packet IDs and timestamps remain available in message details.
+                    Arrow direction is taken from observed source and destination IP/port.
+                    Authentication headers are redacted.
+                </p>
+            <% } else { %>
+                <div class="ci-sequence-no-packets">
+                    No SIP packets were captured for this call. The verified CEL
+                    call flow and event history remain available above. Start a
+                    capture session before placing a new test call to populate this
+                    signalling diagram.
+                </div>
+            <% } %>
+
+            <div>
+                <h3>DTMF events</h3>
+                <% if (callDtmfEvents.length) { %>
+                    <div class="ci-table">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Event</th>
+                                    <th>Digit</th>
+                                    <th>Duration</th>
+                                    <th>Channel</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <% callDtmfEvents.forEach(event => { %>
+                                    <tr>
+                                        <td><%= event.event_time ? new Date(event.event_time).toLocaleString() : '—' %></td>
+                                        <td><%= event.event_type || '—' %></td>
+                                        <td><strong><%= event.digit || '—' %></strong></td>
+                                        <td><%= event.duration_ms == null ? '—' : event.duration_ms + ' ms' %></td>
+                                        <td><code><%= event.channel_name || '—' %></code></td>
+                                    </tr>
+                                <% }) %>
+                            </tbody>
+                        </table>
+                    </div>
+                <% } else { %>
+                    <p class="ci-muted">No captured DTMF events are linked to this call.</p>
+                <% } %>
+            </div>
+
+            <div>
+                <h3>RTCP records</h3>
+                <% if (callRtcpPackets.length) { %>
+                    <% callRtcpPackets.forEach(packet => { %>
+                        <div class="ci-media-record">
+                            <strong><%= packet.packet_time ? new Date(packet.packet_time).toLocaleString() : 'Time unavailable' %></strong>
+                            <div class="ci-muted">
+                                <%= packet.source_ip || 'Unknown source' %>:<%= packet.source_port || '?' %>
+                                → <%= packet.destination_ip || 'Unknown destination' %>:<%= packet.destination_port || '?' %>
+                            </div>
+                            <div class="ci-muted">
+                                Channel: <%= packet.channel_name || '—' %>
+                            </div>
+                        </div>
+                    <% }) %>
+                    <p class="ci-muted">
+                        These are captured RTCP records. Packet presence alone does not
+                        establish MOS, jitter, packet loss or one-way audio; those metrics
+                        require RTCP report decoding and correlation.
+                    </p>
+                <% } else { %>
+                    <p class="ci-muted">No RTCP records were captured for this call.</p>
+                <% } %>
+            </div>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>Call timing</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Started</span><strong><%= selectedCall.start_time ? new Date(selectedCall.start_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ringing</span><strong><%= selectedCall.ring_time ? new Date(selectedCall.ring_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Answered</span><strong><%= selectedCall.answer_time ? new Date(selectedCall.answer_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ended</span><strong><%= selectedCall.end_time ? new Date(selectedCall.end_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ring seconds</span><strong><%= selectedCall.ring_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Wait seconds</span><strong><%= selectedCall.wait_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Talk seconds</span><strong><%= selectedCall.talk_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Hold seconds</span><strong><%= selectedCall.hold_seconds ?? '—' %></strong></div>
+            </div>
+            <p class="ci-muted">
+                Hangup cause: <%= selectedCall.hangup_cause || '—' %>
+                · Hangup by: <%= selectedCall.hangup_by || '—' %>
+                · Transfer: <%= selectedCall.is_transfer ? 'Yes' : 'No' %>
+            </p>
+        </section>
+
+    <% } else { %>
+        <section class="tl-card ci-warning">
+            <strong>Important: global HEP exporter</strong>
+            <p class="ci-muted">
+                A capture temporarily enables the Asterisk/Wazo HEP exporter globally.
+                During that window, HEP traffic from other channels may reach the local
+                receiver. TECH-Life is designed to persist only verified records matching
+                the selected tenant and scope. Do not treat the exporter itself as
+                tenant-isolated. The receiver must remain local and the capture window
+                should be limited to the required investigation.
+            </p>
+            <p class="ci-muted">
+                SIP and RTCP telemetry are supported by this capture worker. Raw RTP media
+                capture, full-media PCAP, decoded RTCP QoS reports and downloadable
+                artifacts are not yet implemented.
+            </p>
+        </section>
+
+        <% const activeLiveSession = (captureSessions || []).find(s =>
+            s.capture_mode === 'live' && ['starting', 'active', 'stopping'].includes(s.status)
+        ); %>
+        <section class="tl-card ci-section ci-live-toggle-card">
+            <div class="ci-live-toggle-row">
+                <div>
+                    <h2>Live Capture</h2>
+                    <p class="ci-muted">Start or stop tenant-scoped SIP + RTCP observation.</p>
+                </div>
+                <span class="ci-live-state <%= activeLiveSession ? 'is-on' : 'is-off' %>">
+                    <span></span><%= activeLiveSession ? 'ON' : 'OFF' %>
+                </span>
+            </div>
+            <% if (activeLiveSession) { %>
+                <div class="ci-live-toggle-row">
+                    <a class="tl-btn secondary" href="/admin/call-intelligence/sessions/<%= activeLiveSession.id %>">Open live dashboard</a>
+                    <% if (activeLiveSession.status === 'active') { %>
+                        <form method="post" action="/admin/call-intelligence/sessions/<%= activeLiveSession.id %>/stop">
+                            <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                            <button class="tl-btn" type="submit">Turn Live Capture OFF</button>
+                        </form>
+                    <% } else if (activeLiveSession.status === 'starting') { %>
+                        <form method="post" action="/admin/call-intelligence/sessions/<%= activeLiveSession.id %>/cancel">
+                            <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                            <button class="tl-btn secondary" type="submit">Cancel starting capture</button>
+                        </form>
+                    <% } else { %>
+                        <span class="ci-muted">Capture is stopping…</span>
+                    <% } %>
+                </div>
+            <% } else { %>
+                <p class="ci-muted">Live Capture is OFF. Choose Live Capture in the session form below and turn it ON.</p>
+            <% } %>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Create capture session</h2>
+                <p class="ci-muted">
+                    Tenant: <strong><%= effectiveTenant ? effectiveTenant.name : 'Current tenant' %></strong>
+                    · Timezone: <strong><%= timezone %></strong>
+                </p>
+            </div>
+
+            <form method="post" action="/admin/call-intelligence/sessions" id="ci-capture-form" data-live-active="<%= activeLiveSession ? 'true' : 'false' %>">
+                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+
+                <div class="ci-form-grid">
+                    <div class="ci-field ci-mode-field">
+                        <label>Capture mode</label>
+                        <div class="ci-mode-switch" role="group" aria-label="Capture mode">
+                            <button type="button" class="ci-mode-button active"
+                                    data-capture-mode="live" aria-pressed="true">
+                                <span class="ci-mode-dot"></span>
+                                Live Capture
+                            </button>
+                            <button type="button" class="ci-mode-button"
+                                    data-capture-mode="scheduled" aria-pressed="false">
+                                <span class="ci-mode-dot"></span>
+                                Scheduled Capture
+                            </button>
+                        </div>
+                        <input type="hidden" id="ci-mode" name="capture_mode" value="live">
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-scope">Capture scope</label>
+                        <select id="ci-scope" name="capture_scope" required>
+                            <option value="tenant">Entire tenant</option>
+                            <option value="trunk">Specific trunk</option>
+                            <option value="agent">Specific agent</option>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-trunk-field" hidden>
+                        <label for="ci-trunk">Trunk</label>
+                        <select id="ci-trunk" name="trunk_id">
+                            <option value="">Select provisioned trunk</option>
+                            <% trunks.forEach(trunk => { %>
+                                <option value="<%= trunk.id %>"><%= trunk.name %></option>
+                            <% }) %>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-agent-field" hidden>
+                        <label for="ci-agent">Agent</label>
+                        <select id="ci-agent" name="agent_id">
+                            <option value="">Select active agent</option>
+                            <% agents.forEach(agent => { %>
+                                <option value="<%= agent.id %>">
+                                    <%= agent.agent_number || agent.extension || agent.id %>
+                                    <% if (agent.extension) { %> · Ext <%= agent.extension %><% } %>
+                                </option>
+                            <% }) %>
+                        </select>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-profile">Capture profile</label>
+                        <select id="ci-profile" name="capture_profile">
+                            <option value="sip_rtcp">SIP + RTCP telemetry</option>
+                            <option value="sip">SIP signalling only</option>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-start-field" hidden>
+                        <label for="ci-start">Start date and time (<%= timezone %>)</label>
+                        <input id="ci-start" name="scheduled_start_at"
+                               type="datetime-local"
+                               value="<%= defaultScheduledStart %>">
+                    </div>
+
+                    <div class="ci-field" id="ci-stop-field" hidden>
+                        <label for="ci-stop">Stop date and time (<%= timezone %>)</label>
+                        <input id="ci-stop" name="scheduled_stop_at"
+                               type="datetime-local"
+                               value="<%= defaultScheduledStop %>">
+                    </div>
+
+                    <div class="ci-field" id="ci-duration-field">
+                        <label for="ci-duration">Maximum live duration (minutes)</label>
+                        <input id="ci-duration" type="number" name="duration_minutes"
+                               min="1" max="240" value="10" required>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-storage">Storage cap (MB)</label>
+                        <input id="ci-storage" type="number" name="storage_mb"
+                               min="1" max="2048" value="64" required>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-retention">Retention (days)</label>
+                        <input id="ci-retention" type="number" name="retention_days"
+                               min="1" max="30" value="7" required>
+                    </div>
+                </div>
+
+                <div class="ci-actions" style="margin-top:16px">
+                    <button class="tl-btn" type="submit">Create capture session</button>
+                </div>
+            </form>
+            <p class="ci-muted">
+                Live sessions enter a validation/start queue. Scheduled sessions are
+                started by the background worker at the selected tenant-local time.
+                The worker enforces the duration and storage limits.
+            </p>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Capture session history</h2>
+                <p class="ci-muted">Latest 50 sessions for this tenant.</p>
+            </div>
+
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Created</th><th>Mode</th><th>Scope</th><th>Target</th>
+                            <th>Profile</th><th>Status</th><th>Packets</th>
+                            <th>AMI events</th><th>Legs</th><th>Storage</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% captureSessions.forEach(session => { %>
+                            <tr>
+                                <td><%= new Date(session.created_at).toLocaleString() %></td>
+                                <td><%= session.capture_mode %></td>
+                                <td><%= session.capture_scope %></td>
+                                <td>
+                                    <%= session.trunk_name || '' %>
+                                    <% if (session.agent_number) { %>Agent <%= session.agent_number %><% } %>
+                                    <% if (!session.trunk_name && !session.agent_number) { %>Tenant-wide<% } %>
+                                </td>
+                                <td><%= session.capture_profile %></td>
+                                <td><span class="ci-status <%= session.status %>"><%= session.status %></span></td>
+                                <td><%= session.packet_count %></td>
+                                <td><%= session.ami_event_count %></td>
+                                <td><%= session.leg_count %></td>
+                                <td><%= (Number(session.bytes_written || 0) / 1048576).toFixed(2) %> MB</td>
+                                <td>
+                                    <div class="ci-actions">
+                                        <a href="/admin/call-intelligence/sessions/<%= session.id %>">Inspect</a>
+                                        <% if (session.status === 'active') { %>
+                                            <form method="post" action="/admin/call-intelligence/sessions/<%= session.id %>/stop"
+                                                  onsubmit="return confirm('Stop this capture?');">
+                                                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                                                <button class="tl-btn secondary" type="submit">Stop</button>
+                                            </form>
+                                        <% } %>
+                                        <% if (['scheduled','starting'].includes(session.status)) { %>
+                                            <form method="post" action="/admin/call-intelligence/sessions/<%= session.id %>/cancel"
+                                                  onsubmit="return confirm('Cancel this capture?');">
+                                                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                                                <button class="tl-btn secondary" type="submit">Cancel</button>
+                                            </form>
+                                        <% } %>
+                                    </div>
+                                </td>
+                            </tr>
+                        <% }) %>
+                        <% if (!captureSessions.length) { %>
+                            <tr><td colspan="11">No capture sessions have been created for this tenant.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <form method="get" action="/admin/call-intelligence" class="tl-card">
+            <h2>Search TECH-Life calls</h2>
+            <div class="ci-form-grid">
+                <div class="ci-field">
+                    <label for="q">Call ID, number or agent</label>
+                    <input id="q" name="q" maxlength="120"
+                           value="<%= q %>" placeholder="Wazo ID, phone, UUID, agent">
+                </div>
+                <div class="ci-field">
+                    <label for="from">From date</label>
+                    <input id="from" name="from" type="date" value="<%= from %>">
+                </div>
+                <div class="ci-field">
+                    <label for="to">To date</label>
+                    <input id="to" name="to" type="date" value="<%= to %>">
+                </div>
+            </div>
+            <div class="ci-actions" style="margin-top:14px">
+                <button class="tl-btn" type="submit">Search calls</button>
+                <a class="tl-btn secondary" href="/admin/call-intelligence">Reset</a>
+            </div>
+        </form>
+
+        <section class="tl-card ci-section">
+            <p class="ci-muted">
+                <strong><%= total %></strong> matching call records.
+                Showing the latest 100 results. Demo-only synthetic records are excluded.
+            </p>
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Start time</th><th>Wazo Call ID</th><th>Direction</th>
+                            <th>From</th><th>To</th><th>Agent</th>
+                            <th>Status</th><th>Events</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% calls.forEach(call => { %>
+                            <tr>
+                                <td><%= call.start_time ? new Date(call.start_time).toLocaleString() : '—' %></td>
+                                <td><code><%= call.wazo_call_id || '—' %></code></td>
+                                <td><%= call.direction || '—' %></td>
+                                <td><%= call.from_number || '—' %></td>
+                                <td><%= call.to_number || '—' %></td>
+                                <td><%= call.agent_name %></td>
+                                <td><span class="ci-status"><%= call.status || '—' %></span></td>
+                                <td><%= call.event_count %></td>
+                                <td><a href="/admin/call-intelligence/<%= call.id %>">Inspect trace</a></td>
+                            </tr>
+                        <% }) %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    <% } %>
+</div>
+
+<script>
+(function () {
+    const scope = document.getElementById('ci-scope');
+    const mode = document.getElementById('ci-mode');
+    const modeButtons = document.querySelectorAll('[data-capture-mode]');
+    const trunkField = document.getElementById('ci-trunk-field');
+    const agentField = document.getElementById('ci-agent-field');
+    const startField = document.getElementById('ci-start-field');
+    const stopField = document.getElementById('ci-stop-field');
+    const durationField = document.getElementById('ci-duration-field');
+    const trunk = document.getElementById('ci-trunk');
+    const agent = document.getElementById('ci-agent');
+    const start = document.getElementById('ci-start');
+    const stop = document.getElementById('ci-stop');
+    const duration = document.getElementById('ci-duration');
+    const captureForm = document.getElementById('ci-capture-form');
+    const captureSubmit = captureForm && captureForm.querySelector('button[type="submit"]');
+    const liveAlreadyActive = !!(captureForm && captureForm.dataset.liveActive === 'true');
+
+    if (!scope || !mode) return;
+
+    function updateScope() {
+        const value = scope.value;
+        trunkField.hidden = !['trunk', 'agent'].includes(value);
+        agentField.hidden = value !== 'agent';
+
+        if (trunk) {
+            trunk.required = value === 'trunk';
+            if (value === 'tenant') trunk.value = '';
+        }
+
+        if (agent) {
+            agent.required = value === 'agent';
+            if (value !== 'agent') agent.value = '';
+        }
+    }
+
+    function updateMode() {
+        const scheduled = mode.value === 'scheduled';
+
+        startField.hidden = !scheduled;
+        stopField.hidden = !scheduled;
+        durationField.hidden = scheduled;
+
+        if (start) start.required = scheduled;
+        if (stop) {
+            stop.required = scheduled;
+            stop.min = start && start.value ? start.value : '';
+        }
+        if (duration) duration.required = !scheduled;
+
+        modeButtons.forEach(button => {
+            const active = button.dataset.captureMode === mode.value;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (button.dataset.captureMode === 'live') button.disabled = liveAlreadyActive;
+        });
+        if (captureSubmit) {
+            captureSubmit.disabled = liveAlreadyActive && !scheduled;
+            captureSubmit.textContent = scheduled
+                ? 'Create Scheduled Capture'
+                : liveAlreadyActive
+                    ? 'Live Capture Already ON'
+                    : 'Turn Live Capture ON';
+        }
+    }
+
+    modeButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            mode.value = button.dataset.captureMode;
+            updateMode();
+        });
+    });
+
+    scope.addEventListener('change', updateScope);
+    mode.addEventListener('change', updateMode);
+    if (start) start.addEventListener('change', updateMode);
+
+    updateScope();
+    updateMode();
+})();
+</script>
+
+<%- include('../partials/foot') %>

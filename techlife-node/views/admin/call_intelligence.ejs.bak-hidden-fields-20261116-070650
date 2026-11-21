@@ -1,0 +1,653 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<style>
+.ci-wrap { display:grid; gap:16px; }
+.ci-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:10px; }
+.ci-stat { padding:14px; border:1px solid var(--tl-border,#ddd); border-radius:10px; min-width:0; }
+.ci-stat strong { display:block; font-size:18px; margin-top:5px; overflow-wrap:anywhere; }
+.ci-muted { color:var(--tl-muted,#777); font-size:13px; }
+.ci-table { overflow-x:auto; }
+.ci-table table { min-width:850px; }
+.ci-warning { border-left:4px solid #c58b27; padding:12px 14px; }
+.ci-success { border-left:4px solid #27834c; padding:12px 14px; }
+.ci-error { border-left:4px solid #b83d3d; padding:12px 14px; }
+.ci-form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+.ci-field { display:flex; flex-direction:column; gap:6px; }
+.ci-field label { font-weight:600; }
+.ci-field input,.ci-field select { width:100%; min-height:40px; }
+.ci-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.ci-actions form { display:inline-flex; margin:0; }
+.ci-status { display:inline-block; padding:4px 9px; border-radius:20px; background:var(--tl-panel,#eee); font-size:12px; }
+.ci-status.active { background:#d8f3df; color:#14592a; }
+.ci-status.failed { background:#f8dede; color:#8b2222; }
+.ci-status.stopping,.ci-status.starting { background:#fff0cb; color:#79520a; }
+.ci-status.completed { background:#dceafa; color:#174f87; }
+.ci-timeline { position:relative; margin:18px 0 8px 8px; padding-left:25px; border-left:2px solid var(--tl-border,#ccd); }
+.ci-event { position:relative; padding:0 0 18px 12px; }
+.ci-event:before { content:''; position:absolute; left:-33px; top:4px; width:12px; height:12px; border-radius:50%; background:var(--tl-blue,#3978c6); border:2px solid var(--tl-card,#fff); }
+.ci-event h3 { margin:0 0 5px; font-size:15px; }
+.ci-event pre { white-space:pre-wrap; overflow-wrap:anywhere; max-width:900px; padding:10px; border-radius:7px; background:var(--tl-panel,#f5f6f8); }
+.ci-ladder { display:grid; gap:8px; }
+.ci-ladder-row { display:grid; grid-template-columns:minmax(125px,1fr) minmax(70px,.5fr) minmax(125px,1fr) minmax(180px,1.5fr); align-items:center; gap:9px; padding:10px; border:1px solid var(--tl-border,#ddd); border-radius:8px; }
+.ci-endpoint { overflow-wrap:anywhere; font-size:12px; }
+.ci-arrow { text-align:center; white-space:nowrap; font-weight:700; color:var(--tl-blue,#3978c6); }
+.ci-message { overflow-wrap:anywhere; font-size:13px; }
+.ci-scroll { overflow-x:auto; }
+.ci-pill-row { display:flex; flex-wrap:wrap; gap:7px; margin:8px 0; }
+.ci-pill { border:1px solid var(--tl-border,#ddd); border-radius:20px; padding:5px 9px; font-size:12px; }
+.ci-section { display:grid; gap:12px; }
+.ci-details { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px; }
+.ci-details div { padding:9px; background:var(--tl-panel,#f5f6f8); border-radius:7px; min-width:0; overflow-wrap:anywhere; }
+.ci-details small { display:block; color:var(--tl-muted,#777); }
+.ci-details strong { overflow-wrap:anywhere; }
+@media(max-width:700px) {
+    .ci-ladder-row { grid-template-columns:1fr; gap:5px; }
+    .ci-arrow { text-align:left; }
+}
+</style>
+
+<div class="ci-wrap">
+    <header>
+        <h1>Call Intelligence</h1>
+        <p class="tl-subtitle">
+            Capture control, SIP signalling investigation and observed Asterisk call-leg diagnostics.
+        </p>
+    </header>
+
+    <% if (notice) { %>
+        <div class="tl-card <%= notice.type === 'error' ? 'ci-error' : 'ci-success' %>">
+            <strong><%= notice.type === 'error' ? 'Action not completed' : 'Status' %></strong>
+            <p><%= notice.message %></p>
+        </div>
+    <% } %>
+
+    <% if (selectedSession) { %>
+        <div class="ci-actions">
+            <a class="tl-btn secondary" href="/admin/call-intelligence">← Back to Call Intelligence</a>
+            <span class="ci-status <%= selectedSession.status %>"><%= selectedSession.status %></span>
+        </div>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Capture session</h2>
+                <p class="ci-muted"><code><%= selectedSession.id %></code></p>
+            </div>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Scope</span><strong><%= selectedSession.capture_scope %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Target trunk</span><strong><%= selectedSession.trunk_name || 'All eligible tenant trunks' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Target agent</span><strong><%= selectedSession.agent_number || 'All eligible agents in scope' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Mode</span><strong><%= selectedSession.capture_mode %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Profile</span><strong><%= selectedSession.capture_profile %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Timezone</span><strong><%= selectedSession.timezone %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Scheduled start</span><strong><%= selectedSession.scheduled_start_at ? new Date(selectedSession.scheduled_start_at).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Scheduled stop</span><strong><%= selectedSession.scheduled_stop_at ? new Date(selectedSession.scheduled_stop_at).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Actual start</span><strong><%= selectedSession.actual_start_at ? new Date(selectedSession.actual_start_at).toLocaleString() : 'Not started' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Actual stop</span><strong><%= selectedSession.actual_stop_at ? new Date(selectedSession.actual_stop_at).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Storage used</span><strong><%= (Number(selectedSession.bytes_written || 0) / 1048576).toFixed(2) %> MB</strong></div>
+                <div class="ci-stat"><span class="ci-muted">Storage limit</span><strong><%= (Number(selectedSession.max_storage_bytes || 0) / 1048576).toFixed(0) %> MB</strong></div>
+            </div>
+
+            <div class="ci-pill-row">
+                <span class="ci-pill">Packets received: <%= selectedSession.packets_received %></span>
+                <span class="ci-pill">Packets persisted: <%= selectedSession.packets_persisted %></span>
+                <span class="ci-pill">Packets rejected: <%= selectedSession.packets_rejected %></span>
+                <span class="ci-pill">SIP/RTCP records shown: <%= capturePackets.length %></span>
+                <span class="ci-pill">AMI events: <%= captureAmiEvents.length %></span>
+                <span class="ci-pill">Observed legs: <%= captureLegs.length %></span>
+            </div>
+
+            <% if (selectedSession.last_error) { %>
+                <div class="ci-warning">
+                    <strong>Worker message</strong>
+                    <p><%= selectedSession.last_error %></p>
+                </div>
+            <% } %>
+            <% if (selectedSession.stop_reason) { %>
+                <p class="ci-muted">Stop reason: <%= selectedSession.stop_reason %></p>
+            <% } %>
+
+            <div class="ci-actions">
+                <% if (selectedSession.status === 'active') { %>
+                    <form method="post" action="/admin/call-intelligence/sessions/<%= selectedSession.id %>/stop"
+                          onsubmit="return confirm('Request stop for this capture?');">
+                        <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                        <button class="tl-btn" type="submit">Stop capture</button>
+                    </form>
+                <% } %>
+                <% if (['scheduled','starting'].includes(selectedSession.status)) { %>
+                    <form method="post" action="/admin/call-intelligence/sessions/<%= selectedSession.id %>/cancel"
+                          onsubmit="return confirm('Cancel this capture session?');">
+                        <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                        <button class="tl-btn secondary" type="submit">Cancel capture</button>
+                    </form>
+                <% } %>
+            </div>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Observed SIP signalling ladder</h2>
+                <p class="ci-muted">
+                    Each row represents an actual SIP message received by the HEP receiver.
+                    Endpoints and direction come from the captured packet headers. This is not
+                    a reconstructed RTP media path.
+                </p>
+            </div>
+
+            <% const sipPackets = capturePackets.filter(p => p.record_type === 'sip'); %>
+            <% if (sipPackets.length) { %>
+                <div class="ci-ladder">
+                    <% sipPackets.forEach(packet => { %>
+                        <div class="ci-ladder-row">
+                            <div class="ci-endpoint">
+                                <strong><%= packet.source_ip || 'Unknown source' %><%= packet.source_port ? ':' + packet.source_port : '' %></strong>
+                                <div class="ci-muted"><%= packet.channel_role %> · <%= packet.channel_name || 'Channel not identified' %></div>
+                            </div>
+                            <div class="ci-arrow">────────▶</div>
+                            <div class="ci-endpoint">
+                                <strong><%= packet.destination_ip || 'Unknown destination' %><%= packet.destination_port ? ':' + packet.destination_port : '' %></strong>
+                                <div class="ci-muted">Observed destination</div>
+                            </div>
+                            <div class="ci-message">
+                                <strong>
+                                    <%= packet.sip_method || (packet.sip_status_code ? packet.sip_status_code + ' ' + (packet.sip_reason || '') : 'SIP message') %>
+                                </strong>
+                                <div class="ci-muted">
+                                    <%= packet.packet_time ? new Date(packet.packet_time).toLocaleString() : 'Packet time unavailable' %>
+                                    <% if (packet.sip_cseq) { %> · CSeq <%= packet.sip_cseq %><% } %>
+                                </div>
+                                <div class="ci-muted">Call-ID: <%= packet.call_id || '—' %></div>
+                            </div>
+                        </div>
+                    <% }) %>
+                </div>
+            <% } else { %>
+                <p>No SIP packet messages were stored for this session.</p>
+            <% } %>
+
+            <% const rtcpPackets = capturePackets.filter(p => p.record_type === 'rtcp'); %>
+            <div>
+                <h3>RTCP records</h3>
+                <% if (rtcpPackets.length) { %>
+                    <p><strong><%= rtcpPackets.length %></strong> RTCP records were received.</p>
+                    <p class="ci-muted">
+                        RTCP report-field decoding and QoS metric calculation are not yet connected.
+                        These records are not raw RTP media packets.
+                    </p>
+                <% } else { %>
+                    <p class="ci-muted">No RTCP records stored for this session.</p>
+                <% } %>
+            </div>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>Observed call legs</h2>
+            <p class="ci-muted">
+                Legs are keyed by observed Asterisk Uniqueid. Asterisk channels that cannot
+                be verified are not assigned a tenant, trunk or agent.
+            </p>
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Role</th><th>Endpoint</th><th>Channel</th>
+                            <th>Uniqueid</th><th>Linkedid</th>
+                            <th>State</th><th>Started</th><th>Answered</th><th>Ended</th>
+                            <th>Events</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% captureLegs.forEach(leg => { %>
+                            <tr>
+                                <td><%= leg.channel_role %></td>
+                                <td><%= leg.endpoint_name || leg.trunk_name || leg.agent_number || '—' %></td>
+                                <td><code><%= leg.channel_name %></code></td>
+                                <td><code><%= leg.unique_id || '—' %></code></td>
+                                <td><code><%= leg.linked_id || '—' %></code></td>
+                                <td><%= leg.channel_state || '—' %></td>
+                                <td><%= leg.started_at ? new Date(leg.started_at).toLocaleTimeString() : '—' %></td>
+                                <td><%= leg.answered_at ? new Date(leg.answered_at).toLocaleTimeString() : '—' %></td>
+                                <td><%= leg.ended_at ? new Date(leg.ended_at).toLocaleTimeString() : '—' %></td>
+                                <td><%= leg.event_count %></td>
+                            </tr>
+                        <% }) %>
+                        <% if (!captureLegs.length) { %>
+                            <tr><td colspan="10">No verified call legs have been recorded.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>AMI event timeline and DTMF</h2>
+            <% if (captureAmiEvents.length) { %>
+                <div class="ci-timeline">
+                    <% captureAmiEvents.forEach(event => { %>
+                        <div class="ci-event">
+                            <h3><%= event.event_type %></h3>
+                            <div class="ci-muted">
+                                <%= new Date(event.event_time).toLocaleString() %>
+                                · <%= event.channel_role %>
+                                · <%= event.channel_name || 'Channel unavailable' %>
+                            </div>
+                            <% if (event.digit) { %>
+                                <p><strong>DTMF digit: <%= event.digit %></strong>
+                                    <% if (event.duration_ms !== null) { %>
+                                        · Duration <%= event.duration_ms %> ms
+                                    <% } %>
+                                </p>
+                            <% } %>
+                            <% if (event.cause || event.cause_text) { %>
+                                <p class="ci-muted">Cause: <%= event.cause || '—' %> · <%= event.cause_text || '—' %></p>
+                            <% } %>
+                            <% if (event.peer_channel) { %>
+                                <p class="ci-muted">Peer channel: <code><%= event.peer_channel %></code></p>
+                            <% } %>
+                        </div>
+                    <% }) %>
+                </div>
+            <% } else { %>
+                <p>No AMI events have been stored for this session.</p>
+            <% } %>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>Capture artifacts</h2>
+            <% if (artifacts.length) { %>
+                <div class="ci-table">
+                    <table>
+                        <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Created</th><th>Expires</th></tr></thead>
+                        <tbody>
+                            <% artifacts.forEach(file => { %>
+                                <tr>
+                                    <td><%= file.file_name %></td>
+                                    <td><%= file.artifact_type %></td>
+                                    <td><%= (Number(file.byte_size) / 1048576).toFixed(2) %> MB</td>
+                                    <td><%= new Date(file.created_at).toLocaleString() %></td>
+                                    <td><%= file.expires_at ? new Date(file.expires_at).toLocaleString() : '—' %></td>
+                                </tr>
+                            <% }) %>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="ci-muted">Artifact download delivery is not enabled in this release.</p>
+            <% } else { %>
+                <p>No artifacts have been generated for this session.</p>
+            <% } %>
+        </section>
+
+    <% } else if (selectedCall) { %>
+        <div>
+            <a class="tl-btn secondary" href="/admin/call-intelligence">← Back to call search</a>
+        </div>
+
+        <section class="tl-card ci-section">
+            <h2>Call overview</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Wazo Call ID</span><strong><%= selectedCall.wazo_call_id || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Direction</span><strong><%= selectedCall.direction || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Status</span><strong><%= selectedCall.status || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Agent</span><strong><%= selectedCall.agent_name %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">From</span><strong><%= selectedCall.from_number || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">To</span><strong><%= selectedCall.to_number || '—' %></strong></div>
+            </div>
+            <p class="ci-muted">Call record: <code><%= selectedCall.id %></code></p>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>TECH-Life call event timeline</h2>
+            <% if (events.length) { %>
+                <div class="ci-timeline">
+                    <% events.forEach(event => { %>
+                        <div class="ci-event">
+                            <h3><%= event.event_type %></h3>
+                            <div class="ci-muted">
+                                <%= new Date(event.event_time).toLocaleString() %>
+                                · Agent: <%= event.event_agent_name || '—' %>
+                                · Event #<%= event.id %>
+                            </div>
+                            <pre><%= JSON.stringify(event.payload_json || {}, null, 2) %></pre>
+                        </div>
+                    <% }) %>
+                </div>
+            <% } else { %>
+                <p>No call events have been recorded for this call.</p>
+            <% } %>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>Observed capture data linked to this call</h2>
+            <div class="ci-pill-row">
+                <span class="ci-pill">Observed legs: <%= captureLegs.length %></span>
+                <span class="ci-pill">SIP/RTCP packets: <%= capturePackets.length %></span>
+                <span class="ci-pill">AMI events: <%= captureAmiEvents.length %></span>
+            </div>
+            <% if (captureLegs.length) { %>
+                <div class="ci-table">
+                    <table>
+                        <thead><tr><th>Role</th><th>Channel</th><th>Uniqueid</th><th>Linkedid</th><th>State</th></tr></thead>
+                        <tbody>
+                            <% captureLegs.forEach(leg => { %>
+                                <tr>
+                                    <td><%= leg.channel_role %></td>
+                                    <td><code><%= leg.channel_name %></code></td>
+                                    <td><code><%= leg.unique_id || '—' %></code></td>
+                                    <td><code><%= leg.linked_id || '—' %></code></td>
+                                    <td><%= leg.channel_state || '—' %></td>
+                                </tr>
+                            <% }) %>
+                        </tbody>
+                    </table>
+                </div>
+            <% } else { %>
+                <p>No capture legs have been linked to this TECH-Life call record.</p>
+            <% } %>
+            <% if (capturePackets.length) { %>
+                <p>Observed SIP/RTCP packet records are available for this call, but the full session ladder is shown on the associated capture-session page.</p>
+            <% } %>
+            <% if (captureAmiEvents.length) { %>
+                <p>Observed AMI events: <%= captureAmiEvents.map(e => e.event_type).join(', ') %></p>
+            <% } %>
+        </section>
+
+        <section class="tl-card ci-section">
+            <h2>Call timing</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Started</span><strong><%= selectedCall.start_time ? new Date(selectedCall.start_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ringing</span><strong><%= selectedCall.ring_time ? new Date(selectedCall.ring_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Answered</span><strong><%= selectedCall.answer_time ? new Date(selectedCall.answer_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ended</span><strong><%= selectedCall.end_time ? new Date(selectedCall.end_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ring seconds</span><strong><%= selectedCall.ring_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Wait seconds</span><strong><%= selectedCall.wait_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Talk seconds</span><strong><%= selectedCall.talk_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Hold seconds</span><strong><%= selectedCall.hold_seconds ?? '—' %></strong></div>
+            </div>
+            <p class="ci-muted">
+                Hangup cause: <%= selectedCall.hangup_cause || '—' %>
+                · Hangup by: <%= selectedCall.hangup_by || '—' %>
+                · Transfer: <%= selectedCall.is_transfer ? 'Yes' : 'No' %>
+            </p>
+        </section>
+
+    <% } else { %>
+        <section class="tl-card ci-warning">
+            <strong>Important: global HEP exporter</strong>
+            <p class="ci-muted">
+                A capture temporarily enables the Asterisk/Wazo HEP exporter globally.
+                During that window, HEP traffic from other channels may reach the local
+                receiver. TECH-Life is designed to persist only verified records matching
+                the selected tenant and scope. Do not treat the exporter itself as
+                tenant-isolated. The receiver must remain local and the capture window
+                should be limited to the required investigation.
+            </p>
+            <p class="ci-muted">
+                SIP and RTCP telemetry are supported by this capture worker. Raw RTP media
+                capture, full-media PCAP, decoded RTCP QoS reports and downloadable
+                artifacts are not yet implemented.
+            </p>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Create capture session</h2>
+                <p class="ci-muted">
+                    Tenant: <strong><%= effectiveTenant ? effectiveTenant.name : 'Current tenant' %></strong>
+                    · Timezone: <strong><%= timezone %></strong>
+                </p>
+            </div>
+
+            <form method="post" action="/admin/call-intelligence/sessions" id="ci-capture-form">
+                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+
+                <div class="ci-form-grid">
+                    <div class="ci-field">
+                        <label for="ci-mode">Capture mode</label>
+                        <select id="ci-mode" name="capture_mode">
+                            <option value="live">Live — start now</option>
+                            <option value="scheduled">Scheduled — start later</option>
+                        </select>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-scope">Capture scope</label>
+                        <select id="ci-scope" name="capture_scope" required>
+                            <option value="tenant">Entire tenant</option>
+                            <option value="trunk">Specific trunk</option>
+                            <option value="agent">Specific agent</option>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-trunk-field" hidden>
+                        <label for="ci-trunk">Trunk</label>
+                        <select id="ci-trunk" name="trunk_id">
+                            <option value="">Select provisioned trunk</option>
+                            <% trunks.forEach(trunk => { %>
+                                <option value="<%= trunk.id %>"><%= trunk.name %></option>
+                            <% }) %>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-agent-field" hidden>
+                        <label for="ci-agent">Agent</label>
+                        <select id="ci-agent" name="agent_id">
+                            <option value="">Select active agent</option>
+                            <% agents.forEach(agent => { %>
+                                <option value="<%= agent.id %>">
+                                    <%= agent.agent_number || agent.extension || agent.id %>
+                                    <% if (agent.extension) { %> · Ext <%= agent.extension %><% } %>
+                                </option>
+                            <% }) %>
+                        </select>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-profile">Capture profile</label>
+                        <select id="ci-profile" name="capture_profile">
+                            <option value="sip_rtcp">SIP + RTCP telemetry</option>
+                            <option value="sip">SIP signalling only</option>
+                        </select>
+                    </div>
+
+                    <div class="ci-field" id="ci-start-field" hidden>
+                        <label for="ci-start">Scheduled start (tenant local time)</label>
+                        <input id="ci-start" name="scheduled_start_at"
+                               type="datetime-local"
+                               value="<%= defaultScheduledStart %>">
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-duration">Maximum duration (minutes)</label>
+                        <input id="ci-duration" type="number" name="duration_minutes"
+                               min="1" max="240" value="10" required>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-storage">Storage cap (MB)</label>
+                        <input id="ci-storage" type="number" name="storage_mb"
+                               min="1" max="2048" value="64" required>
+                    </div>
+
+                    <div class="ci-field">
+                        <label for="ci-retention">Retention (days)</label>
+                        <input id="ci-retention" type="number" name="retention_days"
+                               min="1" max="30" value="7" required>
+                    </div>
+                </div>
+
+                <div class="ci-actions" style="margin-top:16px">
+                    <button class="tl-btn" type="submit">Create capture session</button>
+                </div>
+            </form>
+            <p class="ci-muted">
+                Live sessions enter a validation/start queue. Scheduled sessions are
+                started by the background worker at the selected tenant-local time.
+                The worker enforces the duration and storage limits.
+            </p>
+        </section>
+
+        <section class="tl-card ci-section">
+            <div>
+                <h2>Capture session history</h2>
+                <p class="ci-muted">Latest 50 sessions for this tenant.</p>
+            </div>
+
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Created</th><th>Mode</th><th>Scope</th><th>Target</th>
+                            <th>Profile</th><th>Status</th><th>Packets</th>
+                            <th>AMI events</th><th>Legs</th><th>Storage</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% captureSessions.forEach(session => { %>
+                            <tr>
+                                <td><%= new Date(session.created_at).toLocaleString() %></td>
+                                <td><%= session.capture_mode %></td>
+                                <td><%= session.capture_scope %></td>
+                                <td>
+                                    <%= session.trunk_name || '' %>
+                                    <% if (session.agent_number) { %>Agent <%= session.agent_number %><% } %>
+                                    <% if (!session.trunk_name && !session.agent_number) { %>Tenant-wide<% } %>
+                                </td>
+                                <td><%= session.capture_profile %></td>
+                                <td><span class="ci-status <%= session.status %>"><%= session.status %></span></td>
+                                <td><%= session.packet_count %></td>
+                                <td><%= session.ami_event_count %></td>
+                                <td><%= session.leg_count %></td>
+                                <td><%= (Number(session.bytes_written || 0) / 1048576).toFixed(2) %> MB</td>
+                                <td>
+                                    <div class="ci-actions">
+                                        <a href="/admin/call-intelligence/sessions/<%= session.id %>">Inspect</a>
+                                        <% if (session.status === 'active') { %>
+                                            <form method="post" action="/admin/call-intelligence/sessions/<%= session.id %>/stop"
+                                                  onsubmit="return confirm('Stop this capture?');">
+                                                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                                                <button class="tl-btn secondary" type="submit">Stop</button>
+                                            </form>
+                                        <% } %>
+                                        <% if (['scheduled','starting'].includes(session.status)) { %>
+                                            <form method="post" action="/admin/call-intelligence/sessions/<%= session.id %>/cancel"
+                                                  onsubmit="return confirm('Cancel this capture?');">
+                                                <input type="hidden" name="_ci_csrf" value="<%= csrfToken %>">
+                                                <button class="tl-btn secondary" type="submit">Cancel</button>
+                                            </form>
+                                        <% } %>
+                                    </div>
+                                </td>
+                            </tr>
+                        <% }) %>
+                        <% if (!captureSessions.length) { %>
+                            <tr><td colspan="11">No capture sessions have been created for this tenant.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <form method="get" action="/admin/call-intelligence" class="tl-card">
+            <h2>Search TECH-Life calls</h2>
+            <div class="ci-form-grid">
+                <div class="ci-field">
+                    <label for="q">Call ID, number or agent</label>
+                    <input id="q" name="q" maxlength="120"
+                           value="<%= q %>" placeholder="Wazo ID, phone, UUID, agent">
+                </div>
+                <div class="ci-field">
+                    <label for="from">From date</label>
+                    <input id="from" name="from" type="date" value="<%= from %>">
+                </div>
+                <div class="ci-field">
+                    <label for="to">To date</label>
+                    <input id="to" name="to" type="date" value="<%= to %>">
+                </div>
+            </div>
+            <div class="ci-actions" style="margin-top:14px">
+                <button class="tl-btn" type="submit">Search calls</button>
+                <a class="tl-btn secondary" href="/admin/call-intelligence">Reset</a>
+            </div>
+        </form>
+
+        <section class="tl-card ci-section">
+            <p class="ci-muted">
+                <strong><%= total %></strong> matching call records.
+                Showing the latest 100 results. Demo-only synthetic records are excluded.
+            </p>
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Start time</th><th>Wazo Call ID</th><th>Direction</th>
+                            <th>From</th><th>To</th><th>Agent</th>
+                            <th>Status</th><th>Events</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% calls.forEach(call => { %>
+                            <tr>
+                                <td><%= call.start_time ? new Date(call.start_time).toLocaleString() : '—' %></td>
+                                <td><code><%= call.wazo_call_id || '—' %></code></td>
+                                <td><%= call.direction || '—' %></td>
+                                <td><%= call.from_number || '—' %></td>
+                                <td><%= call.to_number || '—' %></td>
+                                <td><%= call.agent_name %></td>
+                                <td><span class="ci-status"><%= call.status || '—' %></span></td>
+                                <td><%= call.event_count %></td>
+                                <td><a href="/admin/call-intelligence/<%= call.id %>">Inspect trace</a></td>
+                            </tr>
+                        <% }) %>
+                        <% if (!calls.length) { %>
+                            <tr><td colspan="9">No calls found for these filters and this tenant.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    <% } %>
+</div>
+
+<script>
+(function () {
+    const scope = document.getElementById('ci-scope');
+    const mode = document.getElementById('ci-mode');
+    const trunkField = document.getElementById('ci-trunk-field');
+    const agentField = document.getElementById('ci-agent-field');
+    const startField = document.getElementById('ci-start-field');
+    const trunk = document.getElementById('ci-trunk');
+    const agent = document.getElementById('ci-agent');
+    const start = document.getElementById('ci-start');
+
+    if (!scope || !mode) return;
+
+    function updateScope() {
+        const value = scope.value;
+        trunkField.hidden = !['trunk', 'agent'].includes(value);
+        agentField.hidden = value !== 'agent';
+
+        if (trunk) {
+            trunk.required = value === 'trunk';
+            if (value === 'tenant') trunk.value = '';
+        }
+
+        if (agent) {
+            agent.required = value === 'agent';
+            if (value !== 'agent') agent.value = '';
+        }
+    }
+
+    function updateMode() {
+        startField.hidden = mode.value !== 'scheduled';
+        if (start) start.required = mode.value === 'scheduled';
+    }
+
+    scope.addEventListener('change', updateScope);
+    mode.addEventListener('change', updateMode);
+    updateScope();
+    updateMode();
+})();
+</script>
+
+<%- include('../partials/foot') %>

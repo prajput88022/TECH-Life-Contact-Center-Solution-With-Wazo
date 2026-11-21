@@ -177,7 +177,8 @@ const FEATURE_KEYS = [
     'user_groups', 'pause_codes', 'skill_routing', 'robo_agents',
     'list_management', 'callback_management', 'media_assets',
     'ivr', 'caller_id', 'dnc_management', 'privacy_masking',
-    'crm_integration', 'webchat', 'staff_chat', 'audit_logs'
+    'crm_integration', 'webchat', 'staff_chat', 'audit_logs',
+    'call_intelligence'
 ];
 
 const DEFAULT_FEATURE_KEYS = new Set([

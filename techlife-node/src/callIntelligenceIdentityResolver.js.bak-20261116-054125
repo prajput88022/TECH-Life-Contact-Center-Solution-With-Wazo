@@ -1,0 +1,436 @@
+'use strict';
+
+const config = require('../config/config');
+const { pool } = require('./db');
+const { wazoFetch } = require('./wazoFetch');
+
+function normalize(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function unwrap(data) {
+    return data?.data?.data || data?.data || data || {};
+}
+
+function readOption(options, name) {
+    if (!Array.isArray(options)) return null;
+
+    const found = options.find(item =>
+        Array.isArray(item) &&
+        String(item[0]).toLowerCase() === name.toLowerCase()
+    );
+
+    return found ? String(found[1]) : null;
+}
+
+class CallIntelligenceIdentityResolver {
+    constructor() {
+        this.tenantByUuid = new Map();
+        this.endpointByName = new Map();
+        this.agentByUser = new Map();
+        this.agentByLine = new Map();
+        this.refreshedAt = null;
+        this.refreshErrors = [];
+    }
+
+    async getToken() {
+        const response = await wazoFetch(
+            `${config.wazo.authUrl.replace(/\/$/, '')}/token`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Basic ' + Buffer.from(
+                        `${config.wazo.authUsername}:${config.wazo.authPassword}`
+                    ).toString('base64')
+                },
+                body: JSON.stringify({
+                    backend: 'wazo_user',
+                    expiration: 300
+                })
+            }
+        );
+
+        const payload = await response.json().catch(() => ({}));
+
+        if (!response.ok || !payload?.data?.token) {
+            throw new Error(`Wazo authentication failed (HTTP ${response.status}).`);
+        }
+
+        return payload.data.token;
+    }
+
+    async fetchEndpoint(token, tenantUuid, endpointUuid) {
+        const url =
+            `${config.wazo.confdUrl.replace(/\/$/, '')}/endpoints/sip/` +
+            encodeURIComponent(endpointUuid);
+
+        const response = await wazoFetch(url, {
+            method: 'GET',
+            headers: {
+                'X-Auth-Token': token,
+                'Wazo-Tenant': tenantUuid,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Wazo endpoint lookup failed (HTTP ${response.status}).`);
+        }
+
+        const endpoint = unwrap(
+            await response.json().catch(() => ({}))
+        );
+
+        if (normalize(endpoint.uuid) !== normalize(endpointUuid)) {
+            throw new Error('Wazo endpoint UUID did not match the configured trunk.');
+        }
+
+        const endpointName = String(endpoint.name || '').trim();
+
+        if (!endpointName) {
+            throw new Error('Wazo endpoint has no generated Asterisk name.');
+        }
+
+        const context = readOption(
+            endpoint.endpoint_section_options,
+            'context'
+        );
+
+        return {
+            endpointName,
+            endpointUuid: endpoint.uuid,
+            label: endpoint.label || null,
+            context
+        };
+    }
+
+    async refresh() {
+        const token = await this.getToken();
+
+        const [tenantResult, trunkResult, agentResult] = await Promise.all([
+            pool.query(`
+                SELECT id, name, wazo_tenant_uuid, wazo_context_name,
+                       is_active, timezone
+                FROM tenants
+                WHERE wazo_tenant_uuid IS NOT NULL
+            `),
+
+            pool.query(`
+                SELECT tr.id, tr.tenant_id, tr.name, tr.is_active,
+                       tr.provisioning_status, tr.wazo_endpoint_uuid,
+                       t.wazo_tenant_uuid
+                FROM trunks tr
+                JOIN tenants t ON t.id = tr.tenant_id
+                WHERE tr.wazo_endpoint_uuid IS NOT NULL
+                  AND t.wazo_tenant_uuid IS NOT NULL
+            `),
+
+            pool.query(`
+                SELECT a.id, a.tenant_id, a.agent_number,
+                       a.wazo_line_id, a.is_active,
+                       u.wazo_user_uuid
+                FROM agents a
+                LEFT JOIN users u
+                  ON u.id = a.user_id
+                 AND u.tenant_id = a.tenant_id
+            `)
+        ]);
+
+        const tenants = new Map();
+        const endpointNames = new Map();
+        const agentsByUser = new Map();
+        const agentsByLine = new Map();
+        const errors = [];
+
+        for (const tenant of tenantResult.rows) {
+            const key = normalize(tenant.wazo_tenant_uuid);
+            if (!key) continue;
+
+            if (tenants.has(key)) {
+                errors.push(`Duplicate Wazo tenant UUID detected: ${key}`);
+                tenants.set(key, { ambiguous: true });
+                continue;
+            }
+
+            tenants.set(key, {
+                tenantId: tenant.id,
+                tenantName: tenant.name,
+                wazoTenantUuid: tenant.wazo_tenant_uuid,
+                contextName: tenant.wazo_context_name,
+                active: tenant.is_active === true,
+                timezone: tenant.timezone || 'UTC'
+            });
+        }
+
+        for (const agent of agentResult.rows) {
+            const record = {
+                agentId: agent.id,
+                tenantId: agent.tenant_id,
+                agentNumber: agent.agent_number,
+                lineId: agent.wazo_line_id,
+                active: agent.is_active === true
+            };
+
+            if (agent.wazo_user_uuid) {
+                const key =
+                    `${agent.tenant_id}:${normalize(agent.wazo_user_uuid)}`;
+
+                if (agentsByUser.has(key)) {
+                    agentsByUser.set(key, { ambiguous: true });
+                } else {
+                    agentsByUser.set(key, record);
+                }
+            }
+
+            if (agent.wazo_line_id != null) {
+                const key = `${agent.tenant_id}:${agent.wazo_line_id}`;
+
+                if (agentsByLine.has(key)) {
+                    agentsByLine.set(key, { ambiguous: true });
+                } else {
+                    agentsByLine.set(key, record);
+                }
+            }
+        }
+
+        for (const trunk of trunkResult.rows) {
+            const tenant = tenants.get(
+                normalize(trunk.wazo_tenant_uuid)
+            );
+
+            if (!tenant || tenant.ambiguous) {
+                errors.push(`Tenant identity unavailable for trunk ${trunk.name}.`);
+                continue;
+            }
+
+            try {
+                const endpoint = await this.fetchEndpoint(
+                    token,
+                    trunk.wazo_tenant_uuid,
+                    trunk.wazo_endpoint_uuid
+                );
+
+                const key = normalize(endpoint.endpointName);
+
+                const record = {
+                    tenantId: trunk.tenant_id,
+                    tenantName: tenant.tenantName,
+                    wazoTenantUuid: trunk.wazo_tenant_uuid,
+                    trunkId: trunk.id,
+                    trunkName: trunk.name,
+                    endpointName: endpoint.endpointName,
+                    endpointUuid: endpoint.endpointUuid,
+                    endpointContext: endpoint.context,
+                    trunkActive: trunk.is_active === true,
+                    provisioned: trunk.provisioning_status === 'provisioned',
+                    captureEligible:
+                        tenant.active === true &&
+                        trunk.is_active === true &&
+                        trunk.provisioning_status === 'provisioned'
+                };
+
+                if (endpointNames.has(key)) {
+                    errors.push(`Duplicate Asterisk endpoint name: ${key}`);
+                    endpointNames.set(key, { ambiguous: true });
+                } else {
+                    endpointNames.set(key, record);
+                }
+            } catch (error) {
+                errors.push(
+                    `Trunk ${trunk.name}: ${error.message}`
+                );
+            }
+        }
+
+        // Replace maps atomically only after the discovery cycle completes.
+        this.tenantByUuid = tenants;
+        this.endpointByName = endpointNames;
+        this.agentByUser = agentsByUser;
+        this.agentByLine = agentsByLine;
+        this.refreshErrors = errors;
+        this.refreshedAt = new Date();
+
+        return this.getSnapshot();
+    }
+
+    resolveChannel(channelName, variables = {}) {
+        const channel = String(channelName || '').trim();
+
+        if (!channel) {
+            return { verified: false, reason: 'missing_channel' };
+        }
+
+        let endpoint = null;
+        let endpointName = null;
+
+        // Match the exact dynamically discovered endpoint prefix.
+        // Never identify a trunk using its provider IP address.
+        if (channel.startsWith('PJSIP/')) {
+            const resource = channel.slice('PJSIP/'.length);
+
+            for (const [name, record] of this.endpointByName.entries()) {
+                if (
+                    resource.startsWith(`${name}-`) ||
+                    resource === name
+                ) {
+                    if (record.ambiguous) {
+                        return {
+                            verified: false,
+                            reason: 'ambiguous_endpoint'
+                        };
+                    }
+
+                    endpoint = record;
+                    endpointName = record.endpointName;
+                    break;
+                }
+            }
+        }
+
+        const wazoTenantUuid = String(
+            variables.WAZO_TENANT_UUID || ''
+        ).trim();
+
+        let tenant = null;
+
+        if (wazoTenantUuid) {
+            tenant = this.tenantByUuid.get(normalize(wazoTenantUuid));
+
+            if (!tenant || tenant.ambiguous) {
+                return {
+                    verified: false,
+                    reason: 'unknown_or_ambiguous_wazo_tenant'
+                };
+            }
+        }
+
+        // An endpoint mapping is independently tenant-specific.
+        // If both sources exist, they must agree.
+        if (endpoint && tenant &&
+            endpoint.tenantId !== tenant.tenantId) {
+            return {
+                verified: false,
+                reason: 'tenant_identity_conflict'
+            };
+        }
+
+        if (!tenant && endpoint) {
+            tenant = {
+                tenantId: endpoint.tenantId,
+                tenantName: endpoint.tenantName,
+                wazoTenantUuid: endpoint.wazoTenantUuid
+            };
+        }
+
+        if (!tenant) {
+            return {
+                verified: false,
+                reason: 'tenant_not_resolved'
+            };
+        }
+
+        let agentByUser = null;
+        let agentByLine = null;
+
+        const userUuid = String(
+            variables.WAZO_USERUUID || ''
+        ).trim();
+
+        if (userUuid) {
+            agentByUser = this.agentByUser.get(
+                `${tenant.tenantId}:${normalize(userUuid)}`
+            ) || null;
+
+            if (agentByUser?.ambiguous) {
+                return {
+                    verified: false,
+                    reason: 'ambiguous_wazo_user'
+                };
+            }
+        }
+
+        const rawLine = variables.WAZO_LINE_ID;
+        const lineId =
+            rawLine !== undefined && rawLine !== null &&
+            String(rawLine).trim() !== ''
+                ? Number(rawLine)
+                : null;
+
+        if (lineId !== null && Number.isSafeInteger(lineId)) {
+            agentByLine = this.agentByLine.get(
+                `${tenant.tenantId}:${lineId}`
+            ) || null;
+
+            if (agentByLine?.ambiguous) {
+                return {
+                    verified: false,
+                    reason: 'ambiguous_wazo_line'
+                };
+            }
+        }
+
+        if (agentByUser && agentByLine &&
+            agentByUser.agentId !== agentByLine.agentId) {
+            return {
+                verified: false,
+                reason: 'agent_identity_conflict'
+            };
+        }
+
+        const agent = agentByUser || agentByLine || null;
+
+        // If a context is present and this is a known trunk channel,
+        // it must agree with the Wazo endpoint configuration.
+        const eventContext = String(
+            variables.CONTEXT || variables.Context || ''
+        ).trim();
+
+        if (
+            endpoint &&
+            endpoint.endpointContext &&
+            eventContext &&
+            normalize(eventContext) !== normalize(endpoint.endpointContext)
+        ) {
+            return {
+                verified: false,
+                reason: 'endpoint_context_conflict'
+            };
+        }
+
+        return {
+            verified: true,
+            tenantId: tenant.tenantId,
+            tenantName: tenant.tenantName,
+            wazoTenantUuid: tenant.wazoTenantUuid,
+            trunkId: endpoint?.trunkId || null,
+            trunkName: endpoint?.trunkName || null,
+            endpointName,
+            trunkCaptureEligible: endpoint?.captureEligible === true,
+            agentId: agent?.agentId || null,
+            agentNumber: agent?.agentNumber || null,
+            agentActive: agent?.active === true,
+            wazoUserUuid: userUuid || null,
+            wazoLineId: lineId
+        };
+    }
+
+    getSnapshot() {
+        return {
+            refreshedAt: this.refreshedAt,
+            tenantCount: [...this.tenantByUuid.values()]
+                .filter(x => !x.ambiguous).length,
+            endpointCount: [...this.endpointByName.values()]
+                .filter(x => !x.ambiguous).length,
+            agentUserCount: [...this.agentByUser.values()]
+                .filter(x => !x.ambiguous).length,
+            agentLineCount: [...this.agentByLine.values()]
+                .filter(x => !x.ambiguous).length,
+            eligibleTrunkCount: [...this.endpointByName.values()]
+                .filter(x => !x.ambiguous && x.captureEligible).length,
+            errors: [...this.refreshErrors]
+        };
+    }
+}
+
+module.exports = { CallIntelligenceIdentityResolver };

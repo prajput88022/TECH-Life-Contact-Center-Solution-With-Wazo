@@ -1,0 +1,189 @@
+const express = require('express');
+const router = express.Router();
+const { pool } = require('../src/db');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validDate(value) {
+    if (!DATE_RE.test(value || '')) return false;
+    const d = new Date(value + 'T00:00:00Z');
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+function tenantId(req) {
+    return req.effectiveTenant?.id || null;
+}
+
+router.get('/', async (req, res, next) => {
+    try {
+        const t = tenantId(req);
+        if (!t) return res.status(403).send('Tenant context unavailable.');
+
+        const today = new Date().toISOString().slice(0, 10);
+        const defaultFrom = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+
+        const from = validDate(String(req.query.from || ''))
+            ? String(req.query.from) : defaultFrom;
+        const to = validDate(String(req.query.to || ''))
+            ? String(req.query.to) : today;
+        const q = String(req.query.q || '').trim().slice(0, 120);
+
+        if (from > to) {
+            return res.status(400).send('The From date must not be after the To date.');
+        }
+
+        const values = [t, from, to];
+        const where = [
+            'c.tenant_id = $1',
+            "COALESCE(c.wazo_call_id, '') <> 'SYNTHETIC_DEMO_ONLY'",
+            'c.start_time >= $2::date',
+            "c.start_time < ($3::date + interval '1 day')"
+        ];
+
+        if (q) {
+            values.push('%' + q.replace(/[\\%_]/g, '\\$&') + '%');
+            const n = values.length;
+            where.push(`(
+                COALESCE(c.wazo_call_id, '') ILIKE $${n} ESCAPE '\\'
+                OR c.id::text ILIKE $${n} ESCAPE '\\'
+                OR COALESCE(c.from_number, '') ILIKE $${n} ESCAPE '\\'
+                OR COALESCE(c.to_number, '') ILIKE $${n} ESCAPE '\\'
+                OR COALESCE(u.full_name, '') ILIKE $${n} ESCAPE '\\'
+                OR COALESCE(u.username, '') ILIKE $${n} ESCAPE '\\'
+                OR COALESCE(ag.agent_number, '') ILIKE $${n} ESCAPE '\\'
+            )`);
+        }
+
+        const whereSql = where.join(' AND ');
+
+        const countResult = await pool.query(
+            `SELECT COUNT(*)::int AS total
+               FROM calls c
+               LEFT JOIN agents ag
+                 ON ag.id = c.agent_id AND ag.tenant_id = c.tenant_id
+               LEFT JOIN users u
+                 ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+              WHERE ${whereSql}`,
+            values
+        );
+
+        const result = await pool.query(
+            `SELECT c.id, c.wazo_call_id, c.direction::text AS direction,
+                    c.status::text AS status, c.from_number, c.to_number,
+                    c.start_time, c.ring_time, c.answer_time, c.end_time,
+                    c.ring_seconds, c.wait_seconds, c.talk_seconds,
+                    c.hold_seconds, c.hangup_cause, c.hangup_by,
+                    c.is_transfer, c.transfer_to_type,
+                    COALESCE(NULLIF(u.full_name, ''),
+                             NULLIF(u.username, ''),
+                             ag.agent_number,
+                             '—') AS agent_name,
+                    (SELECT COUNT(*)::int
+                       FROM call_events e
+                      WHERE e.tenant_id = c.tenant_id
+                        AND e.call_id = c.id
+                        AND e.event_time >= (c.start_time - interval '5 minutes')
+                        AND e.event_time <= (COALESCE(c.end_time, now()) + interval '5 minutes')
+                    ) AS event_count
+               FROM calls c
+               LEFT JOIN agents ag
+                 ON ag.id = c.agent_id AND ag.tenant_id = c.tenant_id
+               LEFT JOIN users u
+                 ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+              WHERE ${whereSql}
+              ORDER BY c.start_time DESC
+              LIMIT 100`,
+            values
+        );
+
+        res.render('admin/call_intelligence', {
+            pageTitle: 'Admin — Call Intelligence',
+            calls: result.rows,
+            total: countResult.rows[0].total,
+            from, to, q,
+            selectedCall: null,
+            events: []
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/:id', async (req, res, next) => {
+    try {
+        const t = tenantId(req);
+        const id = String(req.params.id || '');
+
+        if (!t) return res.status(403).send('Tenant context unavailable.');
+        if (!UUID_RE.test(id)) return res.status(400).send('Invalid call ID.');
+
+        const callResult = await pool.query(
+            `SELECT c.id, c.wazo_call_id, c.direction::text AS direction,
+                    c.status::text AS status, c.from_number, c.to_number,
+                    c.start_time, c.ring_time, c.answer_time, c.end_time,
+                    c.ring_seconds, c.wait_seconds, c.talk_seconds,
+                    c.hold_seconds, c.acw_seconds, c.hangup_cause, c.hangup_by,
+                    c.is_transfer, c.transfer_to_type, c.transfer_to_id,
+                    COALESCE(NULLIF(u.full_name, ''),
+                             NULLIF(u.username, ''),
+                             ag.agent_number,
+                             '—') AS agent_name,
+                    ag.agent_number
+               FROM calls c
+               LEFT JOIN agents ag
+                 ON ag.id = c.agent_id AND ag.tenant_id = c.tenant_id
+               LEFT JOIN users u
+                 ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+              WHERE c.tenant_id = $1
+                AND c.id = $2
+                AND COALESCE(c.wazo_call_id, '') <> 'SYNTHETIC_DEMO_ONLY'
+              LIMIT 1`,
+            [t, id]
+        );
+
+        if (!callResult.rows.length) {
+            return res.status(404).send('Call not found for this tenant.');
+        }
+
+        const eventResult = await pool.query(
+            `SELECT e.id, e.event_type, e.event_time, e.agent_id,
+                    e.payload_json,
+                    COALESCE(NULLIF(u.full_name, ''),
+                             NULLIF(u.username, ''),
+                             ag.agent_number,
+                             '—') AS event_agent_name
+               FROM call_events e
+               LEFT JOIN agents ag
+                 ON ag.id = e.agent_id AND ag.tenant_id = e.tenant_id
+               LEFT JOIN users u
+                 ON u.id = ag.user_id AND u.tenant_id = ag.tenant_id
+              WHERE e.tenant_id = $1
+                AND e.call_id = $2
+                AND e.event_time >= ($3::timestamptz - interval '5 minutes')
+                AND e.event_time <= (COALESCE($4::timestamptz, now()) + interval '5 minutes')
+              ORDER BY e.event_time ASC, e.id ASC`,
+            [
+                t,
+                id,
+                callResult.rows[0].start_time,
+                callResult.rows[0].end_time
+            ]
+        );
+
+        res.render('admin/call_intelligence', {
+            pageTitle: 'Admin — Call Trace',
+            calls: [],
+            total: 0,
+            from: '',
+            to: '',
+            q: '',
+            selectedCall: callResult.rows[0],
+            events: eventResult.rows
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+module.exports = router;

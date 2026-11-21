@@ -1,0 +1,179 @@
+<%- include('../partials/head') %>
+<%- include('../partials/nav') %>
+
+<style>
+.ci-wrap { display:grid; gap:16px; }
+.ci-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+.ci-stat { padding:14px; border:1px solid var(--tl-border,#ddd); border-radius:10px; }
+.ci-stat strong { display:block; font-size:19px; margin-top:5px; overflow-wrap:anywhere; }
+.ci-muted { color:var(--tl-muted,#777); font-size:13px; }
+.ci-table { overflow-x:auto; }
+.ci-table table { min-width:850px; }
+.ci-timeline { position:relative; margin:18px 0 8px 8px; padding-left:25px; border-left:2px solid var(--tl-border,#ccd); }
+.ci-event { position:relative; padding:0 0 20px 12px; }
+.ci-event:before { content:''; position:absolute; left:-33px; top:4px; width:12px; height:12px; border-radius:50%; background:var(--tl-blue,#3978c6); border:2px solid var(--tl-card,#fff); }
+.ci-event h3 { margin:0 0 5px; font-size:15px; }
+.ci-event pre { white-space:pre-wrap; overflow-wrap:anywhere; max-width:900px; padding:10px; border-radius:7px; background:var(--tl-panel,#f5f6f8); }
+.ci-status { display:inline-block; padding:4px 8px; border-radius:20px; background:var(--tl-panel,#eee); font-size:12px; }
+.ci-warning { border-left:4px solid #c58b27; padding:12px 14px; }
+</style>
+
+<div class="ci-wrap">
+    <div>
+        <h1>Call Intelligence</h1>
+        <p class="tl-subtitle">
+            Tenant-scoped call trace and event investigation. Search a call to inspect
+            its recorded lifecycle and available TECH-Life call metadata.
+        </p>
+    </div>
+
+    <div class="tl-card ci-warning">
+        <strong>Capture status: Metadata only</strong>
+        <p class="ci-muted">
+            This release reads existing TECH-Life call records and events.
+            SIP packet capture, carrier/SBC packet legs, RTP/RTCP QoS, decoded DTMF
+            and PCAP exports are not connected yet. No packet-level data or QoS
+            values are fabricated.
+        </p>
+    </div>
+
+    <% if (selectedCall) { %>
+        <div>
+            <a class="tl-btn secondary" href="/admin/call-intelligence">← Back to call search</a>
+        </div>
+
+        <div class="tl-card">
+            <h2>Call overview</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Wazo Call ID</span><strong><%= selectedCall.wazo_call_id || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Direction</span><strong><%= selectedCall.direction || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Status</span><strong><%= selectedCall.status || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Agent</span><strong><%= selectedCall.agent_name %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">From</span><strong><%= selectedCall.from_number || '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">To</span><strong><%= selectedCall.to_number || '—' %></strong></div>
+            </div>
+            <p class="ci-muted">Call record: <code><%= selectedCall.id %></code></p>
+        </div>
+
+        <div class="tl-card">
+            <h2>Call journey timeline</h2>
+            <p class="ci-muted">
+                Events are displayed in recorded order, including duplicates,
+                so repeated provider events remain visible for troubleshooting.
+            </p>
+
+            <% if (events.length) { %>
+                <div class="ci-timeline">
+                    <% events.forEach(event => { %>
+                        <div class="ci-event">
+                            <h3><%= event.event_type %></h3>
+                            <div class="ci-muted">
+                                <%= new Date(event.event_time).toLocaleString() %>
+                                · Agent: <%= event.event_agent_name || '—' %>
+                                · Event #<%= event.id %>
+                            </div>
+                            <pre><%= JSON.stringify(event.payload_json || {}, null, 2) %></pre>
+                        </div>
+                    <% }) %>
+                </div>
+            <% } else { %>
+                <p>No call events have been recorded for this call.</p>
+            <% } %>
+        </div>
+
+        <div class="tl-card">
+            <h2>Call timing</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">Started</span><strong><%= selectedCall.start_time ? new Date(selectedCall.start_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ringing</span><strong><%= selectedCall.ring_time ? new Date(selectedCall.ring_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Answered</span><strong><%= selectedCall.answer_time ? new Date(selectedCall.answer_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ended</span><strong><%= selectedCall.end_time ? new Date(selectedCall.end_time).toLocaleString() : '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Ring seconds</span><strong><%= selectedCall.ring_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Wait seconds</span><strong><%= selectedCall.wait_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Talk seconds</span><strong><%= selectedCall.talk_seconds ?? '—' %></strong></div>
+                <div class="ci-stat"><span class="ci-muted">Hold seconds</span><strong><%= selectedCall.hold_seconds ?? '—' %></strong></div>
+            </div>
+            <p class="ci-muted">
+                Hangup cause: <%= selectedCall.hangup_cause || '—' %>
+                · Hangup by: <%= selectedCall.hangup_by || '—' %>
+                · Transfer: <%= selectedCall.is_transfer ? 'Yes' : 'No' %>
+            </p>
+        </div>
+
+        <div class="tl-card">
+            <h2>Packet and media diagnostics</h2>
+            <div class="ci-grid">
+                <div class="ci-stat"><span class="ci-muted">SIP ladder</span><strong>Not captured</strong></div>
+                <div class="ci-stat"><span class="ci-muted">Carrier / SBC legs</span><strong>Not correlated</strong></div>
+                <div class="ci-stat"><span class="ci-muted">RTP / RTCP QoS</span><strong>Unavailable</strong></div>
+                <div class="ci-stat"><span class="ci-muted">DTMF packet events</span><strong>Unavailable</strong></div>
+                <div class="ci-stat"><span class="ci-muted">PCAP export</span><strong>Unavailable</strong></div>
+            </div>
+        </div>
+
+    <% } else { %>
+        <form method="get" action="/admin/call-intelligence" class="tl-card">
+            <div class="tl-filters">
+                <div>
+                    <label for="q">Call ID, number or agent</label>
+                    <input id="q" name="q" maxlength="120"
+                           value="<%= q %>" placeholder="Wazo ID, phone, UUID, agent">
+                </div>
+                <div>
+                    <label for="from">From date</label>
+                    <input id="from" name="from" type="date" value="<%= from %>">
+                </div>
+                <div>
+                    <label for="to">To date</label>
+                    <input id="to" name="to" type="date" value="<%= to %>">
+                </div>
+            </div>
+            <button class="tl-btn" type="submit">Search calls</button>
+            <a class="tl-btn secondary" href="/admin/call-intelligence">Reset</a>
+        </form>
+
+        <div class="tl-card">
+            <p class="ci-muted">
+                <strong><%= total %></strong> matching call records.
+                Showing the latest 100 results. Demo-only synthetic records are excluded.
+            </p>
+            <div class="ci-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Start time</th>
+                            <th>Wazo Call ID</th>
+                            <th>Direction</th>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Agent</th>
+                            <th>Status</th>
+                            <th>Events</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% calls.forEach(call => { %>
+                            <tr>
+                                <td><%= call.start_time ? new Date(call.start_time).toLocaleString() : '—' %></td>
+                                <td><code><%= call.wazo_call_id || '—' %></code></td>
+                                <td><%= call.direction || '—' %></td>
+                                <td><%= call.from_number || '—' %></td>
+                                <td><%= call.to_number || '—' %></td>
+                                <td><%= call.agent_name %></td>
+                                <td><span class="ci-status"><%= call.status || '—' %></span></td>
+                                <td><%= call.event_count %></td>
+                                <td><a href="/admin/call-intelligence/<%= call.id %>">Inspect trace</a></td>
+                            </tr>
+                        <% }) %>
+                        <% if (!calls.length) { %>
+                            <tr><td colspan="9">No calls found for these filters and this tenant.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    <% } %>
+</div>
+
+<%- include('../partials/foot') %>
